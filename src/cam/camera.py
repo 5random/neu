@@ -13,7 +13,7 @@ import numpy as np
 from fastapi import Response
 from nicegui import Client, app, core, run, ui
 
-from src.utils.config import AppConfig, WebcamConfig, UVCConfig, load_config
+from src.config import AppConfig, WebcamConfig, UVCConfig, load_config
 
 
 class Camera:
