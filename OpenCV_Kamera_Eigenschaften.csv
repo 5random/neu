@@ -1,0 +1,49 @@
+ID,Property,Wert,Interpretation
+0,CAP_PROP_POS_MSEC,-1.0,nicht unterstützt
+1,CAP_PROP_POS_FRAMES,-1.0,nicht unterstützt
+2,CAP_PROP_POS_AVI_RATIO,-1.0,nicht unterstützt
+3,CAP_PROP_FRAME_WIDTH,640.0,640.0
+4,CAP_PROP_FRAME_HEIGHT,480.0,480.0
+5,CAP_PROP_FPS,0.0,0.0
+6,CAP_PROP_FOURCC,844715353.0,844715353 ('YUY2')
+7,CAP_PROP_FRAME_COUNT,-1.0,nicht unterstützt
+8,CAP_PROP_FORMAT,-1.0,nicht unterstützt
+9,CAP_PROP_MODE,-1.0,nicht unterstützt
+10,CAP_PROP_BRIGHTNESS,0.0,0.0
+11,CAP_PROP_CONTRAST,32.0,32.0
+12,CAP_PROP_SATURATION,64.0,64.0
+13,CAP_PROP_HUE,0.0,0.0
+14,CAP_PROP_GAIN,0.0,0.0
+15,CAP_PROP_EXPOSURE,-6.0,-6.0
+16,CAP_PROP_CONVERT_RGB,1.0,"1 = EIN, 0 = AUS"
+17,CAP_PROP_WHITE_BALANCE_BLUE_U,4600.0,4600.0
+18,CAP_PROP_RECTIFICATION,-1.0,nicht unterstützt
+19,CAP_PROP_MONOCHROME,-1.0,nicht unterstützt
+20,CAP_PROP_SHARPNESS,10.0,10.0
+21,CAP_PROP_AUTO_EXPOSURE,-1.0,nicht unterstützt
+22,CAP_PROP_GAMMA,100.0,100.0
+23,CAP_PROP_TEMPERATURE,-1.0,nicht unterstützt
+24,CAP_PROP_TRIGGER,-1.0,nicht unterstützt
+25,CAP_PROP_TRIGGER_DELAY,-1.0,nicht unterstützt
+26,CAP_PROP_WHITE_BALANCE_RED_V,-1.0,nicht unterstützt
+27,CAP_PROP_ZOOM,-1.0,nicht unterstützt
+28,CAP_PROP_FOCUS,-1.0,nicht unterstützt
+29,CAP_PROP_GUID,-1.0,nicht unterstützt
+30,CAP_PROP_ISO_SPEED,-1.0,nicht unterstützt
+31,(undef),-1.0,nicht unterstützt
+32,CAP_PROP_BACKLIGHT,80.0,80.0
+33,CAP_PROP_PAN,-1.0,nicht unterstützt
+34,CAP_PROP_TILT,-1.0,nicht unterstützt
+35,CAP_PROP_ROLL,-1.0,nicht unterstützt
+36,CAP_PROP_IRIS,-1.0,nicht unterstützt
+37,CAP_PROP_SETTINGS,0.0,0.0
+38,CAP_PROP_BUFFERSIZE,-1.0,nicht unterstützt
+39,CAP_PROP_AUTOFOCUS,-1.0,nicht unterstützt
+40,CAP_PROP_SAR_NUM,-1.0,nicht unterstützt
+41,CAP_PROP_SAR_DEN,-1.0,nicht unterstützt
+42,CAP_PROP_BACKEND,700.0,700 (CAP_DSHOW)
+43,CAP_PROP_CHANNEL,0.0,0.0
+44,CAP_PROP_AUTO_WB,1.0,"1 = EIN, 0 = AUS"
+45,CAP_PROP_WB_TEMPERATURE,-1.0,nicht unterstützt
+46,CAP_PROP_CODEC_PIXEL_FORMAT,-1.0,nicht unterstützt
+47,CAP_PROP_BITRATE,-1.0,nicht unterstützt

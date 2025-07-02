@@ -1,0 +1,85 @@
+webcam:
+  camera_index: 0
+  default_resolution: {width: 640, height: 480}
+  fps: 30
+  resolution:
+    - {width: 320, height: 240}
+    - {width: 352, height: 288}
+    - {width: 640, height: 480}
+    - {width: 800, height: 600}
+    - {width: 1024, height: 768}
+    - {width: 1280, height: 720}
+    - {width: 1280, height: 960}
+    - {width: 1280, height: 1024}
+    - {width: 1920, height: 1080}
+
+uvc_controls:
+  brightness: 128
+  hue: 0
+  contrast: 32
+  saturation: 32
+  sharpness: 3
+  gamma: 100
+  white_balance:
+    auto: true
+    value: 4000
+  gain: 0
+  backlight_compensation: 0
+  exposure:
+    auto: true
+    value: 100
+
+motion_detection:
+  region_of_interest:
+    enabled: true
+    x: 100
+    y: 100
+    width: 400
+    height: 300
+  sensitivity: 0.1
+  background_learning_rate: 0.01
+  min_contour_area: 500  
+
+
+measurement:
+  auto_start: false
+  session_timeout_minutes: 60
+  save_alert_images: true
+  image_save_path: "./alerts/"
+  image_format: "jpg"
+  image_quality: 85
+
+  alert_delay_seconds: 300
+
+email:
+
+  recipients:
+    - user1@example.com
+    - user2@example.com
+  smtp_server: smtp.example.com
+  smtp_port: 587
+  sender_email: sender@example.com
+  templates:
+    alert:
+      subject: "CVD-Tracker: Bewegungsalarm - {timestamp}"
+      body: |
+        Bewegung erkannt um {timestamp}
+        
+        Kamera: Index {camera_index}
+        Sensitivität: {sensitivity}
+        ROI aktiv: {roi_enabled}
+        
+        Im Anhang finden Sie das aktuelle Kamerabild.
+
+gui:
+  hostsystem: "windows"
+  title: "CVD-Tracker"
+  host: "localhost"
+  port: 8080
+  auto_open_browser: true
+  update_interval_ms: 100
+
+logging:
+  level: "INFO"
+  file: "cvd_tracker.log"
+  max_file_size_mb: 10

@@ -1,0 +1,6 @@
+nicegui
+opencv-python
+numpy
+Pillow
+PyYAML
+python-dateutil
