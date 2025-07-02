@@ -1,287 +1,298 @@
-#TODO
 """
-# 📋 **Ausführliche TODO-Liste für motion.py**
+Einfache Bewegungserkennung für Webcam-System.
 
-## 🔍 **Aktuelle Analyse der motion.py**
+Dieses Modul implementiert eine minimalistische Bewegungserkennung mit OpenCV
+für das Webcam-Überwachungssystem. Es bietet die grundlegenden Features:
+- Bewegungserkennung mit konfigurierbarer Sensitivität
+- ROI (Region of Interest) Support
+- Integration mit Alert-System
 
-Die `motion.py` ist **komplett leer** und muss vollständig implementiert werden. Basierend auf der Projektbeschreibung und der bestehenden #codebase ist dies ein **kritisches Kernmodul** für die Bewegungserkennung.
-
-**Erforderliche Funktionalitäten aus der Projektbeschreibung:**
-- ✅ Kontinuierliche Bewegungsanalyse des Live-Streams
-- ✅ Status-Rückgabe (Bewegung erkannt / keine Bewegung)
-- ✅ ROI (Region of Interest) Support
-- ✅ Einstellbare Sensitivität
-- ✅ Integration mit Alert-System für E-Mail-Benachrichtigung
-
----
-
-## 🎯 **TODO 1: Grundlegende Datenstrukturen definieren**
-
-### **Problem:**
-Es gibt keine Datenstrukturen für Bewegungsergebnisse und Motion-Status.
-
-### **Was zu tun ist:**
-1. **MotionResult Dataclass erstellen:**
-   - `motion_detected: bool` - Hauptstatus der Bewegungserkennung
-   - `contour_area: float` - Größe der erkannten Bewegung
-   - `timestamp: float` - Zeitstempel der Erkennung
-   - `confidence: float` - Konfidenz der Erkennung (0.0-1.0)
-   - `roi_used: bool` - Ob ROI verwendet wurde
-
-2. **MotionStatus Enum definieren:**
-   - `NO_MOTION` - Keine Bewegung erkannt
-   - `MOTION_DETECTED` - Bewegung erkannt
-   - `MOTION_TIMEOUT` - Bewegung zu lange ausgeblieben (für Alert-System)
-
-3. **MotionMetrics Dataclass für Debugging:**
-   - `frame_count: int` - Anzahl verarbeiteter Frames
-   - `avg_processing_time: float` - Durchschnittliche Verarbeitungszeit
-   - `false_positive_rate: float` - Geschätzte Falsch-Positiv-Rate
-
----
-
-## 🎯 **TODO 2: Haupt-MotionDetector Klasse implementieren**
-
-### **Problem:**
-Keine Bewegungserkennungs-Engine vorhanden.
-
-### **Was zu tun ist:**
-1. **Konstruktor definieren:**
-   - Parameter: `MotionDetectionConfig` aus der bestehenden Config
-   - Initialisierung des Background Subtractors (MOG2 oder KNN)
-   - ROI-Setup aus Config
-   - Logger-Integration
-
-2. **Kern-Eigenschaften implementieren:**
-   - `background_subtractor` - OpenCV BackgroundSubtractor
-   - `roi` - ROI-Objekt aus Config
-   - `sensitivity` - Sensitivitätsfaktor
-   - `min_contour_area` - Minimale Kontur-Größe für gültige Bewegung
-   - `frame_buffer` - Ringpuffer für die letzten N Frames (optional)
-
-3. **State-Management:**
-   - `last_motion_time` - Zeitstempel der letzten Bewegung
-   - `motion_history` - Liste der letzten Bewegungsergebnisse
-   - `is_learning` - Background-Learning Status
-
----
-
-## 🎯 **TODO 3: Bewegungserkennung-Algorithmus implementieren**
-
-### **Problem:**
-Kein Algorithmus für die eigentliche Bewegungserkennung vorhanden.
-
-### **Was zu tun ist:**
-1. **Haupt-Erkennungsmethode: `detect_motion(frame)`:**
-   - Frame-Preprocessing (Größenanpassung, Farbkonvertierung)
-   - ROI-Extraktion falls aktiviert
-   - Background Subtraction anwenden
-   - Rauschunterdrückung (Morphological Operations)
-   - Kontur-Erkennung und -Filterung
-   - Bewegungsentscheidung basierend auf Kontur-Größe
-
-2. **ROI-Handling implementieren:**
-   - Methode `_apply_roi(frame)` für ROI-Extraktion
-   - ROI-Koordinaten-Validierung
-   - Fallback auf Vollbild bei ungültiger ROI
-
-3. **Sensitivitäts-Anpassung:**
-   - Dynamische Anpassung der `min_contour_area` basierend auf Sensitivität
-   - Lerning-Rate-Anpassung für Background Subtractor
-   - Adaptive Schwellwert-Berechnung
-
----
-
-## 🎯 **TODO 4: Integration mit bestehender Konfiguration**
-
-### **Problem:**
-Die Motion-Detection muss nahtlos mit `MotionDetectionConfig` arbeiten.
-
-### **Was zu tun ist:**
-1. **Config-Integration implementieren:**
-   - ROI aus `config.get_roi()` übernehmen
-   - Sensitivität aus `config.sensitivity` anwenden
-   - Learning-Rate aus `config.background_learning_rate` verwenden
-   - Min-Kontur-Area aus `config.min_contour_area` übernehmen
-
-2. **Dynamische Konfiguration:**
-   - Methoden für Live-Änderung der Sensitivität: `update_sensitivity(value)`
-   - ROI-Update-Methode: `update_roi(roi_config)`
-   - Config-Reload ohne Neustart: `reload_config(config)`
-
-3. **Validierung:**
-   - ROI-Validierung gegen aktuelle Frame-Größe
-   - Sensitivitäts-Range-Prüfung (0.001-1.0)
-   - Min-Contour-Area Plausibilitätsprüfung
-
----
-
-## 🎯 **TODO 5: Performance-Optimierung für "einfaches Programm"**
-
-### **Problem:**
-Bewegungserkennung kann CPU-intensiv sein - für ein "einfaches Programm" sollte es optimiert sein.
-
-### **Was zu tun ist:**
-1. **Frame-Skalierung implementieren:**
-   - Verkleinerung der Frames für schnellere Verarbeitung
-   - Konfigurierbare Skalierungsfaktoren
-   - Qualitäts-vs-Performance Balance
-
-2. **Smart Processing:**
-   - Frame-Skipping bei hoher CPU-Last
-   - Adaptive Verarbeitungsqualität basierend auf System-Performance
-   - Bewegungserkennung nur in definierten Intervallen
-
-3. **Speicher-Management:**
-   - Effiziente Frame-Buffer-Verwaltung
-   - Garbage Collection für alte Bewegungsdaten
-   - Maximale Memory-Limits definieren
-
----
-
-## 🎯 **TODO 6: Alert-System Integration vorbereiten**
-
-### **Problem:**
-Motion-Detection muss mit dem zukünftigen Alert-System für E-Mail-Benachrichtigung kommunizieren.
-
-### **Was zu tun ist:**
-1. **Timing-Integration:**
-   - Tracking der Zeit seit letzter Bewegung
-   - Integration mit `MeasurementConfig.alert_delay_seconds`
-   - Methode `time_since_last_motion()` für Alert-System
-
-2. **Status-Bereitstellung:**
-   - Erweiterte Status-Informationen für GUI
-   - Bewegungshistorie für Alert-Entscheidungen
-   - Confidence-Level für Fehlalarm-Reduzierung
-
-3. **Event-Callbacks vorbereiten:**
-   - Callback-System für Bewegungsänderungen
-   - Alert-Ready-Status für E-Mail-Trigger
-   - Integration mit `Camera.motion_callback`
-
----
-
-## 🎯 **TODO 7: GUI-Integration vorbereiten**
-
-### **Problem:**
-Die GUI muss Motion-Status anzeigen und Sensitivität ändern können.
-
-### **Was zu tun ist:**
-1. **Status-Export-Methoden:**
-   - `get_current_status()` → aktueller Bewegungsstatus
-   - `get_motion_history()` → Historie für GUI-Graphiken
-   - `get_performance_metrics()` → FPS, CPU-Usage etc.
-
-2. **Live-Parameter-Änderung:**
-   - `set_sensitivity(value)` für GUI-Slider
-   - `set_roi(x, y, width, height)` für interaktive ROI-Auswahl
-   - `toggle_roi(enabled)` für ROI ein/aus
-
-3. **Debugging-Support:**
-   - Visualisierung der erkannten Konturen
-   - ROI-Overlay für das Video-Display
-   - Motion-Heatmap für Bewegungsverteilung
-
----
-
-## 🎯 **TODO 8: Error-Handling und Robustheit**
-
-### **Problem:**
-Bewegungserkennung muss robust gegen verschiedene Eingaben und Fehler sein.
-
-### **Was zu tun ist:**
-1. **Input-Validation:**
-   - Frame-Format-Prüfung (Farbtiefe, Größe)
-   - Null-Frame-Handling
-   - Korrupte Frame-Daten abfangen
-
-2. **Background-Subtractor-Robustheit:**
-   - Automatic-Reset bei zu vielen Fehlalarmen
-   - Learning-Rate-Anpassung bei schlechter Performance
-   - Fallback-Algorithmus bei Subtractor-Fehlern
-
-3. **Resource-Management:**
-   - Memory-Leak-Prevention
-   - CPU-Überlastungs-Schutz
-   - Graceful Degradation bei System-Überlastung
-
----
-
-## 🎯 **TODO 9: Testing und Kalibrierung**
-
-### **Problem:**
-Bewegungserkennung muss kalibriert und getestet werden können.
-
-### **Was zu tun ist:**
-1. **Kalibrierungs-Modus:**
-   - Automatische Sensitivitäts-Kalibrierung
-   - Background-Learning-Periode definieren
-   - ROI-Optimierung basierend auf typischen Bewegungsmustern
-
-2. **Test-Modi:**
-   - Simulation von Bewegung für Testing
-   - Performance-Benchmarking
-   - Falsch-Positiv/Negativ-Rate-Messung
-
-3. **Logging und Debugging:**
-   - Detaillierte Bewegungs-Logs
-   - Frame-Export für Debugging
-   - Konfigurationsprofil-Export/-Import
-
----
-
-## 🎯 **TODO 10: Vereinfachung und Usability**
-
-### **Problem:**
-Für ein "einfaches Programm" sollte die Motion-Detection benutzerfreundlich und selbsterklärend sein.
-
-### **Was zu tun ist:**
-1. **Auto-Configuration:**
-   - Intelligente Default-Werte basierend auf Kamera-Setup
-   - Automatic-Tuning der Parameter
-   - One-Click-Setup für Standard-Anwendungsfälle
-
-2. **Benutzerfreundliche API:**
-   - Einfache Enable/Disable-Funktionen
-   - Preset-Modi (z.B. "Indoor", "Outdoor", "High Sensitivity")
-   - Minimale Konfiguration für Standard-Use-Cases
-
-3. **Dokumentation und Hilfe:**
-   - Inline-Dokumentation für alle wichtigen Methoden
-   - Beispiel-Konfigurationen für typische Anwendungen
-   - Troubleshooting-Guides für häufige Probleme
-
----
-
-## 📊 **Prioritäts-Reihenfolge für die Umsetzung:**
-
-### **🔥 Kritisch (Kern-Funktionalität):**
-1. **TODO 1** - Grundlegende Datenstrukturen
-2. **TODO 2** - Haupt-MotionDetector Klasse
-3. **TODO 3** - Bewegungserkennung-Algorithmus
-4. **TODO 4** - Config-Integration
-
-### **⚡ Hoch (System-Integration):**
-5. **TODO 6** - Alert-System Integration
-6. **TODO 7** - GUI-Integration vorbereiten
-7. **TODO 8** - Error-Handling
-
-### **📋 Mittel (Optimierung):**
-8. **TODO 5** - Performance-Optimierung
-9. **TODO 9** - Testing und Kalibrierung
-
-### **📝 Niedrig (Usability):**
-10. **TODO 10** - Vereinfachung und Usability
-
-**Die motion.py ist das Herzstück der Bewegungserkennung und muss vollständig von Grund auf implementiert werden. Diese TODOs führen zu einem robusten, aber einfachen Motion-Detection-System.**
-
----
-
-## 🔗 **Integration mit bestehender Codebase:**
-
-- **Verwendet:** `MotionDetectionConfig`, `ROI` aus der Config
-- **Integriert mit:** `Camera.motion_callback` für Frame-Verarbeitung
-- **Bereitet vor:** Alert-System (noch zu implementieren) und GUI-System
-- **Logging:** Nutzt das bestehende `LoggingConfig` System
 """
+
+import cv2
+import numpy as np
+import time
+import logging
+from dataclasses import dataclass
+from typing import Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..config import MotionDetectionConfig, ROI
+
+
+@dataclass
+class MotionResult:
+    """
+    Einfaches Ergebnis einer Bewegungserkennung.
+    
+    Attributes:
+        motion_detected: True wenn Bewegung erkannt wurde
+        contour_area: Größe der erkannten Bewegung in Pixeln
+        timestamp: Zeitstempel der Erkennung
+        roi_used: True wenn ROI verwendet wurde
+    """
+    motion_detected: bool
+    contour_area: float
+    timestamp: float
+    roi_used: bool = False
+
+
+class MotionDetector:
+    """
+    Einfache Bewegungserkennung mit OpenCV Background Subtraction.
+    
+    Features:
+    - MOG2 Background Subtractor für Bewegungserkennung
+    - Konfigurierbare Sensitivität
+    - ROI (Region of Interest) Support
+    - Einfache API für GUI-Integration
+    
+    Usage:
+        detector = MotionDetector(config)
+        result = detector.detect_motion(frame)
+        if result.motion_detected:
+            print("Bewegung erkannt!")
+    """
+    
+    def __init__(self, config: 'MotionDetectionConfig', logger: Optional[logging.Logger] = None):
+        """
+        Initialisiert den MotionDetector.
+        
+        Args:
+            config: MotionDetectionConfig mit Sensitivität und ROI
+            logger: Optional Logger für Debug-Output
+        """
+        self.config = config
+        self.logger = logger or logging.getLogger(__name__)
+        
+        # OpenCV Background Subtractor
+        self.background_subtractor = cv2.createBackgroundSubtractorMOG2(
+            detectShadows=True,
+            varThreshold=16,
+            history=300
+        )
+        
+        # Bewegungsparameter
+        self.sensitivity = config.sensitivity
+        self.min_contour_area = config.min_contour_area
+        self.learning_rate = config.background_learning_rate
+        
+        # ROI Setup
+        try:
+            self.roi = config.get_roi()
+        except Exception as exc:
+            self.logger.warning(f"ROI-Setup fehlgeschlagen: {exc}")
+            # Fallback: ROI deaktiviert
+            from types import SimpleNamespace
+            self.roi = SimpleNamespace(enabled=False, x=0, y=0, width=0, height=0)
+        
+        # Learning-Phase für Background-Model
+        self.is_learning = True
+        self.learning_frame_count = 0
+        self.learning_frames_required = 30
+        
+        # Kernels für Morphological Operations
+        self.noise_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        self.cleanup_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        
+        # Tracking für Alert-System
+        self.last_motion_time = None
+        
+        self.logger.info(f"MotionDetector initialisiert - Sensitivität: {self.sensitivity}")
+    
+    def update_sensitivity(self, new_sensitivity: float) -> bool:
+        """
+        Aktualisiert die Sensitivität zur Laufzeit.
+        
+        Args:
+            new_sensitivity: Neue Sensitivität (0.1-1.0)
+            
+        Returns:
+            True wenn erfolgreich aktualisiert
+        """
+        if not 0.1 <= new_sensitivity <= 1.0:
+            self.logger.warning(f"Ungültige Sensitivität: {new_sensitivity}")
+            return False
+        
+        self.sensitivity = new_sensitivity
+        # Sensitivität beeinflusst minimale Konturgröße
+        self.min_contour_area = int(self.config.min_contour_area * (2.0 - new_sensitivity))
+        
+        self.logger.info(f"Sensitivität auf {new_sensitivity} geändert")
+        return True
+    
+    def reset_background_model(self) -> None:
+        """Setzt das Background-Model zurück (z.B. bei Lichtwechsel)."""
+        self.background_subtractor.clear()
+        self.is_learning = True
+        self.learning_frame_count = 0
+        self.logger.info("Background-Model zurückgesetzt")
+    
+    def get_last_motion_time(self) -> Optional[float]:
+        """Gibt Zeitstempel der letzten Bewegung zurück (für Alert-System)."""
+        return self.last_motion_time
+    
+    def detect_motion(self, frame: np.ndarray) -> MotionResult:
+        """
+        Erkennt Bewegung in einem Frame.
+        
+        Args:
+            frame: Eingabe-Frame (BGR oder Graustufen)
+            
+        Returns:
+            MotionResult mit Bewegungsinformationen
+        """
+        timestamp = time.time()
+        
+        # Input-Validierung
+        if frame is None or frame.size == 0:
+            self.logger.warning("Ungültiger Frame")
+            return MotionResult(False, 0.0, timestamp, False)
+        
+        try:
+            # Frame zu Graustufen konvertieren
+            if len(frame.shape) == 3:
+                gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            else:
+                gray_frame = frame.copy()
+            
+            # Gausssche Unschärfe für Rauschreduzierung
+            blurred = cv2.GaussianBlur(gray_frame, (5, 5), 0)
+            
+            # ROI anwenden falls aktiviert
+            roi_used = False
+            if hasattr(self.roi, 'enabled') and self.roi.enabled:
+                h, w = blurred.shape[:2]
+                x = max(0, min(self.roi.x, w - 1))
+                y = max(0, min(self.roi.y, h - 1))
+                x2 = max(x + 1, min(self.roi.x + self.roi.width, w))
+                y2 = max(y + 1, min(self.roi.y + self.roi.height, h))
+                blurred = blurred[y:y2, x:x2]
+                roi_used = True
+            
+            # Learning-Phase verwalten
+            if self.is_learning:
+                self.learning_frame_count += 1
+                if self.learning_frame_count >= self.learning_frames_required:
+                    self.is_learning = False
+                    self.logger.info("Background-Learning abgeschlossen")
+            
+            # Background Subtraction
+            learning_rate = self.learning_rate if self.is_learning else (self.learning_rate * 0.1)
+            fg_mask = self.background_subtractor.apply(blurred, learningRate=learning_rate)
+            
+            # Schatten entfernen
+            _, fg_mask = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
+            
+            # Morphological Operations für Rauschunterdrückung
+            fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self.noise_kernel)
+            fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self.cleanup_kernel)
+            
+            # Konturen finden
+            contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Konturen filtern und Gesamtfläche berechnen
+            total_area = 0.0
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area >= self.min_contour_area:
+                    total_area += area
+            
+            # Bewegungsentscheidung
+            motion_detected = not self.is_learning and total_area > 0
+            
+            # Zeitstempel der letzten Bewegung aktualisieren
+            if motion_detected:
+                self.last_motion_time = timestamp
+            
+            return MotionResult(
+                motion_detected=motion_detected,
+                contour_area=total_area,
+                timestamp=timestamp,
+                roi_used=roi_used
+            )
+            
+        except Exception as exc:
+            self.logger.error(f"Fehler bei Bewegungserkennung: {exc}")
+            return MotionResult(False, 0.0, timestamp, False)
+
+
+def create_motion_detector_from_config(config_path: Optional[str] = None) -> MotionDetector:
+    """
+    Erstellt einen MotionDetector aus der Konfiguration.
+    
+    Args:
+        config_path: Optional Pfad zur Konfigurationsdatei
+        
+    Returns:
+        Konfigurierter MotionDetector
+    """
+    from ..config import load_config
+    
+    path = config_path if config_path is not None else "config/config.yaml"
+    config = load_config(path)
+    motion_config = config.motion_detection
+    
+    logger = logging.getLogger("motion_detection")
+    
+    return MotionDetector(motion_config, logger)
+
+
+class MotionAlertIntegration:
+    """
+    Einfache Integration zwischen Bewegungserkennung und Alert-System.
+    
+    Überwacht Bewegungslosigkeit und triggert Alerts basierend auf Alert-Delay.
+    """
+    
+    def __init__(self, motion_detector: MotionDetector, alert_delay_seconds: float = 300.0):
+        """
+        Args:
+            motion_detector: MotionDetector-Instanz
+            alert_delay_seconds: Zeit ohne Bewegung bis Alert ausgelöst wird
+        """
+        self.motion_detector = motion_detector
+        self.alert_delay_seconds = alert_delay_seconds
+        self.last_alert_sent = None
+        self.alert_cooldown = 3600.0  # 1 Stunde zwischen Alerts
+        self.logger = logging.getLogger("motion_alert")
+    
+    def should_send_alert(self) -> bool:
+        """
+        Prüft ob ein Alert gesendet werden soll.
+        
+        Returns:
+            True wenn Alert gesendet werden soll
+        """
+        last_motion = self.motion_detector.get_last_motion_time()
+        
+        # Kein Alert wenn noch nie Bewegung erkannt wurde
+        if last_motion is None:
+            return False
+        
+        # Zeit seit letzter Bewegung berechnen
+        time_since_motion = time.time() - last_motion
+        
+        # Alert-Delay noch nicht erreicht
+        if time_since_motion < self.alert_delay_seconds:
+            return False
+        
+        # Cooldown zwischen Alerts prüfen
+        if self.last_alert_sent is not None:
+            time_since_last_alert = time.time() - self.last_alert_sent
+            if time_since_last_alert < self.alert_cooldown:
+                return False
+        
+        return True
+    
+    def mark_alert_sent(self) -> None:
+        """Markiert dass ein Alert gesendet wurde."""
+        self.last_alert_sent = time.time()
+        self.logger.info("Alert gesendet")
+    
+    def get_time_since_last_motion(self) -> Optional[float]:
+        """Gibt Zeit seit letzter Bewegung in Sekunden zurück."""
+        last_motion = self.motion_detector.get_last_motion_time()
+        if last_motion is None:
+            return None
+        return time.time() - last_motion
