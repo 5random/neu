@@ -299,3 +299,241 @@ class Camera:
         self._setup_routes()
         img = ui.interactive_image().classes("w-full h-full")
         ui.timer(0.1, lambda: img.set_source(f"/video/frame?{time.time()}"))
+#TODO
+""""
+📋 **Ausführliche TODO-Liste für camera.py**
+
+## 🔍 **Aktuelle Analyse der camera.py**
+
+Die `camera.py` ist bereits **sehr gut strukturiert** und implementiert:
+- ✅ Vollständige UVC-Kamerasteuerung
+- ✅ Plattform-spezifische Backend-Auswahl (Windows/Linux)
+- ✅ Thread-sichere Frame-Erfassung
+- ✅ NiceGUI/FastAPI Integration
+- ✅ Robuste Fehlerbehandlung
+
+**Fehlende Funktionalitäten für die Projektbeschreibung:**
+
+---
+
+## 🎯 **TODO 1: UVC-Konfiguration-Integration korrigieren**
+
+### **Problem:**
+Die `camera.py` erwartet in `_apply_uvc_controls()` direkte Attribute wie:
+- `self.uvc_config.auto_exposure` 
+- `self.uvc_config.auto_white_balance`
+
+Aber die `UVCConfig` aus der #codebase hat verschachtelte Objekte:
+- `self.uvc_config.exposure.auto`
+- `self.uvc_config.white_balance.auto`
+
+### **Was zu tun ist:**
+1. **Anpassung der `_apply_uvc_controls()` Methode** in `camera.py`
+2. **Korrektur der Exposure-Handling** für verschachtelte `Exposure`-Objekte
+3. **Korrektur der White Balance-Handling** für verschachtelte `WhiteBalance`-Objekte
+4. **Vereinfachung der Auto/Manual-Logik** für bessere Lesbarkeit
+
+---
+
+## 🎯 **TODO 2: Fehlende UVC-Parameter ergänzen**
+
+### **Problem:**
+Die Projektbeschreibung fordert **alle UVC-Parameter**, aber in `camera.py` fehlen:
+- `backlight_compensation` (ist in `UVCConfig` definiert)
+
+### **Was zu tun ist:**
+1. **Ergänzung in `param_map`** in `_apply_uvc_controls()`
+2. **Mapping auf das entsprechende OpenCV-Property** (vermutlich `cv2.CAP_PROP_BACKLIGHT`)
+3. **Setter-Methode hinzufügen** für GUI-Integration: `set_backlight_compensation()`
+
+---
+
+## 🎯 **TODO 3: Erweiterte UVC-Setter für GUI-Integration**
+
+### **Problem:**
+Aktuell gibt es nur wenige Setter-Methoden (`set_brightness`, `set_contrast`, etc.). Für eine vollständige GUI werden **alle UVC-Parameter** benötigt.
+
+### **Was zu tun ist:**
+1. **Fehlende Setter-Methoden hinzufügen:**
+   - `set_hue()`
+   - `set_sharpness()`
+   - `set_gamma()`
+   - `set_gain()`
+   - `set_backlight_compensation()`
+   - `set_white_balance()` (mit Auto/Manual-Flag)
+   - `set_zoom()` (falls unterstützt)
+
+2. **Erweiterte Exposure-Setter:**
+   - `set_exposure()` überarbeiten für bessere Trennung von Auto/Manual
+   - Separate Methoden: `set_auto_exposure(bool)` und `set_manual_exposure(value)`
+
+3. **White Balance Setter:**
+   - `set_auto_white_balance(bool)`
+   - `set_manual_white_balance(value)`
+
+---
+
+## 🎯 **TODO 4: Motion-Callback Integration verbessern**
+
+### **Problem:**
+Der Motion-Callback ist sehr rudimentär implementiert. Für die Projektbeschreibung wird eine **strukturierte Bewegungserkennung** benötigt.
+
+### **Was zu tun ist:**
+1. **Motion-Callback Signatur erweitern:**
+   - Aktuell: `Callable[[np.ndarray], None]`
+   - Neu: `Callable[[np.ndarray, MotionResult], None]`
+
+2. **Integration mit MotionDetector vorbereiten:**
+   - Import von `MotionResult` aus `motion.py`
+   - Callback erweitern um Bewegungsergebnis-Parameter
+
+3. **Frame-Metadaten hinzufügen:**
+   - Timestamp pro Frame
+   - Frame-Nummer/Index für Debugging
+
+---
+
+## 🎯 **TODO 5: Konfiguration-Persistenz implementieren**
+
+### **Problem:**
+Aktuell werden UVC-Änderungen nur in RAM gespeichert: `setattr(self.uvc_config, name, value)`. Für eine praktische Anwendung sollten Einstellungen **persistent** gespeichert werden.
+
+### **Was zu tun ist:**
+1. **Methode hinzufügen: `save_uvc_config()`**
+   - Schreibt aktuelle UVC-Werte zurück in YAML-Config
+   - Nutzt die bestehende `load_config()`/`save_config()` Infrastruktur
+
+2. **Auto-Save Option:**
+   - Konfigurierbare automatische Speicherung bei UVC-Änderungen
+   - GUI-Button für manuelles Speichern
+
+3. **Backup und Restore:**
+   - Möglichkeit, auf Default-Werte zurückzusetzen
+   - Backup der letzten funktionierenden Konfiguration
+
+---
+
+## 🎯 **TODO 6: Erweiterte Frame-Verwaltung**
+
+### **Problem:**
+Für die Bewegungserkennung und E-Mail-Benachrichtigung werden **spezielle Frame-Features** benötigt.
+
+### **Was zu tun ist:**
+1. **Frame-Buffer implementieren:**
+   - Speicherung der letzten N Frames für Motion-Analyse
+   - Konfigurierbare Buffer-Größe
+
+2. **Snapshot-Verbesserung:**
+   - `take_snapshot()` erweitern um Metadaten (Timestamp, Kamera-Settings)
+   - Verschiedene Ausgabeformate (JPEG-Qualität konfigurierbar)
+
+3. **ROI-Frame-Extraktion:**
+   - Methode um ROI-Bereiche aus Frames zu extrahieren
+   - Integration mit `MotionDetectionConfig.get_roi()`
+
+---
+
+## 🎯 **TODO 7: Error-Handling und Robustheit verbessern**
+
+### **Problem:**
+Für eine produktive Anwendung ist das Error-Handling noch nicht ausreichend robust.
+
+### **Was zu tun ist:**
+1. **Kamera-Reconnection:**
+   - Automatische Wiederverbindung bei Kamera-Ausfall
+   - Retry-Logik mit konfigurierbaren Intervallen
+
+2. **UVC-Property Validation:**
+   - Prüfung der unterstützten Properties vor dem Setzen
+   - Graceful Degradation bei nicht unterstützten Features
+
+3. **Performance-Monitoring:**
+   - FPS-Monitoring und Logging
+   - Speicherverbrauch der Frame-Buffer überwachen
+
+---
+
+## 🎯 **TODO 8: GUI-Integration vorbereiten**
+
+### **Problem:**
+Die aktuelle GUI-Integration ist minimal. Für die vollständige Projektbeschreibung werden **erweiterte GUI-Features** benötigt.
+
+### **Was zu tun ist:**
+1. **Status-Eigenschaften hinzufügen:**
+   - `get_camera_status()` → Dict mit aktuellen Kamera-Infos
+   - `get_uvc_current_values()` → Aktuelle UVC-Werte auslesen
+   - `is_motion_active` → Boolean für GUI-Status
+
+2. **Event-System implementieren:**
+   - Callbacks für Kamera-Status-Änderungen
+   - Events bei UVC-Parameter-Änderungen
+   - Motion-Status-Events für GUI-Updates
+
+3. **Vereinfachte GUI-Methoden:**
+   - `get_all_uvc_ranges()` → Min/Max-Werte für GUI-Slider
+   - `reset_to_defaults()` → Alle UVC-Parameter zurücksetzen
+
+---
+
+## 🎯 **TODO 9: Integration mit Alert-System vorbereiten**
+
+### **Problem:**
+Für die E-Mail-Benachrichtigung muss die `camera.py` mit dem Alert-System kommunizieren.
+
+### **Was zu tun ist:**
+1. **Alert-Callback hinzufügen:**
+   - Separater Callback für Alert-Ereignisse
+   - Parameter: Frame, Timestamp, Motion-Status
+
+2. **Image-Capture für Alerts:**
+   - Hochqualitative Snapshot-Funktion für E-Mail-Anhänge
+   - Konfigurierbare Bildqualität und -format
+
+3. **Timing-Integration:**
+   - Zeitstempel-Verwaltung für Alert-Delays
+   - Integration mit `MeasurementConfig.alert_delay_seconds`
+
+---
+
+## 🎯 **TODO 10: Code-Vereinfachung und Dokumentation**
+
+### **Problem:**
+Für ein "möglichst einfaches Programm" sollte die Komplexität reduziert werden, ohne Funktionalität zu verlieren.
+
+### **Was zu tun ist:**
+1. **Methoden-Konsolidierung:**
+   - Ähnliche UVC-Setter in generische Methoden zusammenfassen
+   - Redundante Code-Pfade eliminieren
+
+2. **Erweiterte Docstrings:**
+   - Alle öffentlichen Methoden vollständig dokumentieren
+   - Beispiele für häufige Use-Cases hinzufügen
+
+3. **Type-Hints vervollständigen:**
+   - Alle Parameter und Return-Types vollständig annotieren
+   - Generic Types für bessere IDE-Unterstützung
+
+---
+
+## 📊 **Prioritäts-Reihenfolge für die Umsetzung:**
+
+### **🔥 Kritisch (für Basis-Funktionalität):**
+1. **TODO 1** - UVC-Konfiguration korrigieren
+2. **TODO 2** - Fehlende UVC-Parameter ergänzen
+3. **TODO 4** - Motion-Callback Integration
+
+### **⚡ Hoch (für GUI-Integration):**
+4. **TODO 3** - Erweiterte UVC-Setter
+5. **TODO 8** - GUI-Integration vorbereiten
+6. **TODO 6** - Frame-Verwaltung erweitern
+
+### **📋 Mittel (für Produktionsreife):**
+7. **TODO 5** - Konfiguration-Persistenz
+8. **TODO 9** - Alert-System Integration
+9. **TODO 7** - Error-Handling verbessern
+
+### **📝 Niedrig (für Wartbarkeit):**
+10. **TODO 10** - Code-Vereinfachung
+
+**Die `camera.py` ist bereits sehr solide aufgebaut - diese TODOs optimieren sie für die spezifischen Anforderungen der Projektbeschreibung.**
+"""
