@@ -5,8 +5,6 @@ import platform
 import signal
 import threading
 import time
-from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from typing import Callable, Optional, Union, Dict, Any
 import os
@@ -37,50 +35,23 @@ class Camera:
         # Ensure image save path exists if alert images should be saved
         if getattr(self.measurement_config, 'save_alert_images', False):
             self.measurement_config.ensure_save_path()
-
         # -- Interne State‑Variablen --
         self.video_capture: Optional[cv2.VideoCapture] = None
         self.current_frame: Optional[np.ndarray] = None
         self.frame_lock = threading.Lock()
         self.is_running = False
-        self.frame_thread: Optional[threading.Thread] = None
         self.motion_callback: Optional[Callable[[np.ndarray, MotionResult], None]] = None
-        self.alert_callback: Optional[Callable[[np.ndarray, float, bool], None]] = None
-        self.executor = ThreadPoolExecutor(max_workers=2)
-        
         # -- Motion Detection --
         self.motion_detector: Optional[MotionDetector] = None
         self.motion_enabled = False
         self.frame_count = 0
         # Letztes Bewegungsergebnis für Metrics
         self.last_motion_result: Optional[MotionResult] = None
-        # Frame-Buffer für die letzten 5 Frames
-        self.frame_buffer = deque(maxlen=5)
-        # ---- Error-Handling & Performance Monitoring ---- #
         # Reconnection settings
-        self.reconnect_interval = getattr(self.webcam_config, 'reconnect_interval', 5)
-        self.max_reconnect_attempts = getattr(self.webcam_config, 'max_reconnect_attempts', 5)
+        self.reconnect_interval = 5
+        self.max_reconnect_attempts = 5
         self._reconnect_attempts = 0
-        # Performance monitoring
-        self.monitoring_interval = getattr(self.webcam_config, 'monitoring_interval', 5.0)
-        self._last_monitor_time = time.time()
-        self._last_monitor_frame_count = 0
-        # ---- GUI Event System ---- #
-        # Listeners for camera status, UVC parameter changes, and motion events
-        self._status_listeners: list[Callable[[dict], None]] = []
-        self._param_listeners: list[Callable[[str, float], None]] = []
-        self._motion_listeners: list[Callable[[MotionResult], None]] = []
-        # Alert system state
-        self._last_alert_time = 0.0
-        # ---- Error-Handling & Performance Monitoring ---- #
-        # Automatic reconnection settings
-        self.reconnect_interval = getattr(self.webcam_config, 'reconnect_interval', 5)
-        self.max_reconnect_attempts = getattr(self.webcam_config, 'max_reconnect_attempts', 5)
-        self._reconnect_attempts = 0
-        # Performance monitoring
-        self.monitoring_interval = 5.0
-        self._last_monitor_time = time.time()
-        self._last_monitor_frame_count = 0
+        
         # -- Platzhalterbild für fehlende Kamera --
         black_1px = (
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAA"
@@ -104,23 +75,6 @@ class Camera:
 
         # -- Kamera initialisieren --
         self._initialize_camera()
-
-    # --------------------- Low‑Level‑Hilfsfunktionen ------------------- #
-
-    def _safe_set(self, prop: int, value: float) -> bool:
-        """Setzt ein VideoCapture‑Property und prüft, ob es übernommen wurde."""
-        if not self.video_capture or not self.video_capture.isOpened():
-            self.logger.error("safe_set: Kamera nicht verfügbar")
-            return False
-
-        ok = self.video_capture.set(prop, value)
-        actual = self.video_capture.get(prop)
-        if not ok or abs(actual - value) > 1e-3:
-            self.logger.debug(f"Property {prop} Wunsch={value}, erhalten={actual}")
-            return False
-        return True
-
-    # ------------------------- Kamera öffnen -------------------------- #
 
     def _initialize_camera(self) -> None:
         try:
@@ -167,7 +121,31 @@ class Camera:
             self.video_capture.get(cv2.CAP_PROP_FPS),
         )
 
-    # ---------------------- UVC‑Steuerung anwenden -------------------- #
+    # --------------------- Low‑Level‑Hilfsfunktionen ------------------- #
+
+    def _safe_set(self, prop: int, value: float) -> bool:
+        """Setzt ein VideoCapture‑Property und prüft, ob es übernommen wurde."""
+        if not self.video_capture or not self.video_capture.isOpened():
+            self.logger.error("safe_set: Kamera nicht verfügbar")
+            return False
+
+        ok = self.video_capture.set(prop, value)
+        actual = self.video_capture.get(prop)
+        if not ok or abs(actual - value) > 1e-3:
+            self.logger.debug(f"Property {prop} Wunsch={value}, erhalten={actual}")
+            return False
+        return True
+    
+    def save_uvc_config(self, path: Optional[str] = None) -> bool:
+            """Speichert die aktuellen UVC-Einstellungen zurück in die Config-Datei."""
+            cfg_path = path or self.config_path
+            try:
+                save_config(self.app_config, cfg_path)
+                self.logger.info(f"UVC-Konfiguration gespeichert: {cfg_path}")
+                return True
+            except Exception as exc:
+                self.logger.error(f"Fehler beim Speichern der UVC-Konfiguration: {exc}")
+                return False
 
     def _apply_uvc_controls(self) -> None:
         if not self.video_capture:
@@ -183,19 +161,6 @@ class Camera:
 
         def _set_auto_wb(auto: bool) -> None:
             self._safe_set(cv2.CAP_PROP_AUTO_WB, 1 if auto else 0)
-
-        # ---------------- Configuration-Persistenz ----------------------- #
-    
-        def save_uvc_config(self, path: Optional[str] = None) -> bool:
-            """Speichert die aktuellen UVC-Einstellungen zurück in die Config-Datei."""
-            cfg_path = path or self.config_path
-            try:
-                save_config(self.app_config, cfg_path)
-                self.logger.info(f"UVC-Konfiguration gespeichert: {cfg_path}")
-                return True
-            except Exception as exc:
-                self.logger.error(f"Fehler beim Speichern der UVC-Konfiguration: {exc}")
-                return False
 
         # ----------------- Exposure -----------------
         if hasattr(self.uvc_config, "exposure") and self.uvc_config.exposure:
@@ -230,13 +195,102 @@ class Camera:
                     self.logger.debug(f"Setzen von {name} ({value}) wurde vom Treiber ignoriert")
 
         self.logger.info("UVC-Controls angewendet")
-        # Notify status listeners after UVC changes
-        status = self.get_camera_status()
-        for cb in self._status_listeners:
-            try:
-                cb(status)
-            except Exception:
-                self.logger.error("Status listener error after UVC apply")
+
+    # ------------------ Öffentliche Setter‑Methoden ------------------- #
+
+    # Allgemeiner Setter wird genutzt, damit GUI‑Slider etc. einfach callen können
+    def _set_uvc_parameter(self, name: str, cv_prop: int, value: float) -> bool:
+        if not self._safe_set(cv_prop, value):
+            self.logger.warning(f"{name} konnte nicht gesetzt werden – Treiber ignoriert Wert {value}")
+            return False
+        setattr(self.uvc_config, name, value)  # nur RAM – Persistenz separat
+        return True
+
+    # Convenience‑Funktionen (können bei Bedarf erweitert werden)
+    def set_brightness(self, value: float) -> bool:
+        return self._set_uvc_parameter("brightness", cv2.CAP_PROP_BRIGHTNESS, value)
+
+    def set_contrast(self, value: float) -> bool:
+        return self._set_uvc_parameter("contrast", cv2.CAP_PROP_CONTRAST, value)
+
+    def set_saturation(self, value: float) -> bool:
+        return self._set_uvc_parameter("saturation", cv2.CAP_PROP_SATURATION, value)
+
+    def set_exposure(self, value: float, auto: Optional[bool] = None) -> bool:
+        # Auto-Exposure falls angegeben
+        if auto is not None:
+            if not self.set_auto_exposure(auto):
+                return False
+        # Manueller Exposure-Wert (auto=False oder auto=None)
+        int_value = int(value)
+        success = self._safe_set(cv2.CAP_PROP_EXPOSURE, int_value)
+        if success and hasattr(self.uvc_config, "exposure") and self.uvc_config.exposure:
+            self.uvc_config.exposure.value = int_value
+            self.uvc_config.exposure.auto = False
+        return success
+
+    def set_hue(self, value: float) -> bool:
+        return self._set_uvc_parameter("hue", cv2.CAP_PROP_HUE, value)
+
+    def set_sharpness(self, value: float) -> bool:
+        return self._set_uvc_parameter("sharpness", cv2.CAP_PROP_SHARPNESS, value)
+
+    def set_gamma(self, value: float) -> bool:
+        return self._set_uvc_parameter("gamma", cv2.CAP_PROP_GAMMA, value)
+
+    def set_gain(self, value: float) -> bool:
+        return self._set_uvc_parameter("gain", cv2.CAP_PROP_GAIN, value)
+
+    def set_backlight_compensation(self, value: float) -> bool:
+        return self._set_uvc_parameter("backlight_compensation", cv2.CAP_PROP_BACKLIGHT, value)
+
+    def set_auto_exposure(self, auto: bool) -> bool:
+        """Setzt Auto-Exposure ohne Wert zu ändern"""
+        if platform.system() == "Windows":
+            result = self._safe_set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75 if auto else 0.25)
+        else:
+            result = self._safe_set(cv2.CAP_PROP_AUTO_EXPOSURE, 3 if auto else 1)
+        # Update der verschachtelten Konfiguration
+        if hasattr(self.uvc_config, "exposure") and self.uvc_config.exposure:
+            self.uvc_config.exposure.auto = auto
+        return result
+
+    def set_manual_exposure(self, value: float) -> bool:
+        """Setzt manuellen Exposure-Wert und deaktiviert Auto-Exposure"""
+        self.set_auto_exposure(False)
+        return self.set_exposure(value, auto=False)
+
+    def set_auto_white_balance(self, auto: bool) -> bool:
+        """Setzt Auto-White-Balance ohne Wert zu ändern"""
+        result = self._safe_set(cv2.CAP_PROP_AUTO_WB, 1 if auto else 0)
+        # Update der verschachtelten Konfiguration
+        if hasattr(self.uvc_config, "white_balance") and self.uvc_config.white_balance:
+            self.uvc_config.white_balance.auto = auto
+        return result
+
+    def set_manual_white_balance(self, value: float) -> bool:
+        """Setzt manuellen White-Balance-Wert und deaktiviert Auto-White-Balance"""
+        self.set_auto_white_balance(False)
+        # Manueller WB-Wert
+        int_value = int(value)
+        success = self._safe_set(cv2.CAP_PROP_WHITE_BALANCE_BLUE_U, int_value)
+        if success and hasattr(self.uvc_config, "white_balance") and self.uvc_config.white_balance:
+            self.uvc_config.white_balance.value = int_value
+        return success
+
+    def set_white_balance(self, value: float, auto: Optional[bool] = None) -> bool:
+        """Setzt den White-Balance-Wert und/oder den Auto-Modus."""
+        # Auto-White-Balance falls angegeben
+        if auto is not None:
+            if not self.set_auto_white_balance(auto):
+                return False
+        # Manueller WB-Wert (auto=False oder auto=None)
+        int_value = int(value)
+        success = self._safe_set(cv2.CAP_PROP_WHITE_BALANCE_BLUE_U, int_value)
+        if success and hasattr(self.uvc_config, "white_balance") and self.uvc_config.white_balance:
+            self.uvc_config.white_balance.value = int_value
+            self.uvc_config.white_balance.auto = False        
+        return success
 
     # ------------------ Laufende Bilderfassung ------------------------ #
 
@@ -249,11 +303,6 @@ class Camera:
         self.is_running = True
         # Notify status listeners
         status = self.get_camera_status()
-        for cb in self._status_listeners:
-            try:
-                cb(status)
-            except Exception:
-                self.logger.error("Status listener error on start")
         self.frame_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.frame_thread.start()
 
@@ -261,19 +310,6 @@ class Camera:
         self.is_running = False
         if self.frame_thread and self.frame_thread.is_alive():
             self.frame_thread.join(timeout=2)
-        # Notify status listeners
-        status = self.get_camera_status()
-        for cb in self._status_listeners:
-            try:
-                cb(status)
-            except Exception:
-                self.logger.error("Status listener error on stop")
-        # Notify GUI about camera status
-        for cb in self._status_listeners:
-            try:
-                cb(self.get_camera_status())
-            except Exception:
-                self.logger.error("Status listener callback error")
 
     def _capture_loop(self) -> None:
          while self.is_running:
@@ -286,8 +322,7 @@ class Camera:
              self.frame_count += 1
              with self.frame_lock:
                  self.current_frame = frame.copy()
-                 # Puffer aktualisieren
-                 self.frame_buffer.append(frame.copy())
+                 
                  
              # Motion Detection ausführen falls aktiviert
              if self.motion_detector:
@@ -296,38 +331,7 @@ class Camera:
                      self.last_motion_result = motion_result
                      if self.motion_callback:
                          self.motion_callback(frame, motion_result)
-                     # Notify GUI motion listeners
-                     for cb in self._motion_listeners:
-                         try:
-                             cb(motion_result)
-                         except Exception:
-                             self.logger.error("Motion listener callback error")
-                     if self.alert_callback and motion_result.motion_detected:
-                         now = time.time()
-                         delay = getattr(self.app_config.measurement, 'alert_delay_seconds', 60)
-                         if now - self._last_alert_time >= delay:
-                             # Capture high-quality snapshot for alert
-                             quality = getattr(self.app_config.measurement, 'image_quality', 95)
-                             snapshot = self.take_high_quality_snapshot(quality)
-                             # Save alert image if configured
-                             if getattr(self.app_config.measurement, 'save_alert_images', False):
-                                 path = self.app_config.measurement.image_save_path
-                                 fmt = self.app_config.measurement.image_format.lower()
-                                 ts = int(motion_result.timestamp)
-                                 filename = f"alert_{ts}.{fmt}"
-                                 alert_path = os.path.join(path, filename)
-                                 try:
-                                     with open(alert_path, 'wb') as f:
-                                         f.write(snapshot or b'')
-                                 except Exception as e:
-                                     self.logger.error(f"Fehler beim Speichern des Alert-Bildes: {e}")
-                             # Invoke alert callback with snapshot bytes
-                             try:
-                                 # Invoke alert callback with current frame and motion info
-                                 self.alert_callback(frame, motion_result.timestamp, motion_result.motion_detected)
-                             except Exception as e:
-                                 self.logger.error(f"Alert callback error: {e}")
-                             self._last_alert_time = now
+                     
                  except Exception as exc:
                      self.logger.error(f"Motion-Detection-Fehler: {exc}")
              elif self.motion_callback:
@@ -359,169 +363,7 @@ class Camera:
              else:
                  self._reconnect_attempts = 0  # Reset bei erfolgreichem Frame-Grab
 
-             # ---- Performance Monitoring ---- #
-             if time.time() - self._last_monitor_time >= self.monitoring_interval:
-                 # Berechne FPS seit dem letzten Monitoring
-                 elapsed_time = time.time() - self._last_monitor_time
-                 fps = self.frame_count - self._last_monitor_frame_count
-                 self.logger.info(f"Performance-Monitoring: {fps/elapsed_time:.1f} FPS")
-                 
-                 # Werte für das nächste Monitoring speichern
-                 self._last_monitor_time = time.time()
-                 self._last_monitor_frame_count = self.frame_count
 
-    # ------------------ Öffentliche Setter‑Methoden ------------------- #
-
-    # Allgemeiner Setter wird genutzt, damit GUI‑Slider etc. einfach callen können
-    def _set_uvc_parameter(self, name: str, cv_prop: int, value: float) -> bool:
-        if not self._safe_set(cv_prop, value):
-            self.logger.warning(f"{name} konnte nicht gesetzt werden – Treiber ignoriert Wert {value}")
-            return False
-        setattr(self.uvc_config, name, value)  # nur RAM – Persistenz separat
-        # Notify UVC parameter change
-        for cb in self._param_listeners:
-            try:
-                cb(name, value)
-            except Exception:
-                self.logger.error(f"UVC-Param-Listener error for {name}")
-        return True
-
-    # Convenience‑Funktionen (können bei Bedarf erweitert werden)
-    def set_brightness(self, value: float) -> bool:
-        return self._set_uvc_parameter("brightness", cv2.CAP_PROP_BRIGHTNESS, value)
-
-    def set_contrast(self, value: float) -> bool:
-        return self._set_uvc_parameter("contrast", cv2.CAP_PROP_CONTRAST, value)
-
-    def set_saturation(self, value: float) -> bool:
-        return self._set_uvc_parameter("saturation", cv2.CAP_PROP_SATURATION, value)
-
-    def set_exposure(self, value: float, auto: Optional[bool] = None) -> bool:
-        # Auto-Exposure falls angegeben
-        if auto is not None:
-            if not self.set_auto_exposure(auto):
-                return False
-            if auto:
-                # Notify auto-exposure change
-                for cb in self._param_listeners:
-                    try:
-                        cb('auto_exposure', float(auto))
-                    except Exception:
-                        self.logger.error("UVC-Param listener error for auto_exposure")
-                return True
-        # Manueller Exposure-Wert (auto=False oder auto=None)
-        int_value = int(value)
-        success = self._safe_set(cv2.CAP_PROP_EXPOSURE, int_value)
-        if success and hasattr(self.uvc_config, "exposure") and self.uvc_config.exposure:
-            self.uvc_config.exposure.value = int_value
-            self.uvc_config.exposure.auto = False
-            # Notify exposure value change
-            for cb in self._param_listeners:
-                try:
-                    cb('exposure', int_value)
-                except Exception:
-                    self.logger.error("UVC-Param listener error for exposure")
-        return success
-
-    def set_hue(self, value: float) -> bool:
-        return self._set_uvc_parameter("hue", cv2.CAP_PROP_HUE, value)
-
-    def set_sharpness(self, value: float) -> bool:
-        return self._set_uvc_parameter("sharpness", cv2.CAP_PROP_SHARPNESS, value)
-
-    def set_gamma(self, value: float) -> bool:
-        return self._set_uvc_parameter("gamma", cv2.CAP_PROP_GAMMA, value)
-
-    def set_gain(self, value: float) -> bool:
-        return self._set_uvc_parameter("gain", cv2.CAP_PROP_GAIN, value)
-
-    def set_backlight_compensation(self, value: float) -> bool:
-        return self._set_uvc_parameter("backlight_compensation", cv2.CAP_PROP_BACKLIGHT, value)
-
-    def set_auto_exposure(self, auto: bool) -> bool:
-        """Setzt Auto-Exposure ohne Wert zu ändern"""
-        if platform.system() == "Windows":
-            result = self._safe_set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75 if auto else 0.25)
-        else:
-            result = self._safe_set(cv2.CAP_PROP_AUTO_EXPOSURE, 3 if auto else 1)
-        # Update der verschachtelten Konfiguration
-        if hasattr(self.uvc_config, "exposure") and self.uvc_config.exposure:
-            self.uvc_config.exposure.auto = auto
-            # Notify auto-exposure change
-            for cb in self._param_listeners:
-                try:
-                    cb('auto_exposure', float(auto))
-                except Exception:
-                    self.logger.error("UVC-Param listener error for auto_exposure")
-        return result
-
-    def set_manual_exposure(self, value: float) -> bool:
-        """Setzt manuellen Exposure-Wert und deaktiviert Auto-Exposure"""
-        self.set_auto_exposure(False)
-        return self.set_exposure(value, auto=False)
-
-    def set_auto_white_balance(self, auto: bool) -> bool:
-        """Setzt Auto-White-Balance ohne Wert zu ändern"""
-        result = self._safe_set(cv2.CAP_PROP_AUTO_WB, 1 if auto else 0)
-        # Update der verschachtelten Konfiguration
-        if hasattr(self.uvc_config, "white_balance") and self.uvc_config.white_balance:
-            self.uvc_config.white_balance.auto = auto
-            # Notify auto-white-balance change
-            for cb in self._param_listeners:
-                try:
-                    cb('auto_white_balance', float(auto))
-                except Exception:
-                    self.logger.error("UVC-Param listener error for auto_white_balance")
-        return result
-
-    def set_manual_white_balance(self, value: float) -> bool:
-        """Setzt manuellen White-Balance-Wert und deaktiviert Auto-White-Balance"""
-        self.set_auto_white_balance(False)
-        # Manueller WB-Wert
-        int_value = int(value)
-        success = self._safe_set(cv2.CAP_PROP_WHITE_BALANCE_BLUE_U, int_value)
-        if success and hasattr(self.uvc_config, "white_balance") and self.uvc_config.white_balance:
-            self.uvc_config.white_balance.value = int_value
-            # Notify manual white-balance change
-            for cb in self._param_listeners:
-                try:
-                    cb('white_balance', int_value)
-                except Exception:
-                    self.logger.error("UVC-Param listener error for white_balance")
-        return success
-
-    def set_white_balance(self, value: float, auto: Optional[bool] = None) -> bool:
-        """Setzt den White-Balance-Wert und/oder den Auto-Modus."""
-        # Auto-White-Balance falls angegeben
-        if auto is not None:
-            if not self.set_auto_white_balance(auto):
-                return False
-            if auto:
-                # Notify auto white-balance change
-                for cb in self._param_listeners:
-                    try:
-                        cb('auto_white_balance', float(auto))
-                    except Exception:
-                        self.logger.error("UVC-Param listener error for auto_white_balance")
-                return True
-        # Manueller WB-Wert (auto=False oder auto=None)
-        int_value = int(value)
-        success = self._safe_set(cv2.CAP_PROP_WHITE_BALANCE_BLUE_U, int_value)
-        if success and hasattr(self.uvc_config, "white_balance") and self.uvc_config.white_balance:
-            self.uvc_config.white_balance.value = int_value
-            self.uvc_config.white_balance.auto = False
-            # Notify white-balance value change
-            for cb in self._param_listeners:
-                try:
-                    cb('white_balance', int_value)
-                except Exception:
-                    self.logger.error("UVC-Param listener error for white_balance")
-        return success
-
-    def set_zoom(self, value: float) -> bool:
-        """Setzt Zoom-Level falls von der Kamera unterstützt"""
-        return self._set_uvc_parameter("zoom", cv2.CAP_PROP_ZOOM, value)
-    
     # ---------------- Motion-Detection Steuerung --------------------- #
     def enable_motion_detection(self, callback: Callable[[np.ndarray, MotionResult], None]) -> None:
         """Aktiviert die Bewegungserkennung und setzt den Callback."""
@@ -667,32 +509,17 @@ class Camera:
         with self.frame_lock:
             return None if self.current_frame is None else self.current_frame.copy()
 
-    def get_frame_buffer(self) -> list[np.ndarray]:
-        """Gibt die letzten N Frames aus dem Puffer zurück."""
-        return list(self.frame_buffer)
-
-    def take_snapshot(self, include_metadata: bool = False) -> Optional[Union[np.ndarray, Dict[str, Any]]]:
+    def take_snapshot(self) -> Optional[Union[np.ndarray, Dict[str, Any]]]:
         """Macht einen Snapshot der aktuellen Kamera"""
         if not self.video_capture or not self.video_capture.isOpened():
             return None
         ret, frame = self.video_capture.read()
         snapshot = frame.copy() if ret else self.get_current_frame()
-        
-        if include_metadata and snapshot is not None:
-            metadata = {
-                'timestamp': time.time(),
-                'frame_count': self.frame_count,
-                'resolution': {'width': int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                               'height': int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))},
-                'uvc_config': asdict(self.uvc_config)
-            }
-            self.logger.debug(f"Snapshot mit Metadaten erstellt: {metadata}")
-            return {'frame': snapshot, 'metadata': metadata}
         return snapshot
 
-    def take_high_quality_snapshot(self, jpeg_quality: int = 95) -> Optional[bytes]:
+    def take_hq_snapshot(self, jpeg_quality: int = 95) -> Optional[bytes]:
         """Macht einen hochqualitativen Snapshot für E-Mail-Anhänge"""
-        result = self.take_snapshot(include_metadata=False)
+        result = self.take_snapshot()
         if result is None:
             return None
         # Extrahiere reines Frame-Array
@@ -700,38 +527,13 @@ class Camera:
         if frame_array is None or not isinstance(frame_array, np.ndarray):
             self.logger.error("Invalid frame type for JPEG encoding")
             return None
-        # Hochqualitative JPEG-Kodierung
+        # HQ JPEG-Kodierung
         encode_params = [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
         success, encoded = cv2.imencode('.jpg', frame_array, encode_params)
         if not success:
             self.logger.error("JPEG encoding failed")
             return None
         return encoded.tobytes()
-
-    def extract_roi_frame(self, frame: Optional[np.ndarray] = None) -> Optional[np.ndarray]:
-        """Extrahiert ROI-Bereich aus dem Frame für Motion-Detection"""
-        if frame is None:
-            frame = self.get_current_frame()
-        if frame is None:
-            return None
-        # ROI aus Config vor MotionDetector bevorzugen
-        config_roi = self.app_config.motion_detection.get_roi()
-        if config_roi.enabled:
-            x, y, w, h = max(0, config_roi.x), max(0, config_roi.y), config_roi.width, config_roi.height
-         
-            h_f, w_f = frame.shape[:2]
-            x2 = min(w_f, x + w)
-            y2 = min(h_f, y + h)
-            return frame[y:y2, x:x2]
-        # Fallback auf MotionDetector-ROI
-        roi = getattr(self.motion_detector, 'roi', None)
-        if self.motion_detector and roi and getattr(roi, 'enabled', False):
-            h_f, w_f = frame.shape[:2]
-            x, y = max(0, roi.x), max(0, roi.y)
-            x2 = min(w_f, x + roi.width)
-            y2 = min(h_f, y + roi.height)
-            return frame[y:y2, x:x2]
-        return frame
 
     # ------------------- FastAPI / NiceGUI Integration --------------- #
 
@@ -780,19 +582,6 @@ class Camera:
         self._setup_routes()
         img = ui.interactive_image().classes("w-full h-full")
         ui.timer(0.1, lambda: img.set_source(f"/video/frame?{time.time()}"))
-    
-        # ---------------- GUI Event Registration ------------------------ #
-    def on_uvc_param_change(self, callback: Callable[[str, float], None]) -> None:
-        """Register callback for UVC parameter changes: (name, value)"""
-        self._param_listeners.append(callback)
-
-    def on_camera_status_change(self, callback: Callable[[dict], None]) -> None:
-        """Register callback for camera status updates."""
-        self._status_listeners.append(callback)
-
-    def on_motion_status_change(self, callback: Callable[[MotionResult], None]) -> None:
-        """Register callback for motion detection events."""
-        self._motion_listeners.append(callback)
 
     # ---------------- GUI Convenience Methods ----------------------- #
     def get_all_uvc_ranges(self) -> dict:
