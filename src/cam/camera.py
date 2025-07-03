@@ -377,10 +377,6 @@ class Camera:
         self.motion_enabled = False
         self.motion_callback = None
 
-    def set_alert_callback(self, callback: Callable[[np.ndarray, float, bool], None]) -> None:
-        """Setzt den Callback für Alert-Ereignisse bei erkannter Bewegung."""
-        self.alert_callback = callback
-
     def is_motion_active(self) -> bool:
         """Gibt zurück, ob die Bewegungserkennung aktiv ist."""
         return self.motion_enabled
