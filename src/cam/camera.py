@@ -75,6 +75,11 @@ class Camera:
 
         # -- Kamera initialisieren --
         self._initialize_camera()
+        ret, frame = self.video_capture.read() if self.video_capture else (False, None)
+        if not ret or frame is None:
+            self.logger.debug("Frame-Grab fehlgeschlagen")
+            time.sleep(0.5)
+            self._initialize_camera()
 
     def _initialize_camera(self) -> None:
         try:
@@ -301,8 +306,6 @@ class Camera:
             raise RuntimeError("Kamera nicht verfügbar")
 
         self.is_running = True
-        # Notify status listeners
-        status = self.get_camera_status()
         self.frame_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.frame_thread.start()
 
@@ -314,10 +317,29 @@ class Camera:
     def _capture_loop(self) -> None:
          while self.is_running:
              ret, frame = self.video_capture.read() if self.video_capture else (False, None)
+
              if not ret or frame is None:
-                 self.logger.debug("Frame-Grab fehlgeschlagen")
-                 time.sleep(0.05)
-                 continue
+                self.logger.debug("Frame-Grab fehlgeschlagen")
+                if self.video_capture and self.video_capture.isOpened(): self.video_capture.release()
+                 # Reconnect-Logik
+                self._reconnect_attempts += 1
+                if self._reconnect_attempts <= self.max_reconnect_attempts:
+                    self.logger.warning(
+                        f"Kamera nicht erreichbar, versuche erneut ({self._reconnect_attempts}/{self.max_reconnect_attempts})"
+                    )
+                    time.sleep(self.reconnect_interval)
+                    try:
+                        self._initialize_camera()
+                    except Exception as exc:
+                        self.logger.error(f"Reconnect fehlgeschlagen: {exc}")
+                    continue
+                else:
+                    self.logger.error("Maximale Reconnect-Versuche erreicht")
+                    self.stop_frame_capture()
+                    break
+
+             # erfolgreicher Frame-Grab → Zähler zurücksetzen
+             self._reconnect_attempts = 0
                  
              self.frame_count += 1
              with self.frame_lock:
@@ -325,7 +347,7 @@ class Camera:
                  
                  
              # Motion Detection ausführen falls aktiviert
-             if self.motion_detector:
+             if self.motion_detector and self.motion_enabled:
                  try:
                      motion_result = self.motion_detector.detect_motion(frame)
                      self.last_motion_result = motion_result
@@ -348,20 +370,6 @@ class Camera:
                      self.motion_callback(frame, dummy_result)
                  except Exception as exc:
                      self.logger.error(f"Motion-Callback-Fehler: {exc}")
-
-             # ---- Error-Handling & Performance Monitoring ---- #
-             # Kamera-Reconnect versuchen falls aktiviert
-             if not ret:
-                 self._reconnect_attempts += 1
-                 if self._reconnect_attempts <= self.max_reconnect_attempts:
-                     self.logger.warning(f"Kamera nicht erreichbar, versuche erneut zu verbinden ({self._reconnect_attempts}/{self.max_reconnect_attempts})")
-                     time.sleep(self.reconnect_interval)
-                     self._initialize_camera()  # Reconnect versuchen
-                 else:
-                     self.logger.error("Maximale Anzahl an Wiederverbindungsversuchen erreicht")
-                     self.stop_frame_capture()
-             else:
-                 self._reconnect_attempts = 0  # Reset bei erfolgreichem Frame-Grab
 
 
     # ---------------- Motion-Detection Steuerung --------------------- #

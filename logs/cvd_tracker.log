@@ -1,0 +1,10 @@
+2025-07-03 17:00:53 - camera - INFO - 🚀 Logging initialisiert: logs/cvd_tracker.log (max: 10MB, backups: 5)
+2025-07-03 17:00:53 - camera - INFO - Öffne Kamera‑Index 0 mit Backend 700
+2025-07-03 17:00:54 - camera - INFO - Aktive Auflösung: 640x480 @ 30.0 FPS
+2025-07-03 17:00:54 - camera - INFO - UVC-Controls angewendet
+2025-07-03 17:00:55 - camera - INFO - Kamera erfolgreich initialisiert
+2025-07-03 17:01:47 - camera - INFO - 🚀 Logging initialisiert: logs/cvd_tracker.log (max: 10MB, backups: 5)
+2025-07-03 17:01:47 - camera - INFO - Öffne Kamera‑Index 0 mit Backend 700
+2025-07-03 17:01:49 - camera - INFO - Aktive Auflösung: 640x480 @ 30.0 FPS
+2025-07-03 17:01:49 - camera - INFO - UVC-Controls angewendet
+2025-07-03 17:01:50 - camera - INFO - Kamera erfolgreich initialisiert
