@@ -1,17 +1,3 @@
-#!/usr/bin/env python3
-"""
-NiceGUI-App mit zwei Routen
-
-/               → „motion_setting“-Seite
-                  • alles übersichtlich in EINER ui.card gebündelt
-                  • Knob-Widget
-                  • Anzeige der aktuellen ROI-Koordinaten
-                  • Button zum ROI-Editor
-
-/roi-editor     → Vollbild-ROI-Editor
-                  • Reset- und Speicher-Buttons
-                  • Bild behält 16:9-Seiten­verhältnis
-"""
 from __future__ import annotations
 from typing import Optional, Tuple, TypedDict
 from pathlib import Path
@@ -84,7 +70,8 @@ def update_labels() -> None:
         tl_label.text = br_label.text = '–'
 
 def refresh_ui() -> None:
-    update_overlay(); update_labels()
+    update_overlay()
+    update_labels()
 
 def reset_roi() -> None:
     state['p1'] = state['p2'] = None
@@ -96,7 +83,9 @@ def handle_click(e: MouseEventArguments) -> None:
     if tgt:
         state[tgt] = (x, y)
     else:
-        reset_roi(); handle_click(e); return
+        reset_roi()
+        handle_click(e)
+        return
     refresh_ui()
 
 # ─── Speichern ───
@@ -131,25 +120,31 @@ def create_roi_editor() -> None:
                 with ui.row().classes('gap-2'):
                     ui.button('Zurücksetzen', icon='restart_alt',
                               color='primary', on_click=reset_roi)
-                    
+                    ui.button('Speichern', icon='save',
+                              color='primary', on_click=save_roi)
     refresh_ui()
 
 # ─────────────────────────── Routen ──────────────────────────────────────
 @ui.page('/')
 def motion_setting_page():
-    # ALLES in EINER Card
     with ui.card().classes('w-full max-w-md mx-auto shadow-4 rounded-borders p-6'):
         ui.label('Motion-Setting').classes('text-h5 mb-4')
 
-        with ui.card().tight().classes('w-52 mx-auto flex flex-col items-center mb-6'):
-            ui.label('Knob 1').classes('font-semibold mb-2')
-            ui.knob(min=0, max=100, value=50, show_value=True).classes('w-44 h-44')
-            ui.label('0 – 100').classes('text-sm text-gray-500')
+        # Knob und ROI-Controls nebeneinander
+        with ui.row().classes('items-center justify-center gap-6 mb-6'):
+            # Knob-Card
+            with ui.card().tight().classes('w-52 flex flex-col items-center'):
+                ui.label('Knob 1').classes('font-semibold mb-2')
+                ui.knob(min=0, max=100, value=50, show_value=True).classes('w-44 h-44')
+                ui.label('0 – 100').classes('text-sm text-gray-500')
 
-        ui.label(roi_text()).classes('text-md font-mono mb-4')
-
-        ui.button('ROI Editor öffnen', icon='crop',
-                  on_click=lambda: ui.navigate.to('/roi-editor'))
+            # ROI-Text und Button
+            with ui.column().classes('gap-2 items-start'):
+                global label_roi
+                label_roi = ui.label(roi_text()).classes('text-md font-mono')
+                btn = ui.button('ROI Editor öffnen', icon='crop',
+                                on_click=lambda: ui.navigate.to('/roi-editor'))
+                btn.tooltip('ROI Editor öffnen')
 
 @ui.page('/roi-editor')
 def roi_page():
