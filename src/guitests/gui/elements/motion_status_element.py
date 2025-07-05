@@ -24,14 +24,14 @@ def create_motion_status_element():
             timestamp_label = ui.label('').classes('text-body2')\
                                 .style('white-space: nowrap')
 
-        # Test-Button zum Umschalten ---------------------------------------
-        def toggle():
-            global motion_detected, last_changed
-            motion_detected = not motion_detected
-            last_changed = datetime.now()
-            refresh_view()
+            # Test-Button zum Umschalten ---------------------------------------
+            def toggle():
+                global motion_detected, last_changed
+                motion_detected = not motion_detected
+                last_changed = datetime.now()
+                refresh_view()
 
-        ui.button('Status umschalten (Test)', on_click=toggle)
+            ui.button('Status umschalten (Test)', on_click=toggle)
 
     def refresh_view() -> None:
         """Icon, Text und Zeitstempel aktualisieren."""
