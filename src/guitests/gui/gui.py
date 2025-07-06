@@ -37,7 +37,7 @@ def main() -> None:
             create_measurement_card()
 
         with ui.column().classes('gap-4'):
-            create_uvc_content()
+            create_uvc_content(camera=global_camera)
             create_motiondetection_card()
             create_emailcard()
 

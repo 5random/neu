@@ -17,5 +17,5 @@ def create_camfeed_content():
         ui.label('Camera Feed').classes('text-h6 font-semibold mb-2')
         videoimage = ui.interactive_image().classes('w-auto h-full rounded-lg shadow-md')
         
-        # Live-Video-Feed aktivieren (auskommentierte Zeile aktivieren)
+        # Live-Video-Feed aktualisieren
         ui.timer(interval=0.2, callback=lambda: videoimage.set_source(f'/video/frame?{time.time()}'))
