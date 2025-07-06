@@ -1,8 +1,18 @@
 from datetime import datetime, timedelta
 from nicegui import ui
 
+from src.alert import AlertSystem
+from src.config import load_config
+from src.measurement import MeasurementController
+
 def create_measurement_card():
+
+    config = load_config()
+    alert_system = AlertSystem(config.email, config.measurement)
+    measurement_controller = MeasurementController(config.measurement, alert_system)
+
     # ------------------------- Zustände -------------------------
+    
     running = False
     start_time: datetime | None = None
     max_duration: timedelta | None = None
@@ -24,6 +34,7 @@ def create_measurement_card():
 
     def update_view() -> None:
         """Aktualisiert Laufzeit, Fortschritt, Labels."""
+        status = measurement_controller.get_session_status()
         if running and start_time:
             elapsed = datetime.now() - start_time
 

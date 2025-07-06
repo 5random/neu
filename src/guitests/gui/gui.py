@@ -1,4 +1,4 @@
-from nicegui import ui
+from nicegui import ui, app
 from elements import (
     create_camfeed_content,
     create_emailcard,

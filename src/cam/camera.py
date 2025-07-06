@@ -575,6 +575,7 @@ class Camera:
     # ----------------------- GUI / Routing ---------------------------- #
 
     def _setup_routes(self):
+        
         @app.get("/video/frame")
         async def _video_route() -> Response:  # noqa: D401
             return await self.grab_video_frame()
