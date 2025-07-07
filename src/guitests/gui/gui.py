@@ -33,7 +33,7 @@ def main() -> None:
     with ui.grid(columns='2fr 1fr').classes('w-full gap-4 p-4'):
         with ui.column().classes('gap-4'):
             create_camfeed_content()
-            create_motion_status_element()
+            create_motion_status_element(global_camera)
             create_measurement_card()
 
         with ui.column().classes('gap-4'):
