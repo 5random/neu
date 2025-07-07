@@ -1,4 +1,10 @@
 from nicegui import ui, app
+import sys
+from pathlib import Path
+# Projekt-Root zum Python-Pfad hinzufügen
+project_root = Path(__file__).parents[3]
+sys.path.insert(0, str(project_root))
+
 from elements import (
     create_camfeed_content,
     create_emailcard,
@@ -7,12 +13,6 @@ from elements import (
     create_uvc_content,
     create_motiondetection_card,
 )
-import sys
-from pathlib import Path
-
-# Projekt-Root zum Python-Pfad hinzufügen
-project_root = Path(__file__).parents[3]
-sys.path.insert(0, str(project_root))
 
 from src.cam.camera import Camera
 
