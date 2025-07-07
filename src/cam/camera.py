@@ -463,19 +463,15 @@ class Camera:
 
     def get_uvc_ranges(self) -> dict:
         """Gibt Min/Max-Werte für GUI-Slider zurück"""
-        # Diese Werte sind typische Bereiche für UVC-Kameras
-        # In einer erweiterten Implementation könnte man diese von der Kamera selbst abfragen
-        #TODO: Dynamische Abfrage der Bereiche von der Kamera
-        #       (z.B. mit cv2.getTrackbarMin/Max, falls unterstützt
         return {
-            "brightness": {"min": 0, "max": 255, "default": 128},
-            "contrast": {"min": 0, "max": 255, "default": 128},
-            "saturation": {"min": 0, "max": 255, "default": 128},
-            "hue": {"min": -180, "max": 180, "default": 0},
-            "gain": {"min": 0, "max": 255, "default": 0},
-            "sharpness": {"min": 0, "max": 255, "default": 128},
-            "gamma": {"min": 1, "max": 500, "default": 100},
-            "backlight_compensation": {"min": 0, "max": 255, "default": 0},
+            "brightness": {"min": -64, "max": 64, "default": 0},
+            "contrast": {"min": 0, "max": 64, "default": 16},
+            "saturation": {"min": 0, "max": 128, "default": 64},
+            "hue": {"min": -40, "max": 40, "default": 0},
+            "gain": {"min": 0, "max": 100, "default": 10},
+            "sharpness": {"min": 0, "max": 14, "default": 2},
+            "gamma": {"min": 72, "max": 500, "default": 164},
+            "backlight_compensation": {"min": 0, "max": 160, "default": 42},
             "exposure": {"min": -13, "max": -1, "default": -6},
             "white_balance": {"min": 2800, "max": 6500, "default": 4600},
         }

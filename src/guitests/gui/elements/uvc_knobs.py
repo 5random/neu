@@ -29,6 +29,7 @@ def create_uvc_content(camera: Optional[Camera] = None):
 
     ranges = camera.get_uvc_ranges() if camera else {}
     current = camera.get_uvc_current_values() if camera else {}
+    #print(ranges)
 
     with ui.card().style(
         "align-self:stretch; justify-content:center; align-items:start;"
@@ -49,7 +50,7 @@ def create_uvc_content(camera: Optional[Camera] = None):
                 # Helligkeit
                 with ui.card().tight().classes('p-4 flex flex-col items-center'):
                     ui.label('Helligkeit').classes('font-semibold mb-2')
-                    brightness_range = ranges.get('brightness', {'min': 0, 'max': 255, 'default': 128})
+                    brightness_range = ranges.get('brightness', {'min': -64, 'max': 64, 'default': 0})
                     brightness_value = current.get('brightness', brightness_range['default'])
                     brightness_knob = ui.knob(min=brightness_range['min'], max=brightness_range['max'],
                             value=brightness_value, step=1, show_value=True)
@@ -59,7 +60,7 @@ def create_uvc_content(camera: Optional[Camera] = None):
                 # Kontrast
                 with ui.card().tight().classes('p-4 flex flex-col items-center'):
                     ui.label('Kontrast').classes('font-semibold mb-2')
-                    contrast_range = ranges.get('contrast', {'min': 0, 'max': 100, 'default': 32})
+                    contrast_range = ranges.get('contrast', {'min': 0, 'max': 64, 'default': 16})
                     contrast_value = current.get('contrast', contrast_range['default'])
                     contrast_knob = ui.knob(min=contrast_range['min'], max=contrast_range['max'],
                             value=contrast_value, step=1, show_value=True)
@@ -69,7 +70,7 @@ def create_uvc_content(camera: Optional[Camera] = None):
                 # Sättigung
                 with ui.card().tight().classes('p-4 flex flex-col items-center'):
                     ui.label('Sättigung').classes('font-semibold mb-2')
-                    saturation_range = ranges.get('saturation', {'min': 0, 'max': 100, 'default': 32})
+                    saturation_range = ranges.get('saturation', {'min': 0, 'max': 128, 'default': 64})
                     saturation_value = current.get('saturation', saturation_range['default'])
                     saturation_knob = ui.knob(min=saturation_range['min'], max=saturation_range['max'],
                             value=saturation_value, step=1, show_value=True)
@@ -79,7 +80,7 @@ def create_uvc_content(camera: Optional[Camera] = None):
                 # Schärfe
                 with ui.card().tight().classes('p-4 flex flex-col items-center'):
                     ui.label('Schärfe').classes('font-semibold mb-2')
-                    sharpness_range = ranges.get('sharpness', {'min': 0, 'max': 100, 'default': 50})
+                    sharpness_range = ranges.get('sharpness', {'min': 0, 'max': 14, 'default': 2})
                     sharpness_value = current.get('sharpness', sharpness_range['default'])
                     sharpness_knob = ui.knob(min=sharpness_range['min'], max=sharpness_range['max'],
                             value=sharpness_value, step=1, show_value=True)
@@ -89,7 +90,7 @@ def create_uvc_content(camera: Optional[Camera] = None):
                 # Gamma
                 with ui.card().tight().classes('p-4 flex flex-col items-center'):
                     ui.label('Gamma').classes('font-semibold mb-2')
-                    gamma_range = ranges.get('gamma', {'min': 50, 'max': 300, 'default': 100})
+                    gamma_range = ranges.get('gamma', {'min': 72, 'max': 500, 'default': 164})
                     gamma_value = current.get('gamma', gamma_range['default'])
                     gamma_knob = ui.knob(min=gamma_range['min'], max=gamma_range['max'],
                             value=gamma_value, step=1, show_value=True)
@@ -99,7 +100,7 @@ def create_uvc_content(camera: Optional[Camera] = None):
                 # Gain
                 with ui.card().tight().classes('p-4 flex flex-col items-center'):
                     ui.label('Gain').classes('font-semibold mb-2')
-                    gain_range = ranges.get('gain', {'min': 0, 'max': 100, 'default': 0})
+                    gain_range = ranges.get('gain', {'min': 0, 'max': 100, 'default': 10})
                     gain_value = current.get('gain', gain_range['default'])
                     gain_knob = ui.knob(min=gain_range['min'], max=gain_range['max'],
                             value=gain_value, step=1, show_value=True)
@@ -109,12 +110,22 @@ def create_uvc_content(camera: Optional[Camera] = None):
                 # Backlight Compensation
                 with ui.card().tight().classes('p-4 flex flex-col items-center'):
                     ui.label('Backlight').classes('font-semibold mb-2')
-                    backlight_range = ranges.get('backlight_compensation', {'min': 0, 'max': 100, 'default': 0})
+                    backlight_range = ranges.get('backlight_compensation', {'min': 0, 'max': 160, 'default': 42})
                     backlight_value = current.get('backlight_compensation', backlight_range['default'])
                     backlight_knob = ui.knob(min=backlight_range['min'], max=backlight_range['max'],
                             value=backlight_value, step=1, show_value=True)
                     
                     backlight_knob.on('update:model-value', make_handler(camera.set_backlight_compensation, backlight_value))
+
+                # Hue
+                with ui.card().tight().classes('p-4 flex flex-col items-center'):
+                    ui.label('Hue').classes('font-semibold mb-2')
+                    hue_range = ranges.get('hue', {'min': -40, 'max': 40, 'default': 0})
+                    hue_value = current.get('hue', hue_range['default'])
+                    hue_knob = ui.knob(min=hue_range['min'], max=hue_range['max'],
+                            value=hue_value, step=1, show_value=True)
+
+                    hue_knob.on('update:model-value', make_handler(camera.set_hue, hue_value))
 
             ui.separator()
 
@@ -132,8 +143,8 @@ def create_uvc_content(camera: Optional[Camera] = None):
                     ui.label('White Balance').classes('font-semibold mb-2')
                     wb_auto_value = current.get('white_balance_auto', 1) == 1
                     wb_auto = ui.checkbox('white balance auto', value=wb_auto_value)
-
-                    wb_manual_range = ranges.get('white_balance_manual', {'min': 2800, 'max': 6500, 'default': 4000})
+                    
+                    wb_manual_range = ranges.get('white_balance_manual', {'min': 2800, 'max': 6500, 'default': 4600})
                     wb_manual_value = current.get('white_balance_manual', wb_manual_range['default'])
                     with ui.row().classes('items-center gap-2'):
                         ui.label('manual white balance:')
@@ -156,7 +167,7 @@ def create_uvc_content(camera: Optional[Camera] = None):
                     exp_auto_value = current.get('exposure_auto', 1) in (1, True)
                     exp_auto = ui.checkbox('exposure auto', value=exp_auto_value)
 
-                    exp_manual_range = ranges.get('exposure_manual', {'min': 1, 'max': 1000, 'default': 100})
+                    exp_manual_range = ranges.get('exposure_manual', {'min': -13, 'max': -1, 'default': -6})
                     exp_manual_value = current.get('exposure_manual', exp_manual_range['default'])
 
                     with ui.row().classes('items-center gap-2'):
