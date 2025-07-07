@@ -38,7 +38,7 @@ def main() -> None:
 
         with ui.column().classes('gap-4'):
             create_uvc_content(camera=global_camera)
-            create_motiondetection_card()
+            create_motiondetection_card(camera=global_camera)
             create_emailcard()
 
 if __name__ in {'__main__', '__mp_main__'}:

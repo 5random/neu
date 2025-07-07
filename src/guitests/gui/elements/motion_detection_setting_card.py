@@ -1,20 +1,29 @@
 from __future__ import annotations
-from typing import Optional, Tuple, TypedDict
-from pathlib import Path
-import json
+from typing import Optional, Tuple, TypedDict, cast
+import cv2
+import base64
+import numpy as np
+
 
 from nicegui import ui
 from nicegui.events import MouseEventArguments
 from nicegui.element import Element
 from nicegui.elements.label import Label
 from nicegui.elements.interactive_image import InteractiveImage
+from nicegui.elements.knob import Knob
 
+from src.cam.camera import Camera
+from src.cam.motion import MotionDetector
 
 # ─────────────────────────────────────────────────────────────────────────────
-def create_motiondetection_card() -> None:
+def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
     """Card mit Slider, ROI-Editor und Live-Koordinaten-Anzeige."""
     IMG_SRC = 'https://picsum.photos/id/325/720/405'
     IMG_W, IMG_H = 720, 405
+
+    if camera is None:
+        ui.notify(
+            'Kamera nicht verfügbar! ROI-Editor im Demo-Modus.', type='warning')
 
     # ---------- Zustand ------------------------------------------------------
     class ROIState(TypedDict):
@@ -22,7 +31,7 @@ def create_motiondetection_card() -> None:
         p2: Optional[Tuple[int, int]]
 
     state: ROIState = {'p1': None, 'p2': None}
-    ROI_FILE = Path('roi_config.json')
+    #ROI_FILE = Path('roi_config.json')
 
     # UI-Referenzen
     image: Optional[InteractiveImage] = None
@@ -32,6 +41,7 @@ def create_motiondetection_card() -> None:
     coords_label: Optional[Label] = None
     roi_editor_container: Optional[Element] = None
     button_roi_edit: Optional[Element] = None  # Referenz auf Öffnen-Button
+    sensitivity_knob: Knob | None = None
 
     # ---------- SVG-Hilfsfunktionen -----------------------------------------
     def svg_cross(x: int, y: int, s: int = 14, col: str = 'deepskyblue') -> str:
@@ -106,6 +116,42 @@ def create_motiondetection_card() -> None:
         update_labels()
         if label_roi:
             label_roi.text = roi_text()
+    
+    # ---------- Integration Motion Detecotion --------------------------------
+
+    def initialize_from_config() -> None:
+        if camera is None or camera.motion_detector is None:
+            return
+        cam = cast(Camera, camera)
+        md = cast(MotionDetector, cam.motion_detector)
+        roi = md.roi
+
+        if roi and getattr(roi, 'enabled', False):
+            x0, y0 = roi.x, roi.y
+            x1, y1 = roi.x + roi.width, roi.y + roi.height
+            state['p1'] = (x0, y0)
+            state['p2'] = (x1, y1)
+        
+        if sensitivity_knob is not None and hasattr(cam.motion_detector, 'sensitivity'):
+            sens_value = int(md.sensitivity * 100)
+            sensitivity_knob.set_value(sens_value)
+
+    def update_sensitivity(value: int) -> None:
+        """Aktualisiert die Sensitivität des Motion Detectors."""
+        if camera is None or camera.motion_detector is None:
+            return
+        cam = cast(Camera, camera)
+        md = cast(MotionDetector, cam.motion_detector)
+        # Sensitivität in Prozent (0-100)
+        sens_value = max(0.01, value / 100.0)  # mind. 1%
+        md.update_sensitivity(sens_value)
+        if cam.motion_detector:
+            cam.app_config.motion_detection.sensitivity = sens_value
+            if hasattr(cam, 'save_uvc_config'):
+                cam.save_uvc_config()  # Speichert die Konfiguration
+
+        ui.notify(f'Sensitivität auf {sens_value:.2f} gesetzt', type='info',
+                  position='bottom-right')
 
     # ---------- Event-Handler ------------------------------------------------
     def reset_roi() -> None:
@@ -140,8 +186,37 @@ def create_motiondetection_card() -> None:
     def save_roi() -> None:
         if (b := roi_bounds()):
             x0, y0, x1, y1 = b
-            ROI_FILE.write_text(json.dumps(
-                {'x0': x0, 'y0': y0, 'x1': x1, 'y1': y1}, indent=2))
+            roi_enabled = True
+            roi_width = x1 - x0
+            roi_height = y1 - y0
+
+            if camera is None:
+                ui.notify('Kamera nicht verfügbar!', type='warning',
+                          position='bottom-right')
+                return
+            
+            cam = cast(Camera, camera)
+            if cam is not None and cam.motion_detector is not None:
+                md = cast(MotionDetector, cam.motion_detector)
+                roi = md.roi
+                roi.x = x0
+                roi.y = y0
+                roi.width = roi_width
+                roi.height = roi_height
+                roi.enabled = roi_enabled
+
+            
+                cam.app_config.motion_detection.region_of_interest = {
+                    'enabled': roi_enabled,
+                    'x': x0,
+                    'y': y0,
+                    'width': roi_width,
+                    'height': roi_height
+                }
+
+            if hasattr(cam, 'save_uvc_config'):
+                cam.save_uvc_config()  # Speichert die Konfiguration
+
             ui.notify('ROI gespeichert', type='positive',
                       position='bottom-right')
         else:
@@ -157,6 +232,7 @@ def create_motiondetection_card() -> None:
         button_roi_edit.set_visibility(not vis_editor)           # Button umgekehrt
         label_roi.set_visibility(not vis_editor)                 # ROI-Text umgekehrt
         if vis_editor:
+            initialize_from_config()
             refresh_ui()
 
     # ---------- UI-Aufbau ----------------------------------------------------
@@ -170,8 +246,8 @@ def create_motiondetection_card() -> None:
             with ui.card().style("align-self:stretch; justify-content:center; align-items:center; min-height:60px;"):
                 ui.label('Sensitivität').classes('text-h6 font-semibold mb-2')
                 with ui.row().classes('items-center gap-4'):
-                    ui.knob(
-                        min=0, max=100, value=50, step=1, show_value=True
+                    sensitivity_knob = ui.knob(
+                        min=0, max=100, value=10, step=1, show_value=True, on_change=lambda e: update_sensitivity(e.value)
                     ).style("align-self:stretch; display:flex; justify-content:center; align-items:center; flex-direction:column; flex-wrap:nowrap;").classes('flex-grow')
 
             ui.separator()
@@ -201,10 +277,23 @@ def create_motiondetection_card() -> None:
                     with roi_editor_container:
 
                         ui.label('Editor').classes('text-h6 font-semibold')
+                        image_src = IMG_SRC
+                        if camera is not None:
+                            try:
+                                frame = camera.take_snapshot()
+                                if frame is not None:
+                                    # Convert to base64 if it's a numpy array
+                                    if isinstance(frame, np.ndarray):
+                                        # Convert numpy array to base64 string for interactive_image
+                                        success, buffer = cv2.imencode('.jpg', frame)
+                                        if success:
+                                            image_src = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
+                            except Exception as e:
+                                ui.notify(f"Snapshot-Fehler: {e}", type="warning")
 
                         image = (
                             ui.interactive_image(
-                                IMG_SRC,
+                                image_src,
                                 on_mouse=handle_mouse,
                                 events=['click', 'move', 'mouseleave'],
                                 cross=True,
