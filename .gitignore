@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+logs/
+# Temporary files
+*.log
+*.tmp
+*.temp
+*~
+.DS_Store
+.env
+.env.*
+.vscode/
+.idea/
