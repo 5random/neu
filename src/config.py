@@ -320,7 +320,7 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
     try:
         # Absoluten Pfad konstruieren falls nötig
         if not Path(path).is_absolute():
-            project_root = Path(__file__).parent.parent.parent
+            project_root = Path(__file__).parents[1]
             config_path = project_root / path
         else:
             config_path = Path(path)
@@ -412,13 +412,23 @@ def _create_default_config() -> AppConfig:
     return AppConfig(
         webcam=WebcamConfig(
             camera_index=0,
-            default_resolution={"width": 640, "height": 480},
+            default_resolution={"width": 1920, "height": 1080},
             fps=30,
-            resolution=[{"width": 640, "height": 480}]
-        ),
-        uvc_controls=UVCConfig(
-            brightness=128, hue=0, contrast=32, saturation=32,
-            sharpness=3, gamma=100, gain=0, backlight_compensation=0,
+            resolution=[{"width": 640, "height": 480},
+                        {"width": 320, "height": 240},
+                        {"width": 352, "height": 288},
+                        {"width": 640, "height": 480},
+                        {"width": 800, "height": 600},
+                        {"width": 1024, "height": 768},
+                        {"width": 1280, "height": 720},
+                        {"width": 1280, "height": 960},
+                        {"width": 1280, "height": 1024},
+                        {"width": 1920, "height": 1080}
+                    ]
+                ),
+                uvc_controls=UVCConfig(
+            brightness=0, hue=0, contrast=16, saturation=64,
+            sharpness=2, gamma=164, gain=10, backlight_compensation=42,
             white_balance=WhiteBalance(auto=True, value=4000),
             exposure=Exposure(auto=True, value=100)
         ),
@@ -434,13 +444,21 @@ def _create_default_config() -> AppConfig:
         email=EmailConfig(
             recipients=["user@example.com"],
             smtp_server="smtp.example.com",
-            smtp_port=587,
+            smtp_port=25,
             sender_email="sender@example.com",
-            templates={"alert": {"subject": "Bewegungsalarm - {timestamp}", "body": "Bewegung erkannt"}}
+            templates={"alert": {"subject": "CVD-Tracker: Alarm - {timestamp}", "body": 
+                                 "Bewegung wird seit {timestamp} nicht erkannt!"
+                                 "\nBitte überprüfen Sie die Website unter: {website_url}."
+                                 "\n\nDetails:"
+                                 "\nKamera: Index {camera_index}"
+                                 "\nSensitivität: {sensitivity}"
+                                 "\nROI aktiv: {roi_enabled}"
+                                 "\n\nIm Anhang finden Sie das aktuelle Kamerabild."
+                                 }}
         ),
         gui=GUIConfig(
             title="CVD-Tracker", host="localhost", port=8080,
-            auto_open_browser=True, update_interval_ms=100
+            auto_open_browser=False, update_interval_ms=100
         ),
         logging=LoggingConfig(
             level="INFO", file="logs/cvd_tracker.log",

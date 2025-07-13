@@ -7,7 +7,7 @@ from src.alert import AlertSystem
 def create_emailcard():
     config = load_config()
     state: Dict = {
-        "recipients": list(config.email.recipients),          # List[str] – nur E-Mail-Adressen
+        "recipients": list(config.email.recipients),
         "smtp": {
             "server": config.email.smtp_server,
             "port": config.email.smtp_port,
@@ -19,7 +19,7 @@ def create_emailcard():
         """Datei-, DB- oder REST-Persistenz einbauen"""
         config.email.recipients = list(state["recipients"])
         config.email.smtp_server = state["smtp"]["server"]
-        config.email.smtp_port = state["smtp"]["port"]
+        config.email.smtp_port = int(state["smtp"]["port"])
         config.email.sender_email = state["smtp"]["sender"]
         save_config(config)
 
@@ -35,7 +35,7 @@ def create_emailcard():
         if not cfg.get("server"):
             errors.append("SMTP-Server darf nicht leer sein.")
         port = cfg.get("port")
-        if not isinstance(port, int) or not 1 <= int(port) <= 65535:
+        if not isinstance(port, (int, float)) or not 1 <= int(port) <= 65535:
             errors.append("Port muss zwischen 1 und 65535 liegen.")
         return errors
 
@@ -137,7 +137,8 @@ def create_emailcard():
                 with ui.row().classes("items-center gap-2"):
                     ui.input("Absender").bind_value(smtp, "sender")
                     ui.input("SMTP-Server").bind_value(smtp, "server")
-                    ui.number("Port").bind_value(smtp, "port")
+                    with ui.number("Port", min=1, max=65535).bind_value(smtp, "port", forward=int):
+                        ui.tooltip("Port muss zwischen 1 und 65535 liegen!")
 
 
                 def attempt_save():
@@ -151,5 +152,5 @@ def create_emailcard():
                 with ui.button(icon='save', color="primary", on_click=attempt_save).props('round'):
                     ui.tooltip('SMTP-Einstellungen speichern')
 
-    # Tabellen-Inhalt initial laden und Start der App
+    # Tabellen-Inhalt initial laden
     refresh_table()
