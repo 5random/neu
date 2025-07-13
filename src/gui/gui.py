@@ -2,7 +2,7 @@ from nicegui import ui, app
 import sys
 from pathlib import Path
 # Projekt-Root zum Python-Pfad hinzufügen
-project_root = Path(__file__).parents[3]
+project_root = Path(__file__).parents[2]
 sys.path.insert(0, str(project_root))
 
 from elements import (
