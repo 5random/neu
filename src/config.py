@@ -173,6 +173,7 @@ class EmailTemplate:
 
 @dataclass
 class EmailConfig:
+    website_url: str
     recipients: List[str]
     smtp_server: str
     smtp_port: int
@@ -192,11 +193,24 @@ class EmailConfig:
 
     def alert_template(self) -> EmailTemplate:
         data = self.templates.get("alert", {})
-        return EmailTemplate(
-            subject=data.get("subject", "Bewegungsalarm - {timestamp}"),
-            body=data.get("body", "Bewegung erkannt um {timestamp}"),
+        
+        # Robuster Default-Body mit allen verfügbaren Parametern
+        default_body = (
+            "Bewegung wird seit {timestamp} nicht erkannt!\n"
+            "Bitte überprüfen Sie die Website unter: {website_url}\n\n"
+            "Details:\n"
+            "Session-ID: {session_id}\n"
+            "Letzte Bewegung um {last_motion_time}\n"
+            "Kamera: Index {camera_index}\n"
+            "Sensitivität: {sensitivity}\n"
+            "ROI aktiv: {roi_active}\n\n"
+            "Im Anhang finden Sie das aktuelle Webcam-Bild."
         )
-
+        
+        return EmailTemplate(
+            subject=data.get("subject", "CVD-Tracker: Bewegungsalarm - {timestamp}"),
+            body=data.get("body", default_body),
+        )
 # ---------------------------------------------------------------------------
 # GUI & Logging
 # ---------------------------------------------------------------------------
@@ -206,6 +220,7 @@ class GUIConfig:
     title: str
     host: str
     port: int
+    #webadress: str
     auto_open_browser: bool
     update_interval_ms: int
 
@@ -445,18 +460,21 @@ def _create_default_config() -> AppConfig:
             alert_delay_seconds=300
         ),
         email=EmailConfig(
+            website_url="http://134.28.91.48:8080",
             recipients=["user@example.com"],
             smtp_server="smtp.example.com",
             smtp_port=25,
             sender_email="sender@example.com",
             templates={"alert": {"subject": "CVD-Tracker: Alarm - {timestamp}", "body": 
                                  "Bewegung wird seit {timestamp} nicht erkannt!"
-                                 "\nBitte überprüfen Sie die Website unter: {website_url}."
+                                 "\nBitte überprüfen Sie den Fehler über die Webanwendung unter: {website_url}."
                                  "\n\nDetails:"
+                                 "\nSession-ID: {session_id}"
+                                 "\nLetzte Bewegung um {last_motion_time}"
                                  "\nKamera: Index {camera_index}"
                                  "\nSensitivität: {sensitivity}"
                                  "\nROI aktiv: {roi_enabled}"
-                                 "\n\nIm Anhang finden Sie das aktuelle Kamerabild."
+                                 "\n\nIm Anhang finden Sie das aktuelle Webcam-Bild."
                                  }}
         ),
         gui=GUIConfig(

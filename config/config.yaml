@@ -52,7 +52,7 @@ measurement:
   alert_delay_seconds: 300
 
 email:
-
+  website_url: "http://134.28.91.48:8080"
   recipients:
     - user1@example.com
     - user2@example.com
@@ -63,13 +63,17 @@ email:
     alert:
       subject: "CVD-Tracker: Bewegungsalarm - {timestamp}"
       body: |
-        Bewegung erkannt um {timestamp}
-        
+        Bewegung wird seit {timestamp} nicht erkannt!
+        Bitte überprüfen Sie den Fehler über die Webanwendung unter: {website_url}.
+
+        Details:
+        Session-ID: {session_id}
+        Letzte Bewegung um {last_motion_time}
         Kamera: Index {camera_index}
         Sensitivität: {sensitivity}
         ROI aktiv: {roi_enabled}
-        
-        Im Anhang finden Sie das aktuelle Kamerabild.
+
+        Im Anhang finden Sie das aktuelle Webcam-Bild.
 
 gui:
   title: "CVD-Tracker"
