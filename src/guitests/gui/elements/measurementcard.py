@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from nicegui import ui
 
 from src.alert import AlertSystem
-from src.config import load_config
+from src.config import load_config, save_config
 from src.measurement import MeasurementController
 
 def create_measurement_card():
@@ -12,13 +12,14 @@ def create_measurement_card():
     measurement_controller = MeasurementController(config.measurement, alert_system)
 
     # ------------------------- Zustände -------------------------
-    
-    running = False
-    start_time: datetime | None = None
-    max_duration: timedelta | None = None
+
     last_measurement: datetime | None = None
 
+    def on_motion(_):
+        ui.timer(0, update_view, once=True)
 
+    measurement_controller.register_motion_callback(on_motion)
+    
     # --------------------- Hilfsfunktionen ----------------------
     def fmt(td: timedelta) -> str:
         secs = int(td.total_seconds())
@@ -26,21 +27,19 @@ def create_measurement_card():
         return f'{h:02}:{m:02}:{s:02}'
 
 
-    def lock_limit_controls(lock: bool) -> None:
-        (enable_limit.disable() if lock else enable_limit.enable())
-        (duration_input.disable() if lock else
-        (duration_input.enable() if enable_limit.value else duration_input.disable()))
-
-
     def update_view() -> None:
         """Aktualisiert Laufzeit, Fortschritt, Labels."""
         status = measurement_controller.get_session_status()
-        if running and start_time:
-            elapsed = status.get('elapsed', datetime.now() - start_time)
-            max_duration = status.get('max_duration', None)
-            if max_duration:
-                timer_label.text = f'{fmt(elapsed)}/{fmt(max_duration)}'
-                ratio = min(elapsed.total_seconds() / max_duration.total_seconds(), 1.0)
+
+        elapsed = status['duration']
+        session_active = status['is_active']
+        session_max = (timedelta(minutes=status['session_timeout_minutes']) if status['session_timeout_minutes'] > 0
+                       else None)
+
+        if session_active and elapsed:
+            if session_max:
+                timer_label.text = f'{fmt(elapsed)}/{fmt(session_max)}'
+                ratio = min(elapsed.total_seconds() / session_max.total_seconds(), 1.0)
                 progress.value = ratio
                 percent_label.text = f'{ratio*100:5.1f} %'
                 progress_row.visible = True
@@ -51,7 +50,7 @@ def create_measurement_card():
             timer_label.text = '–'
             progress_row.visible = False
         
-            # Motion-Status anzeigen
+        # Motion-Status anzeigen
         if status.get('recent_motion_detected'):
             motion_label.text = 'Bewegung erkannt'
         else:
@@ -72,7 +71,7 @@ def create_measurement_card():
 
 
     def style_start_button() -> None:
-        if running:
+        if measurement_controller.get_session_status()['is_active']:
             start_stop_btn.text = 'Stopp'
             start_stop_btn.icon = 'stop'
             start_stop_btn.props('color=negative')
@@ -81,16 +80,19 @@ def create_measurement_card():
             start_stop_btn.icon = 'play_arrow'
             start_stop_btn.props('color=positive')
 
+    
+    def persist_settings() -> None:
+        # duration_input in Sekunden → Minuten runden
+        cfg = config.measurement
+        cfg.session_timeout_minutes = max(1, int(duration_input.value / 60)) if enable_limit.value else 0
+        save_config(config)
+        measurement_controller.config = cfg
 
-    def finish_measurement() -> None:
-        """Beendet die Messung (Auto- oder manuell)."""
-        nonlocal running, start_time, max_duration
-        running = False
-        start_time = None
-        max_duration = None
-        lock_limit_controls(False)
-        style_start_button()
-        update_view()
+        enable_limit.on('update:model-value', lambda e: (
+            duration_input.enable() if enable_limit.value else duration_input.disable(),
+            persist_settings()
+        ))
+        duration_input.on('update:model-value', lambda e: persist_settings() if enable_limit.value else None)
 
 
     # -------------------------- UI ------------------------------
@@ -122,37 +124,30 @@ def create_measurement_card():
 
     # ----------------------- Event-Logik ------------------------
     def toggle_duration(_):
-        if not running:
+        if not measurement_controller.get_session_status()['is_active']:
             duration_input.enable() if enable_limit.value else duration_input.disable()
 
 
     def start_stop(_):
         """Startet oder stoppt die Messung manuell."""
-        nonlocal running, start_time, max_duration, last_measurement
-        if running:
+        nonlocal last_measurement
+        status = measurement_controller.get_session_status()
+        if status['is_active']:
+            # Messung läuft, also stoppen
             measurement_controller.stop_session()
-            finish_measurement()
         else:
-            measurement_controller.start_session(f"session_{int(datetime.now().timestamp())}")
-            running = True
-            start_time = datetime.now()
-            last_measurement = start_time
-            max_duration = (
-                timedelta(seconds=duration_input.value) if enable_limit.value else None
-            )
-            lock_limit_controls(True)
-            style_start_button()
-            update_view()
+            measurement_controller.start_session()
+            last_measurement = datetime.now()
+        update_view()
+        style_start_button()
 
 
     def tick():
         """Sekündlicher Takt: Auto-Stopp & Live-Update."""
-        if running and start_time and max_duration:
-            if datetime.now() - start_time >= max_duration:
-                finish_measurement()
-                return
-        if running:
-            update_view()
+        measurement_controller.check_session_timeout()
+        status = measurement_controller.get_session_status()
+        update_view()
+        style_start_button()
 
 
     # --------------------- Handler registrieren -----------------

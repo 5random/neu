@@ -76,17 +76,16 @@ class MeasurementController:
         # Motion-Callback für Integration
         self._motion_callbacks: list[Callable[['MotionResult'], None]] = []
         
-        # === TODO 3: Alert-Delay-System ===
         # Motion-Historie für bessere Alert-Entscheidungen
         self.motion_history: list[bool] = []  # Letzte Motion-States (True/False)
         self.motion_history_max_size: int = 10  # Anzahl der gespeicherten Motion-States
         
         # Anti-Spam-Mechanismus
         self.alerts_sent_this_session: int = 0
-        self.max_alerts_per_session: int = 3  # Maximal 3 Alerts pro Session
+        self.max_alerts_per_session: int = 5  # Maximal 5 Alerts pro Session
         
         # Alert-Timer-Präzision
-        self.alert_check_interval: float = 5.0  # Alle 5 Sekunden Alert-Status prüfen
+        self.alert_check_interval: float = 3.0  # Alle 3 Sekunden Alert-Status prüfen
         self.last_alert_check: Optional[datetime] = None
         
         self.logger.info("MeasurementController initialisiert")
@@ -117,7 +116,6 @@ class MeasurementController:
             self.alert_triggered = False
             self.alert_trigger_time = None
             
-            # === TODO 3: Session-Reset für Alert-System ===
             self.motion_history.clear()
             self.alerts_sent_this_session = 0
             self.last_alert_check = None
@@ -158,7 +156,7 @@ class MeasurementController:
     
     def check_session_timeout(self) -> bool:
         """
-        Prüft und behandelt Session-Timeout (TODO 2).
+        Prüft und behandelt Session-Timeout.
         
         Stoppt automatisch Sessions die zu lange inaktiv sind.
         
@@ -169,11 +167,11 @@ class MeasurementController:
             return False
         
         # Check if session has a maximum duration configured
-        max_session_duration = getattr(self.config, 'max_session_duration_hours', None)
-        if max_session_duration:
+        max_min = self.config.session_timeout_minutes
+        if max_min and max_min > 0:
             session_duration = self._get_session_duration()
-            if session_duration and session_duration.total_seconds() > max_session_duration * 3600:
-                self.logger.info(f"Session-Timeout erreicht nach {max_session_duration}h - stoppe Session")
+            if session_duration and session_duration.total_seconds() > max_min * 60:
+                self.logger.info(f"Session-Timeout erreicht nach {max_min}min - stoppe Session")
                 self.stop_session()
                 return True
         
@@ -203,8 +201,7 @@ class MeasurementController:
         """
         if not self.is_session_active:
             return
-        
-        # === TODO 3: Motion-Historie für bessere Alert-Entscheidungen ===
+
         # Motion-Status in Historie speichern
         self.motion_history.append(motion_result.motion_detected)
         if len(self.motion_history) > self.motion_history_max_size:
@@ -218,8 +215,7 @@ class MeasurementController:
                 self.alert_triggered = False
                 self.alert_trigger_time = None
                 self.logger.info("Alert zurückgesetzt - neue Bewegung erkannt")
-        
-        # === TODO 2 & 3: Session-Timeout und Alert-Checks ===
+
         self.check_session_timeout()  # Prüfe Session-Timeout
         self._check_alert_trigger()   # Prüfe Alert-Trigger
         
@@ -232,7 +228,7 @@ class MeasurementController:
     
     def _check_alert_trigger(self) -> None:
         """
-        Prüft periodisch ob Alert ausgelöst werden soll (TODO 3).
+        Prüft periodisch ob Alert ausgelöst werden soll.
         
         Implementiert das Alert-Delay-System mit:
         - Anti-Spam-Mechanismus (max. Alerts pro Session)
@@ -346,11 +342,11 @@ class MeasurementController:
             'alert_triggered': self.alert_triggered,
             'alert_trigger_time': self.alert_trigger_time,
             'alert_countdown': self._get_alert_countdown(),
-            # === TODO 2 & 3: Erweiterte Session-Statistiken ===
             'alerts_sent_this_session': self.alerts_sent_this_session,
             'max_alerts_per_session': self.max_alerts_per_session,
             'motion_history_size': len(self.motion_history),
             'recent_motion_detected': any(self.motion_history[-3:]) if len(self.motion_history) >= 3 else None,
+            'session_timeout_minutes': self.config.session_timeout_minutes,
         }
     
     # === Private Helper-Methoden ===
@@ -367,7 +363,7 @@ class MeasurementController:
             return None
         return datetime.now() - self.last_motion_time
     
-    def _get_alert_countdown(self) -> Optional[float]:
+    def _get_alert_countdown(self) -> Optional[int]:
         """
         Berechnet verbleibende Zeit bis Alert-Trigger.
         
@@ -388,7 +384,7 @@ class MeasurementController:
         elapsed_seconds = time_since_motion.total_seconds()
         
         remaining = alert_delay_seconds - elapsed_seconds
-        return max(0.0, remaining)
+        return max(0, int(remaining))
 
 
 # === Factory-Funktionen ===
