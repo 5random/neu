@@ -1,6 +1,9 @@
 from nicegui import ui, app
 import sys
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 # Projekt-Root zum Python-Pfad hinzufügen
 project_root = Path(__file__).parents[2]
 sys.path.insert(0, str(project_root))
@@ -17,14 +20,14 @@ from elements import (
 from src.cam.camera import Camera
 
 # Kamera SOFORT beim Import initialisieren (nicht in einer Funktion!)
-print("Initialisiere Kamera beim Modul-Import...")
+logger.info("Initialisiere Kamera beim Modul-Import...")
 try:
     global_camera = Camera()
     global_camera._setup_routes()
     global_camera.start_frame_capture()
-    print("Kamera erfolgreich initialisiert")
+    logger.info("Kamera erfolgreich initialisiert")
 except Exception as e:
-    print(f"FEHLER: {e}")
+    logger.exception("FEHLER: %s", e)
     global_camera = None
 
 def main() -> None:
