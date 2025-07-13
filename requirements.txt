@@ -4,3 +4,6 @@ numpy
 Pillow
 PyYAML
 python-dateutil
+fastapi
+uvicorn
+pytest

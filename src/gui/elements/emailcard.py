@@ -1,23 +1,27 @@
 from typing import Dict
 import re
 from nicegui import ui
+from src.config import save_config, load_config
+from src.alert import AlertSystem
 
 def create_emailcard():
+    config = load_config()
     state: Dict = {
-        "recipients": [],          # List[str] – nur E-Mail-Adressen
+        "recipients": list(config.email.recipients),          # List[str] – nur E-Mail-Adressen
         "smtp": {
-            "server": "",
-            "port": 587,
-            "user": "",
-            "password": "",
-            "sender": "",
-            "use_tls": True,
+            "server": config.email.smtp_server,
+            "port": config.email.smtp_port,
+            "sender": config.email.sender_email,
         },
     }
 
     def persist_state() -> None:
-        """TODO: Datei-, DB- oder REST-Persistenz einbauen"""
-        pass
+        """Datei-, DB- oder REST-Persistenz einbauen"""
+        config.email.recipients = list(state["recipients"])
+        config.email.smtp_server = state["smtp"]["server"]
+        config.email.smtp_port = state["smtp"]["port"]
+        config.email.sender_email = state["smtp"]["sender"]
+        save_config(config)
 
     EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z0-9]{2,}$")
 
@@ -31,7 +35,7 @@ def create_emailcard():
         if not cfg.get("server"):
             errors.append("SMTP-Server darf nicht leer sein.")
         port = cfg.get("port")
-        if not isinstance(port, int) or not 1 <= port <= 65535:
+        if not isinstance(port, int) or not 1 <= int(port) <= 65535:
             errors.append("Port muss zwischen 1 und 65535 liegen.")
         return errors
 
@@ -50,7 +54,7 @@ def create_emailcard():
 
         state["recipients"].append(addr)
         email_inp.value = ""
-        persist_state()              # TODO
+        persist_state()
         refresh_table()
 
     def delete_selected() -> None:
@@ -61,7 +65,7 @@ def create_emailcard():
         state["recipients"] = [
             addr for addr in state["recipients"] if addr not in selected_addresses
         ]
-        persist_state()              # TODO
+        persist_state()
         refresh_table()
         table.selected = []
         ui.notify(f"{len(selected_addresses)} Adresse(n) gelöscht", color="positive")
@@ -111,15 +115,18 @@ def create_emailcard():
                     ).bind_enabled_from(table, "selected", lambda s: bool(s)).props('round'):
                         ui.tooltip('Ausgewählte E-Mail-Adressen löschen')
 
+                    def send_test_email():
+                        alert = AlertSystem(config.email, config.measurement)
+                        if alert.send_test_email():
+                            ui.notify("Test-E-Mail erfolgreich gesendet", color="positive")
+                        else:
+                            ui.notify("Fehler beim Senden der Test-E-Mail", color="negative")
+
+
                     with ui.button(
                         icon='send',
                         color="info",
-                        on_click=lambda _: (
-                            state["recipients"].clear(),
-                            persist_state(),  # TODO
-                            refresh_table(),
-                            ui.notify("Test-E-Mail gesendet", color="positive")
-                        ),
+                        on_click= lambda _: send_test_email()
                     ).props('round').classes("ml-auto"):
                         ui.tooltip('Test-E-Mail an alle Empfänger senden')
 
@@ -132,28 +139,17 @@ def create_emailcard():
                     ui.input("SMTP-Server").bind_value(smtp, "server")
                     ui.number("Port").bind_value(smtp, "port")
 
-                with ui.row().classes("items-center gap-2"):    
-                    ui.input("Benutzer").bind_value(smtp, "user")
-                    ui.input(
-                        "Passwort",
-                        password=True,
-                        password_toggle_button=True,
-                    ).bind_value(smtp, "password")
-                    ui.checkbox("TLS verwenden").bind_value(smtp, "use_tls")
 
                 def attempt_save():
                     errors = validate_smtp(smtp)
                     if errors:
                         ui.notify(" ".join(errors), color="negative")
                     else:
-                        persist_state()     # TODO
-                        ui.notify("Gespeichert (nur RAM)", color="positive")
+                        persist_state()
+                        ui.notify("Gespeichert", color="positive")
 
                 with ui.button(icon='save', color="primary", on_click=attempt_save).props('round'):
                     ui.tooltip('SMTP-Einstellungen speichern')
 
     # Tabellen-Inhalt initial laden und Start der App
     refresh_table()
-
-#create_emailcard()
-#ui.run(title="Alert-Service")

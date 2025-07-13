@@ -25,7 +25,6 @@
 - Während einer laufenden Messung soll bei anhaltender Bewegungslosigkeit (keine Bewegung für eine einstellbare Zeit, „Alert-Delay“) automatisch eine E-Mail-Benachrichtigung ausgelöst werden.
 - Die E-Mail enthält:
     - Einen Zeitstempel (Datum und Uhrzeit des Ereignisses)
-    - Ein aktuelles Bild der Webcam als Anhang
 - Es sollen mehrere E-Mail-Empfänger hinterlegt werden, die im Alarmfall gleichzeitig benachrichtigt werden.
 
 ### 4. Technische Umsetzung
