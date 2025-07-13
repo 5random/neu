@@ -35,7 +35,7 @@ def create_emailcard():
         if not cfg.get("server"):
             errors.append("SMTP-Server darf nicht leer sein.")
         port = cfg.get("port")
-        if not isinstance(port, int) or not 1 <= port <= 65535:
+        if not isinstance(port, int) or not 1 <= int(port) <= 65535:
             errors.append("Port muss zwischen 1 und 65535 liegen.")
         return errors
 

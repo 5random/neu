@@ -350,7 +350,7 @@ class MeasurementController:
             'alerts_sent_this_session': self.alerts_sent_this_session,
             'max_alerts_per_session': self.max_alerts_per_session,
             'motion_history_size': len(self.motion_history),
-            'recent_motion_detected': any(self.motion_history[-3:]) if len(self.motion_history) >= 3 else None
+            'recent_motion_detected': any(self.motion_history[-3:]) if len(self.motion_history) >= 3 else None,
         }
     
     # === Private Helper-Methoden ===

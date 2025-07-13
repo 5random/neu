@@ -36,16 +36,13 @@ def create_measurement_card():
         """Aktualisiert Laufzeit, Fortschritt, Labels."""
         status = measurement_controller.get_session_status()
         if running and start_time:
-            elapsed = datetime.now() - start_time
-
-            # --- Timer-Label -------------
+            elapsed = status.get('elapsed', datetime.now() - start_time)
+            max_duration = status.get('max_duration', None)
             if max_duration:
                 timer_label.text = f'{fmt(elapsed)}/{fmt(max_duration)}'
-                ratio = min(
-                    elapsed.total_seconds() / max_duration.total_seconds(), 1.0
-                )
+                ratio = min(elapsed.total_seconds() / max_duration.total_seconds(), 1.0)
                 progress.value = ratio
-                percent_label.text = f'{ratio*100:5.1f} %'   # schmale Leerstelle
+                percent_label.text = f'{ratio*100:5.1f} %'
                 progress_row.visible = True
             else:
                 timer_label.text = fmt(elapsed)
@@ -53,6 +50,19 @@ def create_measurement_card():
         else:
             timer_label.text = '–'
             progress_row.visible = False
+        
+            # Motion-Status anzeigen
+        if status.get('recent_motion_detected'):
+            motion_label.text = 'Bewegung erkannt'
+        else:
+            motion_label.text = 'Keine Bewegung'
+
+        # Alert-Countdown anzeigen
+        countdown = status.get('alert_countdown')
+        if countdown is not None:
+            alert_label.text = f'Alarm in {fmt(timedelta(seconds=countdown))}'
+        else:
+            alert_label.text = ''
 
         # --- letzte Messung ------------
         last_label.text = (
@@ -74,7 +84,7 @@ def create_measurement_card():
 
     def finish_measurement() -> None:
         """Beendet die Messung (Auto- oder manuell)."""
-        global running, start_time, max_duration
+        nonlocal running, start_time, max_duration
         running = False
         start_time = None
         max_duration = None
@@ -105,6 +115,8 @@ def create_measurement_card():
             percent_label = ui.label('0 %').classes('text-caption')
         progress_row.visible = False
 
+        motion_label = ui.label('Keine Bewegung').classes('text-caption text-grey q-mb-xs')
+        alert_label = ui.label('').classes('text-caption text-negative q-mb-xs')
         last_label = ui.label('Letzte Messung: –').classes('text-caption text-grey')
 
 
@@ -116,10 +128,12 @@ def create_measurement_card():
 
     def start_stop(_):
         """Startet oder stoppt die Messung manuell."""
-        global running, start_time, max_duration, last_measurement
+        nonlocal running, start_time, max_duration, last_measurement
         if running:
+            measurement_controller.stop_session()
             finish_measurement()
         else:
+            measurement_controller.start_session(f"session_{int(datetime.now().timestamp())}")
             running = True
             start_time = datetime.now()
             last_measurement = start_time
