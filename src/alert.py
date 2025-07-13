@@ -19,6 +19,7 @@ import time
 import cv2
 import numpy as np
 from datetime import datetime
+import threading
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
@@ -67,6 +68,9 @@ class AlertSystem:
         self.last_alert_time: Optional[datetime] = None
         self.alerts_sent_count: int = 0
         self.cooldown_minutes: int = 5  # Minimum 5 Minuten zwischen E-Mails
+
+        self._state_lock = threading.RLock()
+        self._smtp_lock = threading.Lock()
         
         # SMTP-Verbindung Cache
         self._smtp_connection: Optional[smtplib.SMTP] = None
@@ -91,13 +95,25 @@ class AlertSystem:
         Returns:
             True wenn E-Mail erfolgreich gesendet
         """
-        if not self._should_send_alert():
-            return False
+        current_time = datetime.now()
+
+        with self._state_lock:
+            if not self._should_send_alert():
+                return False
+            
+            previous_alert_time = self.last_alert_time
+            previous_count = self.alerts_sent_count
+            
+            self.last_alert_time = current_time
+            temp_count = self.alerts_sent_count + 1
         
+        success = False
+        exc = None
+
         try:
             # E-Mail-Template rendern
             template = self.email_config.alert_template()
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
             
             subject = template.subject.format(
                 timestamp=timestamp,
@@ -117,33 +133,72 @@ class AlertSystem:
                 
                 # Bild-Anhang hinzufügen wenn verfügbar
                 if camera_frame is not None:
-                    self._attach_camera_image(msg, camera_frame, timestamp)
-                
+                    camframe = camera_frame.copy()
+                    self._attach_camera_image(msg, camframe, timestamp)
+
                 messages.append((recipient, msg))
             
             # E-Mails versenden
-            success_count = 0
-            for recipient, message in messages:
-                if self._send_email(recipient, message):
-                    success_count += 1
-                    self.logger.info(f"E-Mail erfolgreich gesendet an {recipient}")
-                else:
-                    self.logger.error(f"E-Mail-Versendung fehlgeschlagen an {recipient}")
+            success_count = self._send_emails_batch(messages)
             
             # Erfolg wenn mindestens eine E-Mail gesendet wurde
             if success_count > 0:
-                self.last_alert_time = datetime.now()
-                self.alerts_sent_count += 1
-                self.logger.info(f"Alert #{self.alerts_sent_count} gesendet ({success_count}/{len(messages)} erfolgreich)")
+                with self._state_lock:
+                    self.alerts_sent_count = temp_count
+                self.logger.info(f"Alert #{temp_count} gesendet ({success_count}/{len(messages)} erfolgreich)")
                 return True
             else:
-                self.logger.error("Alle E-Mail-Versendungen fehlgeschlagen")
+                # Rollback bei Fehlschlag
+                with self._state_lock:
+                    self.last_alert_time = previous_alert_time
+                    self.alerts_sent_count = previous_count
+                    self.logger.error("Alle E-Mail-Versendungen fehlgeschlagen, Zustand zurückgesetzt")
                 return False
                 
-        except Exception as exc:
+        except Exception as e:
+            exc = e
             self.logger.error(f"Fehler beim Alert-Versand: {exc}")
             return False
-    
+        
+        finally:
+            if not success:
+                # Rollback auf vorherigen Zustand bei Fehler
+                with self._state_lock:
+                    self.last_alert_time = previous_alert_time
+                    self.alerts_sent_count = previous_count
+                    if exc:
+                        self.logger.error(f"Alert-Versand fehlgeschlagen: {exc}; Zustand zurückgesetzt")
+                    else:
+                        self.logger.error("Alert-Versand fehlgeschlagen; Zustand zurückgesetzt")
+
+    def _send_emails_batch(self, messages: List[tuple]) -> int:
+        """Optimierter Batch-E-Mail-Versand"""
+        success_count = 0
+        
+        # Einmalige SMTP-Verbindung für alle E-Mails
+        with self._smtp_lock:
+            try:
+                with smtplib.SMTP(
+                    self.email_config.smtp_server, 
+                    self.email_config.smtp_port, 
+                    timeout=self._connection_timeout
+                ) as smtp:
+                    
+                    for recipient, message in messages:
+                        try:
+                            smtp.sendmail(self.email_config.sender_email, recipient, message.as_string())
+                            success_count += 1
+                            self.logger.info(f"E-Mail erfolgreich gesendet an {recipient}")
+                        except smtplib.SMTPException as exc:
+                            self.logger.error(f"SMTP-Fehler beim Senden an {recipient}: {exc}")
+                        except Exception as exc:
+                            self.logger.error(f"Allgemeiner Fehler beim Senden an {recipient}: {exc}")
+                            
+            except Exception as exc:
+                self.logger.error(f"SMTP-Verbindungsfehler: {exc}")
+        
+        return success_count
+
     def _should_send_alert(self) -> bool:
         """
         Prüft Anti-Spam-Mechanismus.
@@ -247,7 +302,7 @@ class AlertSystem:
                 
                 file_path = save_path / filename
                 with open(file_path, 'wb') as f:
-                    f.write(image_buffer.tobytes())
+                    f.write(image_buffer)
                 
                 self.logger.info(f"Alert-Bild gespeichert: {file_path}")
         except Exception as exc:
@@ -266,10 +321,11 @@ class AlertSystem:
         """
         try:
             # SMTP-Verbindung aufbauen
-            with smtplib.SMTP(self.email_config.smtp_server, self.email_config.smtp_port, timeout=self._connection_timeout) as smtp:
-                # Einfache SMTP-Verbindung ohne SSL/TLS (wie in Projektbeschreibung)
-                smtp.sendmail(self.email_config.sender_email, recipient, message.as_string())
-                return True
+            with self._smtp_lock:
+                with smtplib.SMTP(self.email_config.smtp_server, self.email_config.smtp_port, timeout=self._connection_timeout) as smtp:
+                    # Einfache SMTP-Verbindung ohne SSL/TLS (wie in Projektbeschreibung)
+                    smtp.sendmail(self.email_config.sender_email, recipient, message.as_string())
+                    return True
                 
         except smtplib.SMTPException as exc:
             self.logger.error(f"SMTP-Fehler beim Senden an {recipient}: {exc}")
@@ -287,14 +343,15 @@ class AlertSystem:
         Returns:
             Dict mit Alert-Informationen
         """
-        return {
-            'last_alert_time': self.last_alert_time,
-            'alerts_sent_count': self.alerts_sent_count,
-            'cooldown_remaining': self._get_cooldown_remaining(),
-            'can_send_alert': self._should_send_alert(),
-            'configured_recipients': len(self.email_config.recipients),
-            'smtp_server': self.email_config.smtp_server
-        }
+        with self._state_lock:
+            return {
+                'last_alert_time': self.last_alert_time,
+                'alerts_sent_count': self.alerts_sent_count,
+                'cooldown_remaining': self._get_cooldown_remaining(),
+                'can_send_alert': self._should_send_alert(),
+                'configured_recipients': len(self.email_config.recipients),
+                'smtp_server': self.email_config.smtp_server
+            }
     
     def _get_cooldown_remaining(self) -> Optional[float]:
         """
@@ -303,17 +360,18 @@ class AlertSystem:
         Returns:
             Verbleibende Sekunden, None wenn kein Cooldown aktiv
         """
-        if self.last_alert_time is None:
-            return None
-        
-        time_since_last = datetime.now() - self.last_alert_time
-        cooldown_seconds = self.cooldown_minutes * 60
-        elapsed = time_since_last.total_seconds()
-        
-        if elapsed >= cooldown_seconds:
-            return None
-        
-        return cooldown_seconds - elapsed
+        with self._state_lock:
+            if self.last_alert_time is None:
+                return None
+            
+            time_since_last = datetime.now() - self.last_alert_time
+            cooldown_seconds = self.cooldown_minutes * 60
+            elapsed = time_since_last.total_seconds()
+            
+            if elapsed >= cooldown_seconds:
+                return None
+    
+            return cooldown_seconds - elapsed
     
     def test_connection(self) -> bool:
         """
@@ -322,14 +380,15 @@ class AlertSystem:
         Returns:
             True wenn Verbindung erfolgreich
         """
-        try:
-            with smtplib.SMTP(self.email_config.smtp_server, self.email_config.smtp_port, timeout=self._connection_timeout) as smtp:
-                smtp.noop()  # Einfacher Test-Befehl
-                self.logger.info("SMTP-Verbindungstest erfolgreich")
-                return True
-        except Exception as exc:
-            self.logger.error(f"SMTP-Verbindungstest fehlgeschlagen: {exc}")
-            return False
+        with self._smtp_lock:
+            try:
+                with smtplib.SMTP(self.email_config.smtp_server, self.email_config.smtp_port, timeout=self._connection_timeout) as smtp:
+                    smtp.noop()  # Einfacher Test-Befehl
+                    self.logger.info("SMTP-Verbindungstest erfolgreich")
+                    return True
+            except Exception as exc:
+                self.logger.error(f"SMTP-Verbindungstest fehlgeschlagen: {exc}")
+                return False
     
     def send_test_email(self, test_message: str = "Test-E-Mail vom Webcam-Überwachungssystem") -> bool:
         """
@@ -345,16 +404,12 @@ class AlertSystem:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             subject = f"Test-E-Mail - {timestamp}"
             
-            success_count = 0
+            messages = []
             for recipient in self.email_config.recipients:
                 msg = self._create_email_message(subject, test_message, recipient)
-                
-                if self._send_email(recipient, msg):
-                    success_count += 1
-                    self.logger.info(f"Test-E-Mail erfolgreich gesendet an {recipient}")
-                else:
-                    self.logger.error(f"Test-E-Mail-Versendung fehlgeschlagen an {recipient}")
-            
+                messages.append((recipient, msg))
+
+            success_count = self._send_emails_batch(messages)
             return success_count > 0
             
         except Exception as exc:
