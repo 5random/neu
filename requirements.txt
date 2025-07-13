@@ -3,8 +3,7 @@ opencv-python
 numpy
 Pillow
 PyYAML
-python-dateutilnicegui
+python-dateutil
 fastapi
 uvicorn
-python-dateutil
 pytest

@@ -65,7 +65,7 @@ def create_emailcard():
         state["recipients"] = [
             addr for addr in state["recipients"] if addr not in selected_addresses
         ]
-        persist_state()              # TODO
+        persist_state()
         refresh_table()
         table.selected = []
         ui.notify(f"{len(selected_addresses)} Adresse(n) gelöscht", color="positive")
@@ -116,7 +116,6 @@ def create_emailcard():
                         ui.tooltip('Ausgewählte E-Mail-Adressen löschen')
 
                     def send_test_email():
-                        persist_state()
                         alert = AlertSystem(config.email, config.measurement)
                         if alert.send_test_email():
                             ui.notify("Test-E-Mail erfolgreich gesendet", color="positive")
@@ -154,6 +153,3 @@ def create_emailcard():
 
     # Tabellen-Inhalt initial laden und Start der App
     refresh_table()
-
-#create_emailcard()
-#ui.run(title="Alert-Service")
