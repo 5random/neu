@@ -226,6 +226,9 @@ class LoggingConfig:
             valid_levels = [level.value for level in LogLevel]
             errors.append(f"Ungültiger Log-Level '{self.level}'. Gültig: {valid_levels}")
         
+        if not isinstance(self.console_output, bool):
+            errors.append("console_output muss ein Bool sein")
+        
         # Datei-Parameter validieren
         if self.max_file_size_mb < 1:
             errors.append("max_file_size_mb muss mindestens 1 MB sein")
