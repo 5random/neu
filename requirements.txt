@@ -3,4 +3,8 @@ opencv-python
 numpy
 Pillow
 PyYAML
+python-dateutilnicegui
+fastapi
+uvicorn
 python-dateutil
+pytest
