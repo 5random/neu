@@ -575,6 +575,10 @@ class Camera:
 
     # ----------------------- GUI / Routing ---------------------------- #
 
+    def initialize_routes(self):
+        """Initialize FastAPI routes for video streaming. Call this before starting the web interface."""
+        self._setup_routes()
+
     def _setup_routes(self):
         
         @app.get("/video/frame")

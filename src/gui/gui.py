@@ -29,7 +29,7 @@ def init_camera() -> Camera | None:
     print("Initialisiere Kamera ...")
     try:
         cam = Camera()
-        cam._setup_routes()
+        cam.initialize_routes()
         cam.start_frame_capture()
         print("Kamera erfolgreich initialisiert")
         return cam
