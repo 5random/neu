@@ -28,12 +28,16 @@ global_measurement_controller: MeasurementController | None = None
 global_alert_system: AlertSystem | None = None
 
 
-def init_camera() -> Camera | None:
-    """Initialisiere Kamera und starte die Bilderfassung."""
+def init_camera(config_path: str = "config/config.yaml") -> Camera | None:
+    """Initialisiere Kamera und starte die Bilderfassung.
+
+    Args:
+        config_path: Pfad zur zu ladenden Konfiguration
+    """
 
     print("Initialisiere Kamera ...")
     try:
-        cam = Camera()
+        cam = Camera(config_path)
         cam.initialize_routes()
         cam.start_frame_capture()
         print("Kamera erfolgreich initialisiert")
@@ -43,25 +47,30 @@ def init_camera() -> Camera | None:
         return None
 
 
-def create_gui() -> None:
-    """Starte die GUI und initialisiere bei Bedarf die Kamera."""
+def create_gui(config_path: str = "config/config.yaml") -> None:
+    """Starte die GUI und initialisiere bei Bedarf die Kamera.
+
+    Args:
+        config_path: Pfad zur zu ladenden Konfigurationsdatei
+    """
 
     global global_camera, global_measurement_controller, global_alert_system
-    global_camera = init_camera()
+    global_camera = init_camera(config_path)
     if not global_camera:
         ui.notify("Kamera konnte nicht initialisiert werden.", type='negative')
         return 
     if global_alert_system is None:
         try:
-            global_alert_system = create_alert_system_from_config()
+            global_alert_system = create_alert_system_from_config(config_path)
         except Exception as exc:
             logger.error(f"AlertSystem-Init fehlgeschlagen: {exc}")
             global_alert_system = None
     if global_measurement_controller is None:
         try:
             global_measurement_controller = create_measurement_controller_from_config(
+                config_path=config_path,
                 alert_system=global_alert_system,
-                camera=global_camera
+                camera=global_camera,
             )
         except Exception as exc:
             logger.error(f"MeasurementController-Init fehlgeschlagen: {exc}")

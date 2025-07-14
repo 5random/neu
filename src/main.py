@@ -1,6 +1,7 @@
 import sys
 import logging
 from pathlib import Path
+import argparse
 from nicegui import ui
 
 from src.config import load_config
@@ -9,8 +10,21 @@ from src.config import load_config
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
+
+def parse_args() -> argparse.Namespace:
+    """Kommandozeilenargumente parsen."""
+    parser = argparse.ArgumentParser(description="CVD-Tracker")
+    parser.add_argument(
+        "--config",
+        default="config/config.yaml",
+        help="Pfad zur Konfigurationsdatei",
+    )
+    return parser.parse_args()
+
 def main():
+
     """Haupteinstiegspunkt der Anwendung"""
+    args = parse_args()
     try:
         # Konfiguration laden und Logger einrichten
         cfg = load_config()
@@ -18,9 +32,12 @@ def main():
 
         logger.info("Starte CVD-Tracker Anwendung...")
 
+        from src.config import load_config
+        cfg = load_config(args.config)
+
         # GUI erstellen
         from gui.gui import create_gui
-        create_gui()
+        create_gui(config_path=args.config)
         
         # NiceGUI starten
         ui.run(
@@ -34,8 +51,9 @@ def main():
         logger.info("Anwendung beendet")
         
     except ImportError as e:
-        print(f"Import-Fehler: {e}")
-        print("Installiere Abhängigkeiten: pip install -r requirements.txt")
+        logger = logging.getLogger(__name__)
+        logger.error(f"Import-Fehler: {e}")
+        logger.error("Installiere Abhängigkeiten: pip install -r requirements.txt")
         return 1
         
     except Exception as e:
