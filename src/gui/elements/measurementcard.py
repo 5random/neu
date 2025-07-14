@@ -8,7 +8,7 @@ from src.measurement import MeasurementController
 def create_measurement_card():
 
     config = load_config()
-    alert_system = AlertSystem(config.email, config.measurement)
+    alert_system = AlertSystem(config.email, config.measurement, config)
     measurement_controller = MeasurementController(config.measurement, alert_system)
 
     # ------------------------- Zustände -------------------------
