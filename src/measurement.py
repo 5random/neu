@@ -362,10 +362,15 @@ class MeasurementController:
         return datetime.now() - self.session_start_time
     
     def _get_time_since_motion(self) -> Optional[timedelta]:
-        """Berechnet Zeit seit letzter Bewegung."""
+        """Berechnet Zeit seit letzter Bewegung oder seit Sitzungsstart als Fallback."""
+        # Fallback auf session_start_time wenn keine Bewegung registriert wurde
         if self.last_motion_time is None:
+            reference_time = self.session_start_time
+        else:
+            reference_time = self.last_motion_time
+        if reference_time is None:
             return None
-        return datetime.now() - self.last_motion_time
+        return datetime.now() - reference_time
     
     def _get_alert_countdown(self) -> Optional[int]:
         """
@@ -377,16 +382,19 @@ class MeasurementController:
         if not self.is_session_active or self.alert_triggered:
             return None
         
+        # Fallback auf session_start_time wenn keine Bewegung registriert wurde
         if self.last_motion_time is None:
+            reference_time = self.session_start_time
+        else:
+            reference_time = self.last_motion_time
+        if reference_time is None:
             return None
-        
-        time_since_motion = self._get_time_since_motion()
-        if time_since_motion is None:
-            return None
+
+        # Berechne Zeit seit Referenzzeitpunkt
+        time_since_motion = datetime.now() - reference_time
         
         alert_delay_seconds = self.config.alert_delay_seconds
         elapsed_seconds = time_since_motion.total_seconds()
-        
         remaining = alert_delay_seconds - elapsed_seconds
         return max(0, int(remaining))
 
