@@ -2,7 +2,9 @@ from nicegui import ui
 from fastapi import Request
 from datetime import datetime
 
-def create_motion_status_element(camera):
+from src.measurement import MeasurementController
+
+def create_motion_status_element(camera, measurement_controller: MeasurementController | None = None):
     
     # ---------- interne Statusvariablen ----------
     motion_detected: bool = False           # Start: keine Bewegung
@@ -39,6 +41,8 @@ def create_motion_status_element(camera):
             motion_detected = result.motion_detected
             last_changed = datetime.fromtimestamp(result.timestamp)
             refresh_view()
+        if measurement_controller is not None:
+            measurement_controller.on_motion_detected(result)
 
     camera.enable_motion_detection(_motion_callback)
     # ---------- REST-Endpunkt für Dein Analyse-Skript -------------------

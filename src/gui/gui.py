@@ -17,10 +17,13 @@ from elements import (
     create_motiondetection_card,
 )
 
+from src.measurement import create_measurement_controller_from_config, MeasurementController
+
 from src.cam.camera import Camera
 
 # Globales Kamerahandle, wird erst in ``main`` erzeugt
 global_camera: Camera | None = None
+global_measurement_controller: MeasurementController | None = None
 
 
 def init_camera() -> Camera | None:
@@ -41,15 +44,23 @@ def init_camera() -> Camera | None:
 def main() -> None:
     """Starte die GUI und initialisiere bei Bedarf die Kamera."""
 
-    global global_camera
+    global global_camera, global_measurement_controller
     if global_camera is None:
         global_camera = init_camera()
+    if global_measurement_controller is None:
+        try:
+            global_measurement_controller = create_measurement_controller_from_config(
+                camera=global_camera
+            )
+        except Exception as exc:
+            logger.error(f"MeasurementController-Init fehlgeschlagen: {exc}")
+            global_measurement_controller = None
 
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
         with ui.column().classes("gap-4"):
             create_camfeed_content()
-            create_motion_status_element(global_camera)
-            create_measurement_card()
+            create_motion_status_element(global_camera, global_measurement_controller)
+            create_measurement_card(global_measurement_controller)
 
         with ui.column().classes("gap-4"):
             create_uvc_content(camera=global_camera)
