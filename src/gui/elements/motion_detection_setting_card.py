@@ -221,6 +221,20 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         else:
             ui.notify('Bitte zuerst beide Ecken wählen!',
                       type='warning', position='bottom-right')
+    
+    def refresh_snapshot() -> None:
+        """Aktualisiert das Snapshot-Bild im Editor."""
+        if image is None or camera is None:
+            return
+        try:
+            frame = camera.take_snapshot()
+            if frame is not None:
+                success, buffer = cv2.imencode('.jpg', frame)
+                if success:
+                    src = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode()}"
+                    image.set_source(src)          # <-- Bild austauschen
+        except Exception as e:
+            ui.notify(f"Snapshot-Fehler: {e}", type="warning")
 
     def toggle_roi_editor() -> None:
         """Öffnet/Schließt ROI-Editor und blendet zugehörige Elemente um."""
@@ -232,6 +246,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         label_roi.set_visibility(not vis_editor)                 # ROI-Text umgekehrt
         if vis_editor:
             initialize_from_config()
+            refresh_snapshot()  # Aktualisiert das Snapshot-Bild
             refresh_ui()
 
     # ---------- UI-Aufbau ----------------------------------------------------
@@ -276,6 +291,8 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                     with roi_editor_container:
 
                         ui.label('Editor').classes('text-h6 font-semibold')
+
+                        frame: np.ndarray | None = None
                         image_src = IMG_SRC
                         if camera is not None:
                             try:
@@ -289,6 +306,13 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                             except Exception as e:
                                 ui.notify(f"Snapshot-Fehler: {e}", type="warning")
 
+                        h, w = (frame.shape[:2] if frame is not None else (IMG_H, IMG_W))
+                        ratio_style = (
+                            f"aspect-ratio:{w}/{h};"
+                            "width:100%;height:auto;"
+                            "object-fit:contain;max-height:300px;"
+    )
+
                         image = (
                             ui.interactive_image(
                                 image_src,
@@ -296,11 +320,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                                 events=['click', 'move', 'mouseleave'],
                                 cross=True,
                             )
-                            .style(
-                                f'aspect-ratio:{IMG_W}/{IMG_H};'
-                                'width:100%;height:auto;'
-                                'object-fit:contain;max-height:300px;'
-                            )
+                            .style(ratio_style)
                             .classes('rounded-borders')
                         )
 

@@ -48,7 +48,7 @@ measurement:
   image_quality: 85
   image_save_path: ./alerts/
   save_alert_images: true
-  session_timeout_minutes: 60
+  session_timeout_minutes: 5
 motion_detection:
   background_learning_rate: 0.01
   min_contour_area: 500

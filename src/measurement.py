@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta
+import math
 from typing import Optional, Dict, Any, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -95,6 +96,15 @@ class MeasurementController:
         self.logger.info("MeasurementController initialisiert")
     
     # === Session-Management ===
+    def _ensure_valid_time(self) -> None:
+        min_minutes = max(5, math.ceil(self.config.alert_delay_seconds // 60))
+        if 0 < self.config.session_timeout_minutes < min_minutes:
+            self.logger.warning(
+                f"Session-Timeout ({self.config.session_timeout_minutes}min) "
+                f"ist kürzer als Alert-Delay 5 Minuten - "
+                f"wird auf {min_minutes}min gesetzt"
+            )
+            self.config.session_timeout_minutes = min_minutes
     
     def start_session(self, session_id: Optional[str] = None) -> bool:
         """
@@ -111,6 +121,7 @@ class MeasurementController:
             self.stop_session()
         
         try:
+            self._ensure_valid_time()
             self.session_start_time = datetime.now()
             self.session_id = session_id or f"session_{int(time.time())}"
             self.is_session_active = True

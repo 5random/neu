@@ -74,7 +74,7 @@ def create_measurement_card(measurement_controller: MeasurementController | None
         # --- letzte Messung ------------
         last_label.text = (
             f'Letzte Messung: {last_measurement.strftime("%d.%m.%Y %H:%M:%S")}'
-            if last_measurement else 'Letzte Messung: –'
+            if last_measurement else 'Letzte Messung: -'
         )
 
 
@@ -89,15 +89,49 @@ def create_measurement_card(measurement_controller: MeasurementController | None
             start_stop_btn.props('color=positive')
 
     
+    # ---------------- Konstanten ----------------
+    MIN_BASE_SEC = max(config.measurement.alert_delay_seconds, 5 * 60)  # >= 5 min
+    MIN_HOUR_SEC = 3600  # 1 Stunde in Sekunden
+
+    # ---------------- UI-Update -----------------
+
+    def update_duration_ui(_=None):
+        """Aktualisiert die UI-Elemente für die Dauer."""
+        unit = duration_unit.value if duration_unit.value in {'s', 'min', 'h'} else 's'
+        mult = {'s': 1, 'min': 60, 'h': 3600}[unit]
+        min_val = MIN_BASE_SEC / mult
+        if unit == 'h':
+            min_val = 1
+
+        duration_input.label = f'Dauer'
+        duration_input.props(f'suffix="{unit}" min={min_val}')
+        duration_input.min = float(min_val)
+        if duration_input.value is not None and duration_input.value < min_val:
+            duration_input.value = min_val
+
     def persist_settings() -> None:
         """Persist measurement duration settings to the config."""
+        if duration_input.value is None:
+            return
+        
+        if not enable_limit.value:
+            # Limit deaktiviert ⇒ 0 Minuten speichern
+            config.measurement.session_timeout_minutes = 0
+            save_config(config)
+            measurement_controller.config = config.measurement
+            return
+
+        unit = duration_unit.value if duration_unit.value in {'s', 'min', 'h'} else 's'
+        mult = {'s': 1, 'min': 60, 'h': 3600}[unit]
+        seconds = int(duration_input.value * mult)
+        if unit == 'h':
+            seconds = max(seconds, MIN_HOUR_SEC)
+        seconds = max(seconds, MIN_BASE_SEC)  # Minimum Dauer einhalten
+
         cfg = config.measurement
-        cfg.session_timeout_minutes = (
-            max(1, int(duration_input.value / 60)) if enable_limit.value else 0
-        )
+        cfg.session_timeout_minutes = max(5, seconds // 60)  # Minimum 5 Minuten
         save_config(config)
         measurement_controller.config = cfg
-
 
 
     # -------------------------- UI ------------------------------
@@ -111,20 +145,37 @@ def create_measurement_card(measurement_controller: MeasurementController | None
             enable_limit = ui.checkbox(
                 'max. Dauer', value=config.measurement.session_timeout_minutes > 0
             )
+
+            min_alert_sec = config.measurement.alert_delay_seconds          # z. B. 300 s
+            min_alert_min = (min_alert_sec + 59) // 60 
+
             duration_input = ui.number(
-                label='Dauer [s]',
+                label='Dauer ',
                 value=(
                     config.measurement.session_timeout_minutes * 60
                     if config.measurement.session_timeout_minutes > 0
                     else 60
                 ),
-                min=1,
+                min=MIN_BASE_SEC,  # Minimum 5 Minuten
                 format='%.0f',
-            ).props('dense outlined').style('width:120px')
+            ).props('dense outlined').style('width:120px').tooltip(
+                'Min. Dauer der Messung beträgt 5 Minuten'
+            )
+
             if enable_limit.value:
                 duration_input.enable()
             else:
                 duration_input.disable()
+            
+            duration_unit = ui.select(
+                options=['s', 'min', 'h'],
+                value='s',
+                label='Einheit',
+            ).props('dense outlined').style('max-width: 80px')
+
+            update_duration_ui()
+            duration_unit.on('update:model-value', update_duration_ui)
+
 
         timer_label = ui.label('-').classes('text-subtitle1 q-mb-xs')
 
@@ -140,6 +191,9 @@ def create_measurement_card(measurement_controller: MeasurementController | None
 
 
     # ----------------------- Event-Logik ------------------------
+
+
+
     def toggle_duration(_):
         if not measurement_controller.get_session_status()['is_active']:
             duration_input.enable() if enable_limit.value else duration_input.disable()
@@ -171,7 +225,11 @@ def create_measurement_card(measurement_controller: MeasurementController | None
     start_stop_btn.on('click', start_stop)
     enable_limit.on('update:model-value', toggle_duration)
     enable_limit.on('update:model-value', lambda e: persist_settings())
-    duration_input.on('update:model-value', lambda e: persist_settings() if enable_limit.value else None)
+     
+    duration_input.on('blur', lambda e:
+    persist_settings() if enable_limit.value else None)
+    duration_input.on('keydown.enter', lambda e:
+    persist_settings() if enable_limit.value else None)
     ui.timer(1.0, tick)
 
     persist_settings()
