@@ -79,3 +79,20 @@ def test_trigger_alert_with_camera_snapshot(monkeypatch):
 
     assert mc.trigger_alert() is True
     assert called['frame'] == 'frame-data'
+
+
+def test_trigger_alert_calls_alert_system_when_delay_elapsed():
+    called = {'count': 0}
+
+    class DummyAlert:
+        def send_motion_alert(self, last_motion_time=None, session_id=None, camera_frame=None):
+            called['count'] += 1
+            return True
+
+    alert = DummyAlert()
+    mc = create_controller(alert_delay=1, alert_system=alert)
+    mc.start_session('s1')
+    mc.last_motion_time = mc.session_start_time - timedelta(seconds=2)
+
+    assert mc.trigger_alert() is True
+    assert called['count'] == 1
