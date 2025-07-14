@@ -27,6 +27,8 @@ from email.mime.image import MIMEImage
 from pathlib import Path
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from .config import EmailConfig, MeasurementConfig, AppConfig
 
@@ -591,15 +593,15 @@ def test_template_rendering():
         try:
             subject = template.subject.format(**test_params)
             body = template.body.format(**test_params)
-            print("✅ Template-Rendering erfolgreich")
-            print(f"Subject: {subject}")
-            print(f"Body: {body}")
+            logger.info("✅ Template-Rendering erfolgreich")
+            logger.info("Subject: %s", subject)
+            logger.info("Body: %s", body)
             return True
         except KeyError as e:
-            print(f"❌ Template-Parameter fehlt: {e}")
+            logger.error("❌ Template-Parameter fehlt: %s", e)
             return False
     except Exception as e:
-        print(f"❌ Template-Fehler: {e}")
+        logger.error("❌ Template-Fehler: %s", e)
         return False
 
 # Testen

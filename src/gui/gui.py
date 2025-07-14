@@ -1,6 +1,9 @@
 from nicegui import ui, app
 import sys
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 # Projekt-Root zum Python-Pfad hinzufügen
 project_root = Path(__file__).parents[2]
 sys.path.insert(0, str(project_root))
@@ -16,27 +19,39 @@ from elements import (
 
 from src.cam.camera import Camera
 
-# Kamera SOFORT beim Import initialisieren (nicht in einer Funktion!)
-print("Initialisiere Kamera beim Modul-Import...")
-try:
-    global_camera = Camera()
-    global_camera._setup_routes()
-    global_camera.start_frame_capture()
-    print("Kamera erfolgreich initialisiert")
-except Exception as e:
-    print(f"FEHLER: {e}")
-    global_camera = None
+# Globales Kamerahandle, wird erst in ``main`` erzeugt
+global_camera: Camera | None = None
+
+
+def init_camera() -> Camera | None:
+    """Initialisiere Kamera und starte die Bilderfassung."""
+
+    print("Initialisiere Kamera ...")
+    try:
+        cam = Camera()
+        cam._setup_routes()
+        cam.start_frame_capture()
+        print("Kamera erfolgreich initialisiert")
+        return cam
+    except Exception as e:
+        print(f"FEHLER: {e}")
+        return None
+
 
 def main() -> None:
-    # Keine Kamera-Initialisierung hier - bereits beim Import erledigt!
-    
-    with ui.grid(columns='2fr 1fr').classes('w-full gap-4 p-4'):
-        with ui.column().classes('gap-4'):
+    """Starte die GUI und initialisiere bei Bedarf die Kamera."""
+
+    global global_camera
+    if global_camera is None:
+        global_camera = init_camera()
+
+    with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
+        with ui.column().classes("gap-4"):
             create_camfeed_content()
             create_motion_status_element(global_camera)
             create_measurement_card()
 
-        with ui.column().classes('gap-4'):
+        with ui.column().classes("gap-4"):
             create_uvc_content(camera=global_camera)
             create_motiondetection_card(camera=global_camera)
             create_emailcard()

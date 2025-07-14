@@ -116,7 +116,7 @@ def create_emailcard():
                         ui.tooltip('Ausgewählte E-Mail-Adressen löschen')
 
                     def send_test_email():
-                        alert = AlertSystem(config.email, config.measurement)
+                        alert = AlertSystem(config.email, config.measurement, config)
                         if alert.send_test_email():
                             ui.notify("Test-E-Mail erfolgreich gesendet", color="positive")
                         else:

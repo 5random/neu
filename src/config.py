@@ -7,6 +7,15 @@ import re
 import yaml
 import logging
 import logging.handlers
+
+# Basic logging setup to capture early messages before configuration is loaded
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+logger = logging.getLogger(__name__)
 from enum import Enum
 
 # ---------------------------------------------------------------------------
@@ -335,6 +344,7 @@ class AppConfig:
 
 def load_config(path: str = "config/config.yaml") -> AppConfig:
     """Konfiguration mit RotatingFileHandler-Support laden"""
+    global logger
     try:
         # Absoluten Pfad konstruieren falls nötig
         if not Path(path).is_absolute():
@@ -342,30 +352,28 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
             config_path = project_root / path
         else:
             config_path = Path(path)
-        
+
         with open(config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        
-        print(f"✅ Konfiguration geladen: {config_path}")
-        
+
     except FileNotFoundError:
-        print(f"❌ Konfigurationsdatei nicht gefunden: {path}")
-        print("🔧 Verwende Standard-Konfiguration")
+        logger.error("❌ Konfigurationsdatei nicht gefunden: %s", path)
+        logger.info("🔧 Verwende Standard-Konfiguration")
         return _create_default_config()
-    
+
     except yaml.YAMLError as e:
-        print(f"❌ YAML-Parsing-Fehler: {e}")
-        print("🔧 Verwende Standard-Konfiguration")
+        logger.error("❌ YAML-Parsing-Fehler: %s", e)
+        logger.info("🔧 Verwende Standard-Konfiguration")
         return _create_default_config()
-    
+
     except Exception as e:
-        print(f"❌ Unerwarteter Fehler beim Config-Loading: {e}")
-        print("🔧 Verwende Standard-Konfiguration") 
+        logger.error("❌ Unerwarteter Fehler beim Config-Loading: %s", e)
+        logger.info("🔧 Verwende Standard-Konfiguration")
         return _create_default_config()
     
     # Defaults für Logging anwenden
     data = _apply_defaults(data)
-    
+
     # LoggingConfig mit erweiterten Parametern
     logging_data = data.get("logging", {})
     logging_config = LoggingConfig(
@@ -375,6 +383,11 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
         backup_count=logging_data.get("backup_count", 5),
         console_output=logging_data.get("console_output", True)
     )
+
+    # Jetzt den finalen Logger initialisieren
+    app_logger = logging_config.setup_logger("cvd_tracker")
+    logger = app_logger.getChild("config")
+    logger.info("✅ Konfiguration geladen: %s", config_path)
     cfg = AppConfig(
         webcam=WebcamConfig(**data["webcam"]),
         uvc_controls=UVCConfig(
@@ -396,10 +409,10 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
         logging=logging_config,  # Erweiterte Logging-Config
     )
     if errs := cfg.validate_all():
-        print("⚠️ Konfig‑Warnungen:")
+        logger.warning("⚠️ Konfig‑Warnungen:")
         for section, e in errs.items():
             for msg in e:
-                print(f"  {section}: {msg}")
+                logger.warning("  %s: %s", section, msg)
     cfg.measurement.ensure_save_path()
     return cfg
 
@@ -427,6 +440,7 @@ def _apply_defaults(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def _create_default_config() -> AppConfig:
     """Fallback-Konfiguration für Notfälle"""
+    logger.info("Erzeuge Default-Konfiguration")
     return AppConfig(
         webcam=WebcamConfig(
             camera_index=0,
@@ -492,9 +506,9 @@ def save_config(cfg: AppConfig, path: str = "config/config.yaml") -> None:
     try:
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(asdict(cfg), f, indent=2, allow_unicode=True)
-        print(f"✅ Config gespeichert → {path}")
+        logger.info("✅ Config gespeichert → %s", path)
     except Exception as e:
-        print(f"❌ Fehler beim Speichern: {e}")
+        logger.error("❌ Fehler beim Speichern: %s", e)
 
 # ---------------------------------------------------------------------------
 # Testing
@@ -502,18 +516,18 @@ def save_config(cfg: AppConfig, path: str = "config/config.yaml") -> None:
 
 if __name__ == "__main__":
     """Test der erweiterten Konfiguration mit RotatingFileHandler"""
-    print("🧪 Teste Konfigurationssystem mit RotatingFileHandler...")
+    logger.info("🧪 Teste Konfigurationssystem mit RotatingFileHandler...")
     
     # Konfiguration laden
     config = load_config()
     
     # Logger einrichten und testen
     logger = config.logging.setup_logger()
-    
+
     # Logger testen
     logger.info("Test-Nachricht: Konfiguration geladen")
     logger.debug("Debug-Test")
     logger.warning("Warnung-Test")
     logger.error("Fehler-Test")
-    
-    print("✅ RotatingFileHandler-Test abgeschlossen")
+
+    logger.info("✅ RotatingFileHandler-Test abgeschlossen")

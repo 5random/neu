@@ -310,8 +310,13 @@ class Camera:
         self.frame_thread.start()
 
     def stop_frame_capture(self) -> None:
+        """Stop the frame grabbing thread."""
         self.is_running = False
-        if self.frame_thread and self.frame_thread.is_alive():
+        if (
+            self.frame_thread
+            and self.frame_thread.is_alive()
+            and threading.current_thread() is not self.frame_thread
+        ):
             self.frame_thread.join(timeout=2)
 
     def _capture_loop(self) -> None:
