@@ -152,6 +152,7 @@ class MeasurementController:
                            f"(Dauer: {session_duration})")
             
             self.session_id = None
+
             return True
             
         except Exception as exc:

@@ -43,12 +43,14 @@ def init_camera() -> Camera | None:
         return None
 
 
-def main() -> None:
+def create_gui() -> None:
     """Starte die GUI und initialisiere bei Bedarf die Kamera."""
 
     global global_camera, global_measurement_controller, global_alert_system
-    if global_camera is None:
-        global_camera = init_camera()
+    global_camera = init_camera()
+    if not global_camera:
+        ui.notify("Kamera konnte nicht initialisiert werden.", type='negative')
+        return 
     if global_alert_system is None:
         try:
             global_alert_system = create_alert_system_from_config()
@@ -65,6 +67,12 @@ def main() -> None:
             logger.error(f"MeasurementController-Init fehlgeschlagen: {exc}")
             global_measurement_controller = None
 
+    if global_measurement_controller:
+        controller = global_measurement_controller
+        global_camera.enable_motion_detection(
+            lambda frame, motion_result: controller.on_motion_detected(motion_result)
+        )
+
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
         with ui.column().classes("gap-4"):
             create_camfeed_content()
@@ -76,11 +84,3 @@ def main() -> None:
             create_motiondetection_card(camera=global_camera)
             create_emailcard()
 
-if __name__ in {'__main__', '__mp_main__'}:
-    try:
-        main()
-        ui.run(title='CVD-Tracker', reload=False)
-    finally:
-        # Cleanup
-        if global_camera:
-            global_camera.stop_frame_capture()

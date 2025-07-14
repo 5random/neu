@@ -4,14 +4,17 @@ from nicegui import ui
 from src.alert import AlertSystem
 from src.config import load_config, save_config
 from src.measurement import MeasurementController
+from src.cam.camera import Camera
 
-def create_measurement_card(measurement_controller: MeasurementController | None = None):
-
+def create_measurement_card(measurement_controller: MeasurementController | None = None, camera: Camera | None = None):
+    
     config = load_config()
     if measurement_controller is None:
         alert_system = AlertSystem(config.email, config.measurement, config)
         measurement_controller = MeasurementController(config.measurement, alert_system)
 
+    if camera and hasattr(camera, 'enable_motion_detection'):
+        camera.enable_motion_detection(lambda frame, motion_result: measurement_controller.on_motion_detected(motion_result))
     # ------------------------- Zustände -------------------------
 
     last_measurement: datetime | None = None
