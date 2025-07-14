@@ -4,6 +4,8 @@ from pathlib import Path
 import argparse
 from nicegui import ui
 
+from src.config import load_config
+
 # Projekt-Root zum Python-Pfad hinzufügen
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
@@ -19,32 +21,17 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-def setup_logging():
-    """Konfiguriert das Logging-System"""
-    # Logs-Verzeichnis erstellen falls nicht vorhanden
-    logs_dir = Path('logs')
-    logs_dir.mkdir(exist_ok=True)
-    
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(logs_dir / 'app.log', encoding='utf-8')
-        ]
-    )
+def main():
 
-def main() -> int:
     """Haupteinstiegspunkt der Anwendung"""
     args = parse_args()
     try:
-        # Logging zuerst konfigurieren
-        setup_logging()
-        logger = logging.getLogger(__name__)
-        
+        # Konfiguration laden und Logger einrichten
+        cfg = load_config()
+        logger = cfg.logging.setup_logger("cvd_tracker.main")
+
         logger.info("Starte CVD-Tracker Anwendung...")
-        
+
         from src.config import load_config
         cfg = load_config(args.config)
 
@@ -56,7 +43,7 @@ def main() -> int:
         ui.run(
             host=cfg.gui.host,
             port=cfg.gui.port,
-            title='CVD-Tracker',
+            title=cfg.gui.title,
             favicon='https://www.tuhh.de/favicon.ico',
             reload=False
         )
@@ -70,7 +57,7 @@ def main() -> int:
         return 1
         
     except Exception as e:
-        logger = logging.getLogger(__name__)
+        logger = logging.getLogger("cvd_tracker.main")
         logger.error(f"Fehler beim Start: {e}", exc_info=True)
         return 1
     
