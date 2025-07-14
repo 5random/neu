@@ -229,7 +229,6 @@ class GUIConfig:
     title: str
     host: str
     port: int
-    #webadress: str
     auto_open_browser: bool
     update_interval_ms: int
 
