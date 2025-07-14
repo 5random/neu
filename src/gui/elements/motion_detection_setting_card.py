@@ -282,12 +282,11 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                             try:
                                 frame = camera.take_snapshot()
                                 if frame is not None:
-                                    # Convert to base64 if it's a numpy array
-                                    if isinstance(frame, np.ndarray):
-                                        # Convert numpy array to base64 string for interactive_image
-                                        success, buffer = cv2.imencode('.jpg', frame)
-                                        if success:
-                                            image_src = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
+                                    success, buffer = cv2.imencode('.jpg', frame)
+                                    if success:
+                                        image_src = (
+                                            f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
+                                        )
                             except Exception as e:
                                 ui.notify(f"Snapshot-Fehler: {e}", type="warning")
 

@@ -240,7 +240,14 @@ class AlertSystem:
                                 except Exception as exc:
                                     self.logger.error(f"Allgemeiner Fehler beim Senden an {recipient}: {exc}")
                         
-                        break # Erfolgreich gesendet, Schleife verlassen
+                            # Nur aus der Retry-Schleife aussteigen, wenn
+                            # alle Nachrichten ohne Fehler verschickt wurden
+                            if success_count == len(messages):
+                                break
+
+                # Bei teilweisem Erfolg nicht erneut versuchen
+                if success_count > 0:
+                    break
 
             except (smtplib.SMTPException, ConnectionError, OSError) as exc:
                 if attempt == max_retries - 1:

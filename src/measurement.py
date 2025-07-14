@@ -112,7 +112,7 @@ class MeasurementController:
             self.is_session_active = True
             
             # Alert-Status zurücksetzen
-            self.last_motion_time = None
+            self.last_motion_time = self.session_start_time
             self.alert_triggered = False
             self.alert_trigger_time = None
             
@@ -279,9 +279,13 @@ class MeasurementController:
             return False
         
         if self.last_motion_time is None:
+            reference_time = self.session_start_time
+        else:
+            reference_time = self.last_motion_time
+        if reference_time is None:
             return False
-        
-        time_since_motion = datetime.now() - self.last_motion_time
+
+        time_since_motion = datetime.now() - reference_time
         alert_delay = timedelta(seconds=self.config.alert_delay_seconds)
         
         return time_since_motion >= alert_delay
