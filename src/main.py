@@ -48,8 +48,9 @@ def main():
         logger.info("Anwendung beendet")
         
     except ImportError as e:
-        print(f"Import-Fehler: {e}")
-        print("Installiere Abhängigkeiten: pip install -r requirements.txt")
+        logger = logging.getLogger(__name__)
+        logger.error(f"Import-Fehler: {e}")
+        logger.error("Installiere Abhängigkeiten: pip install -r requirements.txt")
         return 1
         
     except Exception as e:
