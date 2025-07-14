@@ -203,7 +203,7 @@ class EmailConfig:
             "Letzte Bewegung um {last_motion_time}\n"
             "Kamera: Index {camera_index}\n"
             "Sensitivität: {sensitivity}\n"
-            "ROI aktiv: {roi_active}\n\n"
+            "ROI aktiv: {roi_enabled}\n\n"
             "Im Anhang finden Sie das aktuelle Webcam-Bild."
         )
         

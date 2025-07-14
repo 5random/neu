@@ -73,7 +73,7 @@ class AlertSystem:
         if not email_config:
             raise ValueError("E-Mail-Konfiguration ist erforderlich")
     
-        if not email_config.validate():
+        if email_config.validate():
             raise ValueError("Ungültige E-Mail-Konfiguration")
         
         if not hasattr(email_config, 'smtp_server') or not email_config.smtp_server:
