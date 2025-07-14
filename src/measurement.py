@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from .config import MeasurementConfig
     from .alert import AlertSystem
     from .cam.motion import MotionResult
+    from .cam.camera import Camera
 
 
 class MeasurementController:
@@ -46,9 +47,10 @@ class MeasurementController:
     """
     
     def __init__(
-        self, 
+        self,
         config: 'MeasurementConfig',
         alert_system: Optional['AlertSystem'] = None,
+        camera: Optional['Camera'] = None,
         logger: Optional[logging.Logger] = None
     ):
         """
@@ -57,10 +59,12 @@ class MeasurementController:
         Args:
             config: MeasurementConfig mit Alert-Delay und Session-Parametern
             alert_system: Optional AlertSystem für E-Mail-Benachrichtigungen
+            camera: Optional Camera-Instanz für Snapshot-Aufnahmen
             logger: Optional Logger für Session-Tracking
         """
         self.config = config
         self.alert_system = alert_system
+        self.camera = camera
         self.logger = logger or logging.getLogger(__name__)
         
         # Session-Status-Management
@@ -302,10 +306,18 @@ class MeasurementController:
         
         try:
             if self.alert_system:
+                camera_frame = None
+                if self.camera:
+                    try:
+                        camera_frame = self.camera.take_snapshot()
+                    except Exception as exc:
+                        self.logger.error(f"Snapshot fehlgeschlagen: {exc}")
+
                 # E-Mail-Alert senden
                 success = self.alert_system.send_motion_alert(
                     last_motion_time=self.last_motion_time,
-                    session_id=self.session_id
+                    session_id=self.session_id,
+                    camera_frame=camera_frame,
                 )
                 
                 if success:
@@ -403,7 +415,8 @@ class MeasurementController:
 
 def create_measurement_controller_from_config(
     config_path: Optional[str] = None,
-    alert_system: Optional['AlertSystem'] = None
+    alert_system: Optional['AlertSystem'] = None,
+    camera: Optional['Camera'] = None
 ) -> MeasurementController:
     """
     Erstellt MeasurementController aus Konfiguration.
@@ -411,6 +424,7 @@ def create_measurement_controller_from_config(
     Args:
         config_path: Optional Pfad zur Konfigurationsdatei
         alert_system: Optional AlertSystem für E-Mail-Funktionalität
+        camera: Optional Camera-Instanz für Snapshots
         
     Returns:
         Konfigurierter MeasurementController
@@ -423,4 +437,4 @@ def create_measurement_controller_from_config(
     
     logger = logging.getLogger("measurement")
     
-    return MeasurementController(measurement_config, alert_system, logger)
+    return MeasurementController(measurement_config, alert_system, camera, logger)

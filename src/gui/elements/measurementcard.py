@@ -5,11 +5,12 @@ from src.alert import AlertSystem
 from src.config import load_config, save_config
 from src.measurement import MeasurementController
 
-def create_measurement_card():
+def create_measurement_card(measurement_controller: MeasurementController | None = None):
 
     config = load_config()
-    alert_system = AlertSystem(config.email, config.measurement, config)
-    measurement_controller = MeasurementController(config.measurement, alert_system)
+    if measurement_controller is None:
+        alert_system = AlertSystem(config.email, config.measurement, config)
+        measurement_controller = MeasurementController(config.measurement, alert_system)
 
     # ------------------------- Zustände -------------------------
 
