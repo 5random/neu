@@ -82,17 +82,14 @@ def create_measurement_card():
 
     
     def persist_settings() -> None:
-        # duration_input in Sekunden → Minuten runden
+        """Persist measurement duration settings to the config."""
         cfg = config.measurement
-        cfg.session_timeout_minutes = max(1, int(duration_input.value / 60)) if enable_limit.value else 0
+        cfg.session_timeout_minutes = (
+            max(1, int(duration_input.value / 60)) if enable_limit.value else 0
+        )
         save_config(config)
         measurement_controller.config = cfg
 
-        enable_limit.on('update:model-value', lambda e: (
-            duration_input.enable() if enable_limit.value else duration_input.disable(),
-            persist_settings()
-        ))
-        duration_input.on('update:model-value', lambda e: persist_settings() if enable_limit.value else None)
 
 
     # -------------------------- UI ------------------------------
@@ -103,11 +100,23 @@ def create_measurement_card():
             .classes('q-mb-md')
 
         with ui.row().classes('items-center q-gutter-sm q-mb-sm'):
-            enable_limit = ui.checkbox('max. Dauer')
+            enable_limit = ui.checkbox(
+                'max. Dauer', value=config.measurement.session_timeout_minutes > 0
+            )
             duration_input = ui.number(
-                label='Dauer [s]', value=60, min=1, format='%.0f'
+                label='Dauer [s]',
+                value=(
+                    config.measurement.session_timeout_minutes * 60
+                    if config.measurement.session_timeout_minutes > 0
+                    else 60
+                ),
+                min=1,
+                format='%.0f',
             ).props('dense outlined').style('width:120px')
-            duration_input.disable()
+            if enable_limit.value:
+                duration_input.enable()
+            else:
+                duration_input.disable()
 
         timer_label = ui.label('-').classes('text-subtitle1 q-mb-xs')
 
@@ -153,6 +162,9 @@ def create_measurement_card():
     # --------------------- Handler registrieren -----------------
     start_stop_btn.on('click', start_stop)
     enable_limit.on('update:model-value', toggle_duration)
+    enable_limit.on('update:model-value', lambda e: persist_settings())
+    duration_input.on('update:model-value', lambda e: persist_settings() if enable_limit.value else None)
     ui.timer(1.0, tick)
 
+    persist_settings()
     style_start_button()
