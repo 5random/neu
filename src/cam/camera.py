@@ -6,7 +6,7 @@ import signal
 import threading
 import time
 from dataclasses import asdict
-from typing import Callable, Optional, Union, Dict, Any
+from typing import Callable, Optional
 import os
 
 import cv2
@@ -310,8 +310,13 @@ class Camera:
         self.frame_thread.start()
 
     def stop_frame_capture(self) -> None:
+        """Stop the frame grabbing thread."""
         self.is_running = False
-        if self.frame_thread and self.frame_thread.is_alive():
+        if (
+            self.frame_thread
+            and self.frame_thread.is_alive()
+            and threading.current_thread() is not self.frame_thread
+        ):
             self.frame_thread.join(timeout=2)
 
     def _capture_loop(self) -> None:
@@ -509,23 +514,17 @@ class Camera:
         with self.frame_lock:
             return None if self.current_frame is None else self.current_frame.copy()
 
-    def take_snapshot(self) -> Optional[Union[np.ndarray, Dict[str, Any]]]:
-        """Macht einen Snapshot der aktuellen Kamera"""
+    def take_snapshot(self) -> Optional[np.ndarray]:
+        """Gibt einen Snapshot des aktuellen Frames zurück."""
         if not self.video_capture or not self.video_capture.isOpened():
             return None
         ret, frame = self.video_capture.read()
-        snapshot = frame.copy() if ret else self.get_current_frame()
-        return snapshot
+        return frame.copy() if ret else self.get_current_frame()
 
     def take_hq_snapshot(self, jpeg_quality: int = 95) -> Optional[bytes]:
-        """Macht einen hochqualitativen Snapshot für E-Mail-Anhänge"""
-        result = self.take_snapshot()
-        if result is None:
-            return None
-        # Extrahiere reines Frame-Array
-        frame_array = result['frame'] if isinstance(result, dict) else result
-        if frame_array is None or not isinstance(frame_array, np.ndarray):
-            self.logger.error("Invalid frame type for JPEG encoding")
+        """Snapshot als JPEG mit hoher Qualität."""
+        frame_array = self.take_snapshot()
+        if frame_array is None:
             return None
         # HQ JPEG-Kodierung
         encode_params = [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
@@ -569,6 +568,10 @@ class Camera:
             self.video_capture.release()
 
     # ----------------------- GUI / Routing ---------------------------- #
+
+    def initialize_routes(self):
+        """Initialize FastAPI routes for video streaming. Call this before starting the web interface."""
+        self._setup_routes()
 
     def _setup_routes(self):
         

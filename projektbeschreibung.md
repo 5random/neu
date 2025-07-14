@@ -1,4 +1,4 @@
-## Programmbeschreibung: Python-Anwendung mit NiceGUI zur Webcam-Überwachung und Bewegungserkennung
+## Programmbeschreibung: simple Python-Anwendung mit NiceGUI zur Webcam-Überwachung und Bewegungserkennung
 
 ### 1. Webcam-Steuerung und Anzeige
 - Das Programm soll einen Webcam-Stream auslesen und diesen in einer grafischen Benutzeroberfläche (GUI) anzeigen.
@@ -25,6 +25,8 @@
 - Während einer laufenden Messung soll bei anhaltender Bewegungslosigkeit (keine Bewegung für eine einstellbare Zeit, „Alert-Delay“) automatisch eine E-Mail-Benachrichtigung ausgelöst werden.
 - Die E-Mail enthält:
     - Einen Zeitstempel (Datum und Uhrzeit des Ereignisses)
+    - Link zu Website
+    - nicetohave: aktuelles Webcambild (optional)
 - Es sollen mehrere E-Mail-Empfänger hinterlegt werden, die im Alarmfall gleichzeitig benachrichtigt werden.
 
 ### 4. Technische Umsetzung

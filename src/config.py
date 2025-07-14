@@ -7,6 +7,15 @@ import re
 import yaml
 import logging
 import logging.handlers
+
+# Basic logging setup to capture early messages before configuration is loaded
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+logger = logging.getLogger(__name__)
 from enum import Enum
 
 # ---------------------------------------------------------------------------
@@ -173,6 +182,7 @@ class EmailTemplate:
 
 @dataclass
 class EmailConfig:
+    website_url: str
     recipients: List[str]
     smtp_server: str
     smtp_port: int
@@ -192,11 +202,24 @@ class EmailConfig:
 
     def alert_template(self) -> EmailTemplate:
         data = self.templates.get("alert", {})
-        return EmailTemplate(
-            subject=data.get("subject", "Bewegungsalarm - {timestamp}"),
-            body=data.get("body", "Bewegung erkannt um {timestamp}"),
+        
+        # Robuster Default-Body mit allen verfügbaren Parametern
+        default_body = (
+            "Bewegung wird seit {timestamp} nicht erkannt!\n"
+            "Bitte überprüfen Sie die Website unter: {website_url}\n\n"
+            "Details:\n"
+            "Session-ID: {session_id}\n"
+            "Letzte Bewegung um {last_motion_time}\n"
+            "Kamera: Index {camera_index}\n"
+            "Sensitivität: {sensitivity}\n"
+            "ROI aktiv: {roi_enabled}\n\n"
+            "Im Anhang finden Sie das aktuelle Webcam-Bild."
         )
-
+        
+        return EmailTemplate(
+            subject=data.get("subject", "CVD-Tracker: Bewegungsalarm - {timestamp}"),
+            body=data.get("body", default_body),
+        )
 # ---------------------------------------------------------------------------
 # GUI & Logging
 # ---------------------------------------------------------------------------
@@ -225,6 +248,9 @@ class LoggingConfig:
         if not LogLevel.is_valid(self.level):
             valid_levels = [level.value for level in LogLevel]
             errors.append(f"Ungültiger Log-Level '{self.level}'. Gültig: {valid_levels}")
+        
+        if not isinstance(self.console_output, bool):
+            errors.append("console_output muss ein Bool sein")
         
         # Datei-Parameter validieren
         if self.max_file_size_mb < 1:
@@ -317,37 +343,36 @@ class AppConfig:
 
 def load_config(path: str = "config/config.yaml") -> AppConfig:
     """Konfiguration mit RotatingFileHandler-Support laden"""
+    global logger
     try:
         # Absoluten Pfad konstruieren falls nötig
         if not Path(path).is_absolute():
-            project_root = Path(__file__).parent.parent.parent
+            project_root = Path(__file__).parents[1]
             config_path = project_root / path
         else:
             config_path = Path(path)
-        
+
         with open(config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-        
-        print(f"✅ Konfiguration geladen: {config_path}")
-        
+
     except FileNotFoundError:
-        print(f"❌ Konfigurationsdatei nicht gefunden: {path}")
-        print("🔧 Verwende Standard-Konfiguration")
+        logger.error("❌ Konfigurationsdatei nicht gefunden: %s", path)
+        logger.info("🔧 Verwende Standard-Konfiguration")
         return _create_default_config()
-    
+
     except yaml.YAMLError as e:
-        print(f"❌ YAML-Parsing-Fehler: {e}")
-        print("🔧 Verwende Standard-Konfiguration")
+        logger.error("❌ YAML-Parsing-Fehler: %s", e)
+        logger.info("🔧 Verwende Standard-Konfiguration")
         return _create_default_config()
-    
+
     except Exception as e:
-        print(f"❌ Unerwarteter Fehler beim Config-Loading: {e}")
-        print("🔧 Verwende Standard-Konfiguration") 
+        logger.error("❌ Unerwarteter Fehler beim Config-Loading: %s", e)
+        logger.info("🔧 Verwende Standard-Konfiguration")
         return _create_default_config()
     
     # Defaults für Logging anwenden
     data = _apply_defaults(data)
-    
+
     # LoggingConfig mit erweiterten Parametern
     logging_data = data.get("logging", {})
     logging_config = LoggingConfig(
@@ -357,6 +382,11 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
         backup_count=logging_data.get("backup_count", 5),
         console_output=logging_data.get("console_output", True)
     )
+
+    # Jetzt den finalen Logger initialisieren
+    app_logger = logging_config.setup_logger("cvd_tracker")
+    logger = app_logger.getChild("config")
+    logger.info("✅ Konfiguration geladen: %s", config_path)
     cfg = AppConfig(
         webcam=WebcamConfig(**data["webcam"]),
         uvc_controls=UVCConfig(
@@ -378,10 +408,10 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
         logging=logging_config,  # Erweiterte Logging-Config
     )
     if errs := cfg.validate_all():
-        print("⚠️ Konfig‑Warnungen:")
+        logger.warning("⚠️ Konfig‑Warnungen:")
         for section, e in errs.items():
             for msg in e:
-                print(f"  {section}: {msg}")
+                logger.warning("  %s: %s", section, msg)
     cfg.measurement.ensure_save_path()
     return cfg
 
@@ -409,16 +439,27 @@ def _apply_defaults(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def _create_default_config() -> AppConfig:
     """Fallback-Konfiguration für Notfälle"""
+    logger.info("Erzeuge Default-Konfiguration")
     return AppConfig(
         webcam=WebcamConfig(
             camera_index=0,
-            default_resolution={"width": 640, "height": 480},
+            default_resolution={"width": 1920, "height": 1080},
             fps=30,
-            resolution=[{"width": 640, "height": 480}]
-        ),
-        uvc_controls=UVCConfig(
-            brightness=128, hue=0, contrast=32, saturation=32,
-            sharpness=3, gamma=100, gain=0, backlight_compensation=0,
+            resolution=[{"width": 640, "height": 480},
+                        {"width": 320, "height": 240},
+                        {"width": 352, "height": 288},
+                        {"width": 640, "height": 480},
+                        {"width": 800, "height": 600},
+                        {"width": 1024, "height": 768},
+                        {"width": 1280, "height": 720},
+                        {"width": 1280, "height": 960},
+                        {"width": 1280, "height": 1024},
+                        {"width": 1920, "height": 1080}
+                    ]
+                ),
+                uvc_controls=UVCConfig(
+            brightness=0, hue=0, contrast=16, saturation=64,
+            sharpness=2, gamma=164, gain=10, backlight_compensation=42,
             white_balance=WhiteBalance(auto=True, value=4000),
             exposure=Exposure(auto=True, value=100)
         ),
@@ -432,15 +473,26 @@ def _create_default_config() -> AppConfig:
             alert_delay_seconds=300
         ),
         email=EmailConfig(
+            website_url="http://134.28.91.48:8080",
             recipients=["user@example.com"],
             smtp_server="smtp.example.com",
-            smtp_port=587,
+            smtp_port=25,
             sender_email="sender@example.com",
-            templates={"alert": {"subject": "Bewegungsalarm - {timestamp}", "body": "Bewegung erkannt"}}
+            templates={"alert": {"subject": "CVD-Tracker: Alarm - {timestamp}", "body": 
+                                 "Bewegung wird seit {timestamp} nicht erkannt!"
+                                 "\nBitte überprüfen Sie den Fehler über die Webanwendung unter: {website_url}."
+                                 "\n\nDetails:"
+                                 "\nSession-ID: {session_id}"
+                                 "\nLetzte Bewegung um {last_motion_time}"
+                                 "\nKamera: Index {camera_index}"
+                                 "\nSensitivität: {sensitivity}"
+                                 "\nROI aktiv: {roi_enabled}"
+                                 "\n\nIm Anhang finden Sie das aktuelle Webcam-Bild."
+                                 }}
         ),
         gui=GUIConfig(
             title="CVD-Tracker", host="localhost", port=8080,
-            auto_open_browser=True, update_interval_ms=100
+            auto_open_browser=False, update_interval_ms=100
         ),
         logging=LoggingConfig(
             level="INFO", file="logs/cvd_tracker.log",
@@ -453,9 +505,9 @@ def save_config(cfg: AppConfig, path: str = "config/config.yaml") -> None:
     try:
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(asdict(cfg), f, indent=2, allow_unicode=True)
-        print(f"✅ Config gespeichert → {path}")
+        logger.info("✅ Config gespeichert → %s", path)
     except Exception as e:
-        print(f"❌ Fehler beim Speichern: {e}")
+        logger.error("❌ Fehler beim Speichern: %s", e)
 
 # ---------------------------------------------------------------------------
 # Testing
@@ -463,18 +515,18 @@ def save_config(cfg: AppConfig, path: str = "config/config.yaml") -> None:
 
 if __name__ == "__main__":
     """Test der erweiterten Konfiguration mit RotatingFileHandler"""
-    print("🧪 Teste Konfigurationssystem mit RotatingFileHandler...")
+    logger.info("🧪 Teste Konfigurationssystem mit RotatingFileHandler...")
     
     # Konfiguration laden
     config = load_config()
     
     # Logger einrichten und testen
     logger = config.logging.setup_logger()
-    
+
     # Logger testen
     logger.info("Test-Nachricht: Konfiguration geladen")
     logger.debug("Debug-Test")
     logger.warning("Warnung-Test")
     logger.error("Fehler-Test")
-    
-    print("✅ RotatingFileHandler-Test abgeschlossen")
+
+    logger.info("✅ RotatingFileHandler-Test abgeschlossen")

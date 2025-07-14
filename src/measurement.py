@@ -16,12 +16,14 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta
+import math
 from typing import Optional, Dict, Any, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .config import MeasurementConfig
     from .alert import AlertSystem
     from .cam.motion import MotionResult
+    from .cam.camera import Camera
 
 
 class MeasurementController:
@@ -46,9 +48,10 @@ class MeasurementController:
     """
     
     def __init__(
-        self, 
+        self,
         config: 'MeasurementConfig',
         alert_system: Optional['AlertSystem'] = None,
+        camera: Optional['Camera'] = None,
         logger: Optional[logging.Logger] = None
     ):
         """
@@ -57,10 +60,12 @@ class MeasurementController:
         Args:
             config: MeasurementConfig mit Alert-Delay und Session-Parametern
             alert_system: Optional AlertSystem für E-Mail-Benachrichtigungen
+            camera: Optional Camera-Instanz für Snapshot-Aufnahmen
             logger: Optional Logger für Session-Tracking
         """
         self.config = config
         self.alert_system = alert_system
+        self.camera = camera
         self.logger = logger or logging.getLogger(__name__)
         
         # Session-Status-Management
@@ -91,6 +96,15 @@ class MeasurementController:
         self.logger.info("MeasurementController initialisiert")
     
     # === Session-Management ===
+    def _ensure_valid_time(self) -> None:
+        min_minutes = max(5, math.ceil(self.config.alert_delay_seconds // 60))
+        if 0 < self.config.session_timeout_minutes < min_minutes:
+            self.logger.warning(
+                f"Session-Timeout ({self.config.session_timeout_minutes}min) "
+                f"ist kürzer als Alert-Delay 5 Minuten - "
+                f"wird auf {min_minutes}min gesetzt"
+            )
+            self.config.session_timeout_minutes = min_minutes
     
     def start_session(self, session_id: Optional[str] = None) -> bool:
         """
@@ -107,12 +121,13 @@ class MeasurementController:
             self.stop_session()
         
         try:
+            self._ensure_valid_time()
             self.session_start_time = datetime.now()
             self.session_id = session_id or f"session_{int(time.time())}"
             self.is_session_active = True
             
             # Alert-Status zurücksetzen
-            self.last_motion_time = None
+            self.last_motion_time = self.session_start_time
             self.alert_triggered = False
             self.alert_trigger_time = None
             
@@ -148,6 +163,7 @@ class MeasurementController:
                            f"(Dauer: {session_duration})")
             
             self.session_id = None
+
             return True
             
         except Exception as exc:
@@ -279,9 +295,13 @@ class MeasurementController:
             return False
         
         if self.last_motion_time is None:
+            reference_time = self.session_start_time
+        else:
+            reference_time = self.last_motion_time
+        if reference_time is None:
             return False
-        
-        time_since_motion = datetime.now() - self.last_motion_time
+
+        time_since_motion = datetime.now() - reference_time
         alert_delay = timedelta(seconds=self.config.alert_delay_seconds)
         
         return time_since_motion >= alert_delay
@@ -298,10 +318,18 @@ class MeasurementController:
         
         try:
             if self.alert_system:
+                camera_frame = None
+                if self.camera:
+                    try:
+                        camera_frame = self.camera.take_snapshot()
+                    except Exception as exc:
+                        self.logger.error(f"Snapshot fehlgeschlagen: {exc}")
+
                 # E-Mail-Alert senden
                 success = self.alert_system.send_motion_alert(
                     last_motion_time=self.last_motion_time,
-                    session_id=self.session_id
+                    session_id=self.session_id,
+                    camera_frame=camera_frame,
                 )
                 
                 if success:
@@ -358,10 +386,15 @@ class MeasurementController:
         return datetime.now() - self.session_start_time
     
     def _get_time_since_motion(self) -> Optional[timedelta]:
-        """Berechnet Zeit seit letzter Bewegung."""
+        """Berechnet Zeit seit letzter Bewegung oder seit Sitzungsstart als Fallback."""
+        # Fallback auf session_start_time wenn keine Bewegung registriert wurde
         if self.last_motion_time is None:
+            reference_time = self.session_start_time
+        else:
+            reference_time = self.last_motion_time
+        if reference_time is None:
             return None
-        return datetime.now() - self.last_motion_time
+        return datetime.now() - reference_time
     
     def _get_alert_countdown(self) -> Optional[int]:
         """
@@ -373,16 +406,19 @@ class MeasurementController:
         if not self.is_session_active or self.alert_triggered:
             return None
         
+        # Fallback auf session_start_time wenn keine Bewegung registriert wurde
         if self.last_motion_time is None:
+            reference_time = self.session_start_time
+        else:
+            reference_time = self.last_motion_time
+        if reference_time is None:
             return None
-        
-        time_since_motion = self._get_time_since_motion()
-        if time_since_motion is None:
-            return None
+
+        # Berechne Zeit seit Referenzzeitpunkt
+        time_since_motion = datetime.now() - reference_time
         
         alert_delay_seconds = self.config.alert_delay_seconds
         elapsed_seconds = time_since_motion.total_seconds()
-        
         remaining = alert_delay_seconds - elapsed_seconds
         return max(0, int(remaining))
 
@@ -391,7 +427,8 @@ class MeasurementController:
 
 def create_measurement_controller_from_config(
     config_path: Optional[str] = None,
-    alert_system: Optional['AlertSystem'] = None
+    alert_system: Optional['AlertSystem'] = None,
+    camera: Optional['Camera'] = None
 ) -> MeasurementController:
     """
     Erstellt MeasurementController aus Konfiguration.
@@ -399,6 +436,7 @@ def create_measurement_controller_from_config(
     Args:
         config_path: Optional Pfad zur Konfigurationsdatei
         alert_system: Optional AlertSystem für E-Mail-Funktionalität
+        camera: Optional Camera-Instanz für Snapshots
         
     Returns:
         Konfigurierter MeasurementController
@@ -411,4 +449,4 @@ def create_measurement_controller_from_config(
     
     logger = logging.getLogger("measurement")
     
-    return MeasurementController(measurement_config, alert_system, logger)
+    return MeasurementController(measurement_config, alert_system, camera, logger)
