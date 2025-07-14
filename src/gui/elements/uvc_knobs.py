@@ -17,8 +17,8 @@ def make_handler(setter: Callable[[T], Any], fallback: T) -> Callable[[Any], Non
         setter(value)
     return _cb
 
-project_root = Path(__file__).parents[4]  # 4 Ebenen nach oben
-sys.path.insert(0, str(project_root))
+#project_root = Path(__file__).parents[4]  # 4 Ebenen nach oben
+#sys.path.insert(0, str(project_root))
 
 from src.cam.camera import Camera
 

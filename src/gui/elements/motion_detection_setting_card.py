@@ -12,8 +12,7 @@ from nicegui.elements.label import Label
 from nicegui.elements.interactive_image import InteractiveImage
 from nicegui.elements.knob import Knob
 
-from src.cam.camera import Camera
-from src.cam.motion import MotionDetector
+from src.cam.camera import Camera, MotionDetector
 
 # ─────────────────────────────────────────────────────────────────────────────
 def create_motiondetection_card(camera:Optional[Camera] = None) -> None:

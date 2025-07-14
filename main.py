@@ -2,14 +2,14 @@ import sys
 import logging
 from pathlib import Path
 import argparse
-from nicegui import ui
-
-from src.config import load_config
 
 # Projekt-Root zum Python-Pfad hinzufügen
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
+from nicegui import ui
+from src.config import load_config
+from src.gui.gui_ import create_gui
 
 def parse_args() -> argparse.Namespace:
     """Kommandozeilenargumente parsen."""
@@ -32,11 +32,6 @@ def main():
 
         logger.info("Starte CVD-Tracker Anwendung...")
 
-        from src.config import load_config
-        cfg = load_config(args.config)
-
-        # GUI erstellen
-        from gui.gui import create_gui
         create_gui(config_path=args.config)
         
         # NiceGUI starten

@@ -5,10 +5,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 # Projekt-Root zum Python-Pfad hinzufügen
-project_root = Path(__file__).parents[2]
-sys.path.insert(0, str(project_root))
+#project_root = Path(__file__).parents[2]
+#sys.path.insert(0, str(project_root))
 
-from elements import (
+from src.gui.elements import (
     create_camfeed_content,
     create_emailcard,
     create_measurement_card,
