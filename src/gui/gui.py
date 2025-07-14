@@ -1,6 +1,9 @@
 from nicegui import ui, app
 import sys
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 # Projekt-Root zum Python-Pfad hinzufügen
 project_root = Path(__file__).parents[2]
 sys.path.insert(0, str(project_root))
@@ -33,6 +36,7 @@ def init_camera() -> Camera | None:
     except Exception as e:
         print(f"FEHLER: {e}")
         return None
+
 
 def main() -> None:
     """Starte die GUI und initialisiere bei Bedarf die Kamera."""
