@@ -1,11 +1,23 @@
 import sys
 import logging
 from pathlib import Path
+import argparse
 from nicegui import ui
 
 # Projekt-Root zum Python-Pfad hinzufügen
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
+
+
+def parse_args() -> argparse.Namespace:
+    """Kommandozeilenargumente parsen."""
+    parser = argparse.ArgumentParser(description="CVD-Tracker")
+    parser.add_argument(
+        "--config",
+        default="config/config.yaml",
+        help="Pfad zur Konfigurationsdatei",
+    )
+    return parser.parse_args()
 
 def setup_logging():
     """Konfiguriert das Logging-System"""
@@ -23,8 +35,9 @@ def setup_logging():
         ]
     )
 
-def main():
+def main() -> int:
     """Haupteinstiegspunkt der Anwendung"""
+    args = parse_args()
     try:
         # Logging zuerst konfigurieren
         setup_logging()
@@ -32,14 +45,17 @@ def main():
         
         logger.info("Starte CVD-Tracker Anwendung...")
         
+        from src.config import load_config
+        cfg = load_config(args.config)
+
         # GUI erstellen
         from gui.gui import create_gui
-        create_gui()
+        create_gui(config_path=args.config)
         
         # NiceGUI starten
         ui.run(
-            host='0.0.0.0', 
-            port=8080, 
+            host=cfg.gui.host,
+            port=cfg.gui.port,
             title='CVD-Tracker',
             favicon='https://www.tuhh.de/favicon.ico',
             reload=False
