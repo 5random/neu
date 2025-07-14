@@ -1,10 +1,9 @@
 email:
   recipients:
-  - user1@example.com
-  - user2@example.com
-  sender_email: sender@example.com
+  - willem.dittloff@tuhh.de
+  sender_email: willem.dittloff@tuhh.de
   smtp_port: 25
-  smtp_server: smtp.example.com
+  smtp_server: mail.tuhh.de
   templates:
     alert:
       body: 'Bewegung wird seit {timestamp} nicht erkannt!

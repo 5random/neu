@@ -20,7 +20,7 @@ def create_measurement_card(measurement_controller: MeasurementController | None
     last_measurement: datetime | None = None
 
     def on_motion(_):
-        ui.timer(0, update_view, once=True)
+        update_view.refresh()
 
     measurement_controller.register_motion_callback(on_motion)
     
@@ -30,7 +30,7 @@ def create_measurement_card(measurement_controller: MeasurementController | None
         h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
         return f'{h:02}:{m:02}:{s:02}'
 
-
+    @ui.refreshable
     def update_view() -> None:
         """Aktualisiert Laufzeit, Fortschritt, Labels."""
         status = measurement_controller.get_session_status()
@@ -51,21 +51,25 @@ def create_measurement_card(measurement_controller: MeasurementController | None
                 timer_label.text = fmt(elapsed)
                 progress_row.visible = False
         else:
-            timer_label.text = '–'
+            timer_label.text = '-'
             progress_row.visible = False
         
         # Motion-Status anzeigen
-        if status.get('recent_motion_detected'):
-            motion_label.text = 'Bewegung erkannt'
-        else:
-            motion_label.text = 'Keine Bewegung'
+        motion = status.get('recent_motion_detected', False)
+        motion_label.text = 'Bewegung erkannt' if motion else 'Keine Bewegung'
 
-        # Alert-Countdown anzeigen
-        countdown = status.get('alert_countdown')
-        if countdown is not None:
-            alert_label.text = f'Alarm in {fmt(timedelta(seconds=countdown))}'
+        # Alert-Info anzeigen
+        if status.get('recent_motion_detected'):
+            alert_label.text = 'Kein Alarm notwendig'
+            alert_label.classes(remove='text-negative text-grey', add='text-positive')
         else:
-            alert_label.text = ''
+            countdown = status.get('alert_countdown')
+            if countdown is not None:
+                alert_label.text = f'Alarm in {fmt(timedelta(seconds=countdown))}'
+                alert_label.classes(remove='text-positive text-grey', add='text-negative')
+            else:
+                alert_label.text = ''
+                alert_label.classes(remove='text-negative text-positive', add='text-grey')
 
         # --- letzte Messung ------------
         last_label.text = (
@@ -131,7 +135,7 @@ def create_measurement_card(measurement_controller: MeasurementController | None
         progress_row.visible = False
 
         motion_label = ui.label('Keine Bewegung').classes('text-caption text-grey q-mb-xs')
-        alert_label = ui.label('').classes('text-caption text-negative q-mb-xs')
+        alert_label = ui.label('').classes('text-caption q-mb-xs')
         last_label = ui.label('Letzte Messung: –').classes('text-caption text-grey')
 
 
