@@ -71,27 +71,27 @@ class Camera:
         else:
             # macOS oder unbekannt → OpenCV entscheidet selbst
             self.backend = 0
-            self.logger.warning("Unbekanntes OS – benutze Standard‑Backend (kann Regler einschränken)")
+            self.logger.warning("Unknown OS - use standard backend (can restrict controllers)")
 
         # -- Kamera initialisieren --
         self._initialize_camera()
         ret, frame = self.video_capture.read() if self.video_capture else (False, None)
         if not ret or frame is None:
-            self.logger.debug("Frame-Grab fehlgeschlagen")
+            self.logger.debug("Frame grab failed")
             time.sleep(0.5)
             self._initialize_camera()
 
     def _initialize_camera(self) -> None:
         try:
             self.logger.info(
-                f"Öffne Kamera‑Index {self.webcam_config.camera_index} mit Backend {self.backend}"
+                f"Open camera index {self.webcam_config.camera_index} with backend {self.backend}"
             )
             self.video_capture = cv2.VideoCapture(
                 self.webcam_config.camera_index, self.backend
             )
 
             if not self.video_capture.isOpened():
-                raise RuntimeError("Kamera konnte nicht geöffnet werden")
+                raise RuntimeError("Camera could not be opened")
 
             self._set_camera_properties()
             self._apply_uvc_controls()
@@ -99,11 +99,11 @@ class Camera:
             # Test‑Frame zum Validieren
             ret, _ = self.video_capture.read()
             if not ret:
-                raise RuntimeError("Kein Frame von Kamera erhalten")
+                raise RuntimeError("No frame received from camera")
 
-            self.logger.info("Kamera erfolgreich initialisiert")
+            self.logger.info("Camera successfully initialized")
         except Exception as exc:
-            self.logger.error(f"Initialisierung fehlgeschlagen: {exc}")
+            self.logger.error(f"Initialization failed: {exc}")
             if self.video_capture is not None:
                 self.video_capture.release()
             raise
@@ -111,7 +111,7 @@ class Camera:
     def _set_camera_properties(self) -> None:
         """Grundlegende Auflösung / FPS etc. setzen."""
         if not self.video_capture:
-            raise RuntimeError("Kamera nicht initialisiert")
+            raise RuntimeError("Camera not initialized")
 
         res = self.webcam_config.get_default_resolution()
         self._safe_set(cv2.CAP_PROP_FRAME_WIDTH, res.width)
@@ -146,15 +146,15 @@ class Camera:
             cfg_path = path or self.config_path
             try:
                 save_config(self.app_config, cfg_path)
-                self.logger.info(f"UVC-Konfiguration gespeichert: {cfg_path}")
+                self.logger.info(f"UVC-Configuration saved: {cfg_path}")
                 return True
             except Exception as exc:
-                self.logger.error(f"Fehler beim Speichern der UVC-Konfiguration: {exc}")
+                self.logger.error(f"Error saving UVC configuration: {exc}")
                 return False
 
     def _apply_uvc_controls(self) -> None:
         if not self.video_capture:
-            raise RuntimeError("Kamera nicht initialisiert")
+            raise RuntimeError("Camera not initialized")
 
         # Hilfsfunktionen für Auto‑/Manuell‑Flags
         def _set_auto_exposure(auto: bool) -> None:
@@ -197,16 +197,16 @@ class Camera:
             value = getattr(self.uvc_config, name, None)
             if value is not None:
                 if not self._safe_set(prop, value):
-                    self.logger.debug(f"Setzen von {name} ({value}) wurde vom Treiber ignoriert")
+                    self.logger.debug(f"Setting of {name} ({value}) was ignored by the driver")
 
-        self.logger.info("UVC-Controls angewendet")
+        self.logger.info("UVC controls applied")
 
     # ------------------ Öffentliche Setter‑Methoden ------------------- #
 
     # Allgemeiner Setter wird genutzt, damit GUI‑Slider etc. einfach callen können
     def _set_uvc_parameter(self, name: str, cv_prop: int, value: float) -> bool:
         if not self._safe_set(cv_prop, value):
-            self.logger.warning(f"{name} konnte nicht gesetzt werden – Treiber ignoriert Wert {value}")
+            self.logger.warning(f"{name} could not be set - driver ignores value {value}")
             return False
         setattr(self.uvc_config, name, value)  # nur RAM – Persistenz separat
         return True
@@ -303,7 +303,7 @@ class Camera:
         if self.is_running:
             return
         if not self.video_capture or not self.video_capture.isOpened():
-            raise RuntimeError("Kamera nicht verfügbar")
+            raise RuntimeError("camera not available")
 
         self.is_running = True
         self.frame_thread = threading.Thread(target=self._capture_loop, daemon=True)
@@ -324,22 +324,22 @@ class Camera:
              ret, frame = self.video_capture.read() if self.video_capture else (False, None)
 
              if not ret or frame is None:
-                self.logger.debug("Frame-Grab fehlgeschlagen")
+                self.logger.debug("Frame grab failed")
                 if self.video_capture and self.video_capture.isOpened(): self.video_capture.release()
                  # Reconnect-Logik
                 self._reconnect_attempts += 1
                 if self._reconnect_attempts <= self.max_reconnect_attempts:
                     self.logger.warning(
-                        f"Kamera nicht erreichbar, versuche erneut ({self._reconnect_attempts}/{self.max_reconnect_attempts})"
+                        f"Camera not reachable, retrying ({self._reconnect_attempts}/{self.max_reconnect_attempts})"
                     )
                     time.sleep(self.reconnect_interval)
                     try:
                         self._initialize_camera()
                     except Exception as exc:
-                        self.logger.error(f"Reconnect fehlgeschlagen: {exc}")
+                        self.logger.error(f"Reconnect failed: {exc}")
                     continue
                 else:
-                    self.logger.error("Maximale Reconnect-Versuche erreicht")
+                    self.logger.error("Max. reconnect attempts reached")
                     self.stop_frame_capture()
                     break
 
@@ -360,7 +360,7 @@ class Camera:
                          self.motion_callback(frame, motion_result)
                      
                  except Exception as exc:
-                     self.logger.error(f"Motion-Detection-Fehler: {exc}")
+                     self.logger.error(f"Motion-Detection-Error: {exc}")
              elif self.motion_callback:
                  # Fallback: Alten Callback-Stil unterstützen für Rückwärtskompatibilität
                  try:
@@ -374,7 +374,7 @@ class Camera:
                      self.last_motion_result = dummy_result
                      self.motion_callback(frame, dummy_result)
                  except Exception as exc:
-                     self.logger.error(f"Motion-Callback-Fehler: {exc}")
+                     self.logger.error(f"Motion-Callback-Error: {exc}")
 
 
     # ---------------- Motion-Detection Steuerung --------------------- #
@@ -501,11 +501,11 @@ class Camera:
             self.set_auto_exposure(True)
             self.set_auto_white_balance(True)
             
-            self.logger.info("UVC-Parameter auf Defaults zurückgesetzt")
+            self.logger.info("UVC parameters reset to defaults")
             return success
             
         except Exception as exc:
-            self.logger.error(f"Fehler beim Zurücksetzen der UVC-Parameter: {exc}")
+            self.logger.error(f"Error resetting UVC parameters: {exc}")
             return False
 
     # ----------------- Frame‑Zugriff und Utils ------------------------ #

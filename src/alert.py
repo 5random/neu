@@ -166,7 +166,7 @@ class AlertSystem:
             except (KeyError, ValueError, AttributeError) as e:
                 self.logger.error(f"Error when rendering the email template: {e}, use fallback template")
                 timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
-                subject = f"no motion detected - {timestamp}"
+                subject = f"CVD-Alert: No motion detected - {timestamp}"
                 body = (
                     f"Motion has not been detected since {timestamp}!\n"
                     f"Please check the website at: {self.email_config.website_url}\n\n"

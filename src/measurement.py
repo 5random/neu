@@ -93,16 +93,16 @@ class MeasurementController:
         self.alert_check_interval: float = 3.0  # Alle 3 Sekunden Alert-Status prüfen
         self.last_alert_check: Optional[datetime] = None
         
-        self.logger.info("MeasurementController initialisiert")
+        self.logger.info("MeasurementController initialized")
     
     # === Session-Management ===
     def _ensure_valid_time(self) -> None:
         min_minutes = max(5, math.ceil(self.config.alert_delay_seconds // 60))
         if 0 < self.config.session_timeout_minutes < min_minutes:
             self.logger.warning(
-                f"Session-Timeout ({self.config.session_timeout_minutes}min) "
-                f"ist kürzer als Alert-Delay 5 Minuten - "
-                f"wird auf {min_minutes}min gesetzt"
+                f"Session timeout ({self.config.session_timeout_minutes}min) "
+                f"is shorter than alert delay 5 minutes - "
+                f"setting to {min_minutes}min"
             )
             self.config.session_timeout_minutes = min_minutes
     
@@ -117,7 +117,7 @@ class MeasurementController:
             True wenn Session erfolgreich gestartet
         """
         if self.is_session_active:
-            self.logger.warning("Session bereits aktiv - stoppe vorherige Session")
+            self.logger.warning("Session already active - stopping previous session")
             self.stop_session()
         
         try:
@@ -135,11 +135,11 @@ class MeasurementController:
             self.alerts_sent_this_session = 0
             self.last_alert_check = None
             
-            self.logger.info(f"Session gestartet: {self.session_id}")
+            self.logger.info(f"Session started: {self.session_id}")
             return True
             
         except Exception as exc:
-            self.logger.error(f"Fehler beim Session-Start: {exc}")
+            self.logger.error(f"Error starting session: {exc}")
             return False
     
     def stop_session(self) -> bool:
@@ -150,7 +150,7 @@ class MeasurementController:
             True wenn Session erfolgreich gestoppt
         """
         if not self.is_session_active:
-            self.logger.warning("Keine aktive Session zum Stoppen")
+            self.logger.warning("No active session to stop")
             return False
         
         try:
@@ -158,16 +158,16 @@ class MeasurementController:
             
             self.is_session_active = False
             self.session_start_time = None
-            
-            self.logger.info(f"Session gestoppt: {self.session_id} "
-                           f"(Dauer: {session_duration})")
-            
+
+            self.logger.info(f"Session stopped: {self.session_id} "
+                           f"(Duration: {session_duration})")
+
             self.session_id = None
 
             return True
             
         except Exception as exc:
-            self.logger.error(f"Fehler beim Session-Stop: {exc}")
+            self.logger.error(f"Error stopping session: {exc}")
             return False
     
     def check_session_timeout(self) -> bool:
@@ -187,7 +187,7 @@ class MeasurementController:
         if max_min and max_min > 0:
             session_duration = self._get_session_duration()
             if session_duration and session_duration.total_seconds() > max_min * 60:
-                self.logger.info(f"Session-Timeout erreicht nach {max_min}min - stoppe Session")
+                self.logger.info(f"Session timeout reached after {max_min}min - stopping session")
                 self.stop_session()
                 return True
         
@@ -196,7 +196,7 @@ class MeasurementController:
         if self.last_motion_time:
             time_since_motion = self._get_time_since_motion()
             if time_since_motion and time_since_motion.total_seconds() > inactivity_timeout * 60:
-                self.logger.info(f"Inaktivitäts-Timeout erreicht nach {inactivity_timeout}min - stoppe Session")
+                self.logger.info(f"Inactivity timeout reached after {inactivity_timeout}min - stopping session")
                 self.stop_session()
                 return True
         
@@ -221,7 +221,8 @@ class MeasurementController:
         # Motion-Status in Historie speichern
         self.motion_history.append(motion_result.motion_detected)
         if len(self.motion_history) > self.motion_history_max_size:
-            self.motion_history.pop(0)  # Älteste Einträge entfernen
+            if self.motion_history:  # Nur poppen, wenn nicht leer
+                self.motion_history.pop(0)  # Älteste Einträge entfernen
         
         if motion_result.motion_detected:
             self.last_motion_time = datetime.now()
@@ -230,18 +231,18 @@ class MeasurementController:
             if self.alert_triggered:
                 self.alert_triggered = False
                 self.alert_trigger_time = None
-                self.logger.info("Alert zurückgesetzt - neue Bewegung erkannt")
+                self.logger.info("Alert state reset - new motion detected")
 
         self.check_session_timeout()  # Prüfe Session-Timeout
         self._check_alert_trigger()   # Prüfe Alert-Trigger
         
         # Motion-Callbacks weiterleiten
-        for callback in self._motion_callbacks:
+        for callback in list(self._motion_callbacks):
             try:
                 callback(motion_result)
             except Exception as exc:
-                self.logger.error(f"Fehler in Motion-Callback: {exc}")
-    
+                self.logger.error(f"Error in Motion-Callback: {exc}")
+
     def _check_alert_trigger(self) -> None:
         """
         Prüft periodisch ob Alert ausgelöst werden soll.
@@ -279,7 +280,7 @@ class MeasurementController:
             # Automatisch Alert auslösen
             if self.trigger_alert():
                 self.alerts_sent_this_session += 1
-                self.logger.info(f"Alert automatisch ausgelöst "
+                self.logger.info(f"Alert triggered automatically"
                                f"({self.alerts_sent_this_session}/{self.max_alerts_per_session})")
 
     # === Alert-System ===
@@ -323,7 +324,7 @@ class MeasurementController:
                     try:
                         camera_frame = self.camera.take_snapshot()
                     except Exception as exc:
-                        self.logger.error(f"Snapshot fehlgeschlagen: {exc}")
+                        self.logger.error(f"Snapshot failed: {exc}")
 
                 # E-Mail-Alert senden
                 success = self.alert_system.send_motion_alert(
@@ -335,20 +336,20 @@ class MeasurementController:
                 if success:
                     self.alert_triggered = True
                     self.alert_trigger_time = datetime.now()
-                    self.logger.info("Alert erfolgreich ausgelöst")
+                    self.logger.info("Alert triggered successfully")
                     return True
                 else:
-                    self.logger.error("Alert-Versendung fehlgeschlagen")
+                    self.logger.error("Alert sending failed")
                     return False
             else:
                 # Fallback: Alert als "gesendet" markieren auch ohne AlertSystem
                 self.alert_triggered = True
                 self.alert_trigger_time = datetime.now()
-                self.logger.warning("Alert ausgelöst (kein AlertSystem verfügbar)")
+                self.logger.warning("Alert triggered (no AlertSystem available)")
                 return True
                 
         except Exception as exc:
-            self.logger.error(f"Fehler beim Alert-Trigger: {exc}")
+            self.logger.error(f"Error triggering alert: {exc}")
             return False
     
     # === Status-Export für GUI ===

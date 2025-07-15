@@ -247,22 +247,22 @@ class LoggingConfig:
         # Log-Level validieren
         if not LogLevel.is_valid(self.level):
             valid_levels = [level.value for level in LogLevel]
-            errors.append(f"Ungültiger Log-Level '{self.level}'. Gültig: {valid_levels}")
+            errors.append(f"invalid Log-Level '{self.level}'. valid: {valid_levels}")
         
         if not isinstance(self.console_output, bool):
-            errors.append("console_output muss ein Bool sein")
+            errors.append("console_output must be a bool")
         
         # Datei-Parameter validieren
         if self.max_file_size_mb < 1:
-            errors.append("max_file_size_mb muss mindestens 1 MB sein")
+            errors.append("max_file_size_mb must be at least 1 MB")
         elif self.max_file_size_mb > 100:
-            errors.append("max_file_size_mb sollte nicht größer als 100 MB sein")
-        
+            errors.append("max_file_size_mb must not be greater than 100 MB")
+
         if self.backup_count < 0:
-            errors.append("backup_count darf nicht negativ sein")
+            errors.append("backup_count must not be negative")
         elif self.backup_count > 20:
-            errors.append("backup_count sollte nicht größer als 20 sein")
-        
+            errors.append("backup_count must not be greater than 20")
+
         return errors
     
     def setup_logger(self, name: str = "cvd_tracker") -> logging.Logger:
@@ -301,8 +301,8 @@ class LoggingConfig:
         for handler in handlers:
             handler.setFormatter(formatter)
             logger.addHandler(handler)
-        
-        logger.info(f"🚀 Logging initialisiert: {self.file} (max: {self.max_file_size_mb}MB, backups: {self.backup_count})")
+
+        logger.info(f"🚀 Logging initialized: {self.file} (max: {self.max_file_size_mb}MB, backups: {self.backup_count})")
         return logger
 
 # ---------------------------------------------------------------------------
@@ -356,18 +356,18 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
             data = yaml.safe_load(f)
 
     except FileNotFoundError:
-        logger.error("❌ Konfigurationsdatei nicht gefunden: %s", path)
-        logger.info("🔧 Verwende Standard-Konfiguration")
+        logger.error("❌ config file not found: %s", path)
+        logger.info("🔧 Using default config")
         return _create_default_config()
 
     except yaml.YAMLError as e:
-        logger.error("❌ YAML-Parsing-Fehler: %s", e)
-        logger.info("🔧 Verwende Standard-Konfiguration")
+        logger.error("❌ YAML parsing error: %s", e)
+        logger.info("🔧 Using default config")
         return _create_default_config()
 
     except Exception as e:
-        logger.error("❌ Unerwarteter Fehler beim Config-Loading: %s", e)
-        logger.info("🔧 Verwende Standard-Konfiguration")
+        logger.error("❌ Unexpected error loading config: %s", e)
+        logger.info("🔧 Using default config")
         return _create_default_config()
     
     # Defaults für Logging anwenden
@@ -386,7 +386,7 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
     # Jetzt den finalen Logger initialisieren
     app_logger = logging_config.setup_logger("cvd_tracker")
     logger = app_logger.getChild("config")
-    logger.info("✅ Konfiguration geladen: %s", config_path)
+    logger.info("✅ Config loaded: %s", config_path)
     cfg = AppConfig(
         webcam=WebcamConfig(**data["webcam"]),
         uvc_controls=UVCConfig(
@@ -408,7 +408,7 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
         logging=logging_config,  # Erweiterte Logging-Config
     )
     if errs := cfg.validate_all():
-        logger.warning("⚠️ Konfig‑Warnungen:")
+        logger.warning("⚠️ Config warnings:")
         for section, e in errs.items():
             for msg in e:
                 logger.warning("  %s: %s", section, msg)
@@ -439,7 +439,7 @@ def _apply_defaults(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def _create_default_config() -> AppConfig:
     """Fallback-Konfiguration für Notfälle"""
-    logger.info("Erzeuge Default-Konfiguration")
+    logger.info("creating default config")
     return AppConfig(
         webcam=WebcamConfig(
             camera_index=0,
@@ -478,17 +478,18 @@ def _create_default_config() -> AppConfig:
             smtp_server="smtp.example.com",
             smtp_port=25,
             sender_email="sender@example.com",
-            templates={"alert": {"subject": "CVD-Tracker: Alarm - {timestamp}", "body": 
-                                 "Bewegung wird seit {timestamp} nicht erkannt!"
-                                 "\nBitte überprüfen Sie den Fehler über die Webanwendung unter: {website_url}."
+            templates={"alert": {"subject": "CVD-Alert: no motion detected - {timestamp}", "body": 
+                                 "Movement has not been detected since {timestamp}!"
+                                 "\nPlease check the issue via the web application at: {website_url}."
                                  "\n\nDetails:"
                                  "\nSession-ID: {session_id}"
-                                 "\nLetzte Bewegung um {last_motion_time}"
-                                 "\nKamera: Index {camera_index}"
-                                 "\nSensitivität: {sensitivity}"
-                                 "\nROI aktiv: {roi_enabled}"
-                                 "\n\nIm Anhang finden Sie das aktuelle Webcam-Bild."
+                                 "\nLast motion at: {last_motion_time}"
+                                 "\nCamera: Index {camera_index}"
+                                 "\nSensitivity: {sensitivity}"
+                                 "\nROI active: {roi_enabled}"
+                                 "\n\nAttached is the current webcam image."
                                  }}
+                                 
         ),
         gui=GUIConfig(
             title="CVD-Tracker", host="localhost", port=8080,
@@ -505,9 +506,9 @@ def save_config(cfg: AppConfig, path: str = "config/config.yaml") -> None:
     try:
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(asdict(cfg), f, indent=2, allow_unicode=True)
-        logger.info("✅ Config gespeichert → %s", path)
+        logger.info("✅ Config saved → %s", path)
     except Exception as e:
-        logger.error("❌ Fehler beim Speichern: %s", e)
+        logger.error("❌ Error saving config: %s", e)
 
 # ---------------------------------------------------------------------------
 # Testing
@@ -524,9 +525,9 @@ if __name__ == "__main__":
     logger = config.logging.setup_logger()
 
     # Logger testen
-    logger.info("Test-Nachricht: Konfiguration geladen")
-    logger.debug("Debug-Test")
-    logger.warning("Warnung-Test")
-    logger.error("Fehler-Test")
+    logger.info("Test message: Config loaded")
+    logger.debug("Debug test")
+    logger.warning("Warning test")
+    logger.error("Error test")
 
-    logger.info("✅ RotatingFileHandler-Test abgeschlossen")
+    logger.info("✅ RotatingFileHandler test completed")

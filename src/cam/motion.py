@@ -81,7 +81,7 @@ class MotionDetector:
         try:
             self.roi = config.get_roi()
         except Exception as exc:
-            self.logger.warning(f"ROI-Setup fehlgeschlagen: {exc}")
+            self.logger.warning(f"ROI-Setup failed: {exc}")
             # Fallback: ROI deaktiviert
             from types import SimpleNamespace
             self.roi = SimpleNamespace(enabled=False, x=0, y=0, width=0, height=0)
@@ -97,9 +97,9 @@ class MotionDetector:
         
         # Tracking für Alert-System
         self.last_motion_time = None
-        
-        self.logger.info(f"MotionDetector initialisiert - Sensitivität: {self.sensitivity}")
-    
+
+        self.logger.info(f"MotionDetector initialized - Sensitivity: {self.sensitivity}")
+
     def update_sensitivity(self, new_sensitivity: float) -> bool:
         """
         Aktualisiert die Sensitivität zur Laufzeit.
@@ -111,14 +111,14 @@ class MotionDetector:
             True wenn erfolgreich aktualisiert
         """
         if not 0.1 <= new_sensitivity <= 1.0:
-            self.logger.warning(f"Ungültige Sensitivität: {new_sensitivity}")
+            self.logger.warning(f"Invalid sensitivity: {new_sensitivity}")
             return False
         
         self.sensitivity = new_sensitivity
         # Sensitivität beeinflusst minimale Konturgröße
         self.min_contour_area = int(self.config.min_contour_area * (2.0 - new_sensitivity))
-        
-        self.logger.info(f"Sensitivität auf {new_sensitivity} geändert")
+
+        self.logger.info(f"Sensitivity changed to {new_sensitivity}")
         return True
     
     def reset_background_model(self) -> None:
@@ -126,8 +126,8 @@ class MotionDetector:
         self.background_subtractor.clear()
         self.is_learning = True
         self.learning_frame_count = 0
-        self.logger.info("Background-Model zurückgesetzt")
-    
+        self.logger.info("Background model reset")
+
     def get_last_motion_time(self) -> Optional[float]:
         """Gibt Zeitstempel der letzten Bewegung zurück (für Alert-System)."""
         return self.last_motion_time
@@ -146,7 +146,7 @@ class MotionDetector:
         
         # Input-Validierung
         if frame is None or frame.size == 0:
-            self.logger.warning("Ungültiger Frame")
+            self.logger.warning("Invalid frame")
             return MotionResult(False, 0.0, timestamp, False)
         
         try:
@@ -175,8 +175,8 @@ class MotionDetector:
                 self.learning_frame_count += 1
                 if self.learning_frame_count >= self.learning_frames_required:
                     self.is_learning = False
-                    self.logger.info("Background-Learning abgeschlossen")
-            
+                    self.logger.info("Background learning completed")
+
             # Background Subtraction
             learning_rate = self.learning_rate if self.is_learning else (self.learning_rate * 0.1)
             fg_mask = self.background_subtractor.apply(blurred, learningRate=learning_rate)
@@ -213,7 +213,7 @@ class MotionDetector:
             )
             
         except Exception as exc:
-            self.logger.error(f"Fehler bei Bewegungserkennung: {exc}")
+            self.logger.error(f"Error detecting motion: {exc}")
             return MotionResult(False, 0.0, timestamp, False)
 
 
