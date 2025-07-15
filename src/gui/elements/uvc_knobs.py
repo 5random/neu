@@ -24,7 +24,7 @@ from src.cam.camera import Camera
 
 def create_uvc_content(camera: Optional[Camera] = None):
     if camera is None:
-        ui.label('⚠️ Keine Kamera verbunden').classes('text-red')
+        ui.label('⚠️ No Camera connected').classes('text-red')
         return
 
     ranges = camera.get_uvc_ranges() if camera else {}
@@ -47,9 +47,9 @@ def create_uvc_content(camera: Optional[Camera] = None):
                            "align-self:stretch;")\
                     .classes('gap-4 mb-4'):
 
-                # Helligkeit
+                # Brightness
                 with ui.card().tight().classes('p-4 flex flex-col items-center'):
-                    ui.label('Helligkeit').classes('font-semibold mb-2')
+                    ui.label('Brightness').classes('font-semibold mb-2')
                     brightness_range = ranges.get('brightness', {'min': -64, 'max': 64, 'default': 0})
                     brightness_value = current.get('brightness', brightness_range['default'])
                     brightness_knob = ui.knob(min=brightness_range['min'], max=brightness_range['max'],
@@ -57,9 +57,9 @@ def create_uvc_content(camera: Optional[Camera] = None):
                     
                     brightness_knob.on('update:model-value', make_handler(camera.set_brightness, brightness_value))
 
-                # Kontrast
+                # Contrast
                 with ui.card().tight().classes('p-4 flex flex-col items-center'):
-                    ui.label('Kontrast').classes('font-semibold mb-2')
+                    ui.label('Contrast').classes('font-semibold mb-2')
                     contrast_range = ranges.get('contrast', {'min': 0, 'max': 64, 'default': 16})
                     contrast_value = current.get('contrast', contrast_range['default'])
                     contrast_knob = ui.knob(min=contrast_range['min'], max=contrast_range['max'],
@@ -67,9 +67,9 @@ def create_uvc_content(camera: Optional[Camera] = None):
                     
                     contrast_knob.on('update:model-value', make_handler(camera.set_contrast, contrast_value))
 
-                # Sättigung
+                # Saturation
                 with ui.card().tight().classes('p-4 flex flex-col items-center'):
-                    ui.label('Sättigung').classes('font-semibold mb-2')
+                    ui.label('Saturation').classes('font-semibold mb-2')
                     saturation_range = ranges.get('saturation', {'min': 0, 'max': 128, 'default': 64})
                     saturation_value = current.get('saturation', saturation_range['default'])
                     saturation_knob = ui.knob(min=saturation_range['min'], max=saturation_range['max'],
@@ -77,9 +77,9 @@ def create_uvc_content(camera: Optional[Camera] = None):
                     
                     saturation_knob.on('update:model-value', make_handler(camera.set_saturation, saturation_value))
 
-                # Schärfe
+                # Sharpness
                 with ui.card().tight().classes('p-4 flex flex-col items-center'):
-                    ui.label('Schärfe').classes('font-semibold mb-2')
+                    ui.label('Sharpness').classes('font-semibold mb-2')
                     sharpness_range = ranges.get('sharpness', {'min': 0, 'max': 14, 'default': 2})
                     sharpness_value = current.get('sharpness', sharpness_range['default'])
                     sharpness_knob = ui.knob(min=sharpness_range['min'], max=sharpness_range['max'],
@@ -109,7 +109,7 @@ def create_uvc_content(camera: Optional[Camera] = None):
 
                 # Backlight Compensation
                 with ui.card().tight().classes('p-4 flex flex-col items-center'):
-                    ui.label('Backlight').classes('font-semibold mb-2')
+                    ui.label('Backlight Compensation').classes('font-semibold mb-2')
                     backlight_range = ranges.get('backlight_compensation', {'min': 0, 'max': 160, 'default': 42})
                     backlight_value = current.get('backlight_compensation', backlight_range['default'])
                     backlight_knob = ui.knob(min=backlight_range['min'], max=backlight_range['max'],

@@ -31,12 +31,12 @@ def create_emailcard():
     def validate_smtp(cfg: Dict) -> list[str]:
         errors: list[str] = []
         if not is_valid_email(cfg.get("sender", "")):
-            errors.append("Absenderadresse ist ungültig.")
+            errors.append("Email address is invalid.")
         if not cfg.get("server"):
-            errors.append("SMTP-Server darf nicht leer sein.")
+            errors.append("SMTP server must not be empty.")
         port = cfg.get("port")
         if not isinstance(port, (int, float)) or not 1 <= int(port) <= 65535:
-            errors.append("Port muss zwischen 1 und 65535 liegen.")
+            errors.append("Port must be between 1 and 65535.")
         return errors
 
     def refresh_table() -> None:
@@ -46,10 +46,10 @@ def create_emailcard():
     def add_recipient() -> None:
         addr = (email_inp.value or "").strip()
         if not is_valid_email(addr):
-            ui.notify("Ungültige E-Mail-Adresse", color="negative")
+            ui.notify("Invalid email address", color="negative")
             return
         if addr in state["recipients"]:
-            ui.notify("Adresse existiert bereits", color="warning")
+            ui.notify("Address already exists", color="warning")
             return
 
         state["recipients"].append(addr)
@@ -68,7 +68,7 @@ def create_emailcard():
         persist_state()
         refresh_table()
         table.selected = []
-        ui.notify(f"{len(selected_addresses)} Adresse(n) gelöscht", color="positive")
+        ui.notify(f"{len(selected_addresses)} address(es) deleted", color="positive")
 
 
     # -- Alles in einer Karte ----------------------------------------------------
@@ -76,7 +76,7 @@ def create_emailcard():
 
         # -- Tabs -----------------------------------------------------------------
         with ui.tabs() as tabs:
-            tab_rcp  = ui.tab("Empfänger")
+            tab_rcp  = ui.tab("Recipients")
             tab_smtp = ui.tab("SMTP")
 
         # -- Tab-Panels -----------------------------------------------------------
@@ -86,7 +86,7 @@ def create_emailcard():
             with ui.tab_panel(tab_rcp):
                 with ui.row().classes("items-center gap-2"):
                     email_inp = (
-                        ui.input("Neue E-Mail")
+                        ui.input("New Email")
                         .classes("w-64")
                         .on("keyup.enter", lambda _: add_recipient())
                     )
@@ -95,12 +95,12 @@ def create_emailcard():
                         color="primary",
                         on_click=lambda _: add_recipient(),
                     ).bind_enabled_from(email_inp, "value", is_valid_email).props('round'):
-                        ui.tooltip('E-Mail-Adresse hinzufügen')
+                        ui.tooltip('Add email address')
 
                 ui.separator()
 
                 table = ui.table(
-                    columns=[{"name": "address", "label": "Adresse", "field": "address"}],
+                    columns=[{"name": "address", "label": "Address", "field": "address"}],
                     rows=[],
                     row_key="address",
                     selection="multiple",
@@ -113,14 +113,14 @@ def create_emailcard():
                         color="negative",
                         on_click=lambda _: delete_selected(),
                     ).bind_enabled_from(table, "selected", lambda s: bool(s)).props('round'):
-                        ui.tooltip('Ausgewählte E-Mail-Adressen löschen')
+                        ui.tooltip('Delete selected email addresses')
 
                     def send_test_email():
                         alert = AlertSystem(config.email, config.measurement, config)
                         if alert.send_test_email():
-                            ui.notify("Test-E-Mail erfolgreich gesendet", color="positive")
+                            ui.notify("Test email sent successfully", color="positive")
                         else:
-                            ui.notify("Fehler beim Senden der Test-E-Mail", color="negative")
+                            ui.notify("Error sending test email", color="negative")
 
 
                     with ui.button(
@@ -128,17 +128,17 @@ def create_emailcard():
                         color="info",
                         on_click= lambda _: send_test_email()
                     ).props('round').classes("ml-auto"):
-                        ui.tooltip('Test-E-Mail an alle Empfänger senden')
+                        ui.tooltip('Send test email to all recipients')
 
             # Panel: SMTP-Einstellungen
             with ui.tab_panel(tab_smtp):
                 smtp = state["smtp"]
 
                 with ui.row().classes("items-center gap-2"):
-                    ui.input("Absender").bind_value(smtp, "sender")
+                    ui.input("Sender").bind_value(smtp, "sender")
                     ui.input("SMTP-Server").bind_value(smtp, "server")
                     with ui.number("Port", min=1, max=65535).bind_value(smtp, "port", forward=int):
-                        ui.tooltip("Port muss zwischen 1 und 65535 liegen!")
+                        ui.tooltip("Port must be between 1 and 65535.")
 
 
                 def attempt_save():
@@ -147,10 +147,10 @@ def create_emailcard():
                         ui.notify(" ".join(errors), color="negative")
                     else:
                         persist_state()
-                        ui.notify("Gespeichert", color="positive")
+                        ui.notify("Saved", color="positive")
 
                 with ui.button(icon='save', color="primary", on_click=attempt_save).props('round'):
-                    ui.tooltip('SMTP-Einstellungen speichern')
+                    ui.tooltip('Save SMTP settings')
 
     # Tabellen-Inhalt initial laden
     refresh_table()
