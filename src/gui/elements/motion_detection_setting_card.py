@@ -22,7 +22,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
 
     if camera is None:
         ui.notify(
-            'Kamera nicht verfügbar! ROI-Editor im Demo-Modus.', type='warning')
+            'Camera not available, ROI editor in demo mode.', type='warning')
 
     # ---------- Zustand ------------------------------------------------------
     class ROIState(TypedDict):
@@ -74,7 +74,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         elif state['p1']:
             x, y = state['p1']
             return f'ROI: ({x}, {y}) – (…)'
-        return 'ROI: nicht aktiv'
+        return 'ROI: not active'
 
     # ---------- UI-Updates ---------------------------------------------------
     def update_overlay() -> None:
@@ -149,7 +149,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             if hasattr(cam, 'save_uvc_config'):
                 cam.save_uvc_config()  # Speichert die Konfiguration
 
-        ui.notify(f'Sensitivität auf {sens_value:.2f} gesetzt', type='info',
+        ui.notify(f'Sensitivity set to {sens_value:.2f}', type='info',
                   position='bottom-right')
 
     # ---------- Event-Handler ------------------------------------------------
@@ -190,7 +190,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             roi_height = y1 - y0
 
             if camera is None:
-                ui.notify('Kamera nicht verfügbar!', type='warning',
+                ui.notify('Camera not available!', type='warning',
                           position='bottom-right')
                 return
             
@@ -216,10 +216,10 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             if hasattr(cam, 'save_uvc_config'):
                 cam.save_uvc_config()  # Speichert die Konfiguration
 
-            ui.notify('ROI gespeichert', type='positive',
+            ui.notify('ROI saved', type='positive',
                       position='bottom-right')
         else:
-            ui.notify('Bitte zuerst beide Ecken wählen!',
+            ui.notify('Please select both corners first!',
                       type='warning', position='bottom-right')
     
     def refresh_snapshot() -> None:
@@ -234,7 +234,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                     src = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode()}"
                     image.set_source(src)          # <-- Bild austauschen
         except Exception as e:
-            ui.notify(f"Snapshot-Fehler: {e}", type="warning")
+            ui.notify(f"Snapshot error: {e}", type="warning")
 
     def toggle_roi_editor() -> None:
         """Öffnet/Schließt ROI-Editor und blendet zugehörige Elemente um."""
@@ -258,7 +258,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
 
             # ── Sensitivität in eigener Card ────────────────────────────────
             with ui.card().style("align-self:stretch; justify-content:center; align-items:center; min-height:60px;"):
-                ui.label('Sensitivität').classes('text-h6 font-semibold mb-2')
+                ui.label('Sensitivity').classes('text-h6 font-semibold mb-2')
                 with ui.row().classes('items-center gap-4'):
                     sensitivity_knob = ui.knob(
                         min=0, max=100, value=10, step=1, show_value=True, on_change=lambda e: update_sensitivity(e.value)
@@ -304,7 +304,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                                             f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
                                         )
                             except Exception as e:
-                                ui.notify(f"Snapshot-Fehler: {e}", type="warning")
+                                ui.notify(f"Snapshot error: {e}", type="warning")
 
                         h, w = (frame.shape[:2] if frame is not None else (IMG_H, IMG_W))
                         ratio_style = (

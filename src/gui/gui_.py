@@ -1,12 +1,4 @@
 from nicegui import ui, app
-import sys
-from pathlib import Path
-import logging
-
-logger = logging.getLogger(__name__)
-# Projekt-Root zum Python-Pfad hinzufügen
-#project_root = Path(__file__).parents[2]
-#sys.path.insert(0, str(project_root))
 
 from src.gui.elements import (
     create_camfeed_content,
@@ -19,6 +11,7 @@ from src.gui.elements import (
 
 from src.measurement import create_measurement_controller_from_config, MeasurementController
 from src.alert import create_alert_system_from_config, AlertSystem
+from src.config import logger
 
 from src.cam.camera import Camera
 
@@ -36,15 +29,15 @@ def init_camera(config_path: str = "config/config.yaml") -> Camera | None:
         config_path: Pfad zur zu ladenden Konfiguration
     """
 
-    print("Initialisiere Kamera ...")
+    logger.info("Initialisiere Kamera ...")
     try:
         cam = Camera(config_path)
         cam.initialize_routes()
         cam.start_frame_capture()
-        print("Kamera erfolgreich initialisiert")
+        logger.info("Kamera erfolgreich initialisiert")
         return cam
     except Exception as e:
-        print(f"FEHLER: {e}")
+        logger.error(f"FEHLER: {e}")
         return None
 
 
