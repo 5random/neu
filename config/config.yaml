@@ -50,15 +50,15 @@ measurement:
   save_alert_images: true
   session_timeout_minutes: 6
 motion_detection:
-  background_learning_rate: 0.01
-  min_contour_area: 500
+  background_learning_rate: 0.005
+  min_contour_area: 252
   region_of_interest:
     enabled: true
-    height: 300
-    width: 400
-    x: 100
-    y: 100
-  sensitivity: 0.49
+    height: 265
+    width: 169
+    x: 145
+    y: 164
+  sensitivity: 0.98
 uvc_controls:
   backlight_compensation: 61
   brightness: 128

@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         default="config/config.yaml",
-        help="Pfad zur Konfigurationsdatei",
+        help="Path to the configuration file",
     )
     return parser.parse_args()
 
@@ -30,7 +30,7 @@ def main():
         cfg = load_config()
         logger = cfg.logging.setup_logger("cvd_tracker.main")
 
-        logger.info("Starte CVD-Tracker Anwendung...")
+        logger.info("Starting CVD-Tracker application...")
 
         create_gui(config_path=args.config)
         
@@ -42,18 +42,18 @@ def main():
             favicon='https://www.tuhh.de/favicon.ico',
             reload=False
         )
-        
-        logger.info("Anwendung beendet")
-        
+
+        logger.info("Application started")
+
     except ImportError as e:
         logger = logging.getLogger(__name__)
-        logger.error(f"Import-Fehler: {e}")
-        logger.error("Installiere Abhängigkeiten: pip install -r requirements.txt")
+        logger.error(f"Import error: {e}")
+        logger.error("Install required dependencies: pip install -r requirements.txt")
         return 1
         
     except Exception as e:
         logger = logging.getLogger("cvd_tracker.main")
-        logger.error(f"Fehler beim Start: {e}", exc_info=True)
+        logger.error(f"Error occurred at startup: {e}", exc_info=True)
         return 1
     
     return 0

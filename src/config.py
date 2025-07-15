@@ -85,7 +85,7 @@ class UVCConfig:
         ]
         for name, value, lo, hi in checks:
             if not lo <= value <= hi:
-                errors.append(f"{name}: {value} außerhalb [{lo}, {hi}]")
+                errors.append(f"{name}: {value} outside [{lo}, {hi}]")
         return errors
 
 @dataclass
@@ -115,13 +115,13 @@ class ROI:
             return []
         errors: List[str] = []
         if self.x < 0 or self.y < 0:
-            errors.append("ROI‑Koordinaten dürfen nicht negativ sein")
+            errors.append("ROI coordinates must not be negative")
         if self.width <= 0 or self.height <= 0:
-            errors.append("ROI‑Größe muss positiv sein")
+            errors.append("ROI size must be positive")
         if self.x + self.width > frame_w:
-            errors.append("ROI überschreitet Frame‑Breite")
+            errors.append("ROI exceeds frame width")
         if self.y + self.height > frame_h:
-            errors.append("ROI überschreitet Frame‑Höhe")
+            errors.append("ROI exceeds frame height")
         return errors
 
 @dataclass
@@ -137,11 +137,11 @@ class MotionDetectionConfig:
     def validate(self) -> List[str]:
         errors: List[str] = []
         if not 0.001 <= self.sensitivity <= 1.0:
-            errors.append("Sensitivity außerhalb [0.001, 1.0]")
+            errors.append("Sensitivity outside [0.001, 1.0]")
         if not 0.001 <= self.background_learning_rate <= 1.0:
-            errors.append("Learning‑Rate außerhalb [0.001, 1.0]")
+            errors.append("Learning rate outside [0.001, 1.0]")
         if self.min_contour_area < 1:
-            errors.append("min_contour_area muss ≥1 sein")
+            errors.append("min_contour_area must be ≥1")
         return errors
 
 # ---------------------------------------------------------------------------
@@ -468,7 +468,7 @@ def _create_default_config() -> AppConfig:
         ),
         motion_detection=MotionDetectionConfig(
             region_of_interest={"enabled": False, "x": 100, "y": 100, "width": 300, "height": 200},
-            sensitivity=0.01, background_learning_rate=0.01, min_contour_area=500
+            sensitivity=0.1, background_learning_rate=0.005, min_contour_area=252
         ),
         measurement=MeasurementConfig(
             auto_start=False, session_timeout_minutes=60, save_alert_images=True,

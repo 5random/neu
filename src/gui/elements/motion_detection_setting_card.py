@@ -207,6 +207,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                 roi.width = roi_width
                 roi.height = roi_height
                 roi.enabled = roi_enabled
+                md.reset_background_model()  # Reset background model after ROI change
 
             
                 cam.app_config.motion_detection.region_of_interest = {

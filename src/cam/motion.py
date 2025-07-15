@@ -67,9 +67,9 @@ class MotionDetector:
         
         # OpenCV Background Subtractor
         self.background_subtractor = cv2.createBackgroundSubtractorMOG2(
-            detectShadows=True,
-            varThreshold=16,
-            history=300
+            detectShadows=False,
+            varThreshold=6,
+            history=512
         )
         
         # Bewegungsparameter
@@ -89,7 +89,7 @@ class MotionDetector:
         # Learning-Phase für Background-Model
         self.is_learning = True
         self.learning_frame_count = 0
-        self.learning_frames_required = 30
+        self.learning_frames_required = 32
         
         # Kernels für Morphological Operations
         self.noise_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -116,7 +116,10 @@ class MotionDetector:
         
         self.sensitivity = new_sensitivity
         # Sensitivität beeinflusst minimale Konturgröße
-        self.min_contour_area = int(self.config.min_contour_area * (2.0 - new_sensitivity))
+        scale = 20.0                      # 10-fach Spielraum
+        self.min_contour_area = int(
+            self.config.min_contour_area * (1 + (scale - 1) * (1 - new_sensitivity))
+        )
 
         self.logger.info(f"Sensitivity changed to {new_sensitivity}")
         return True
