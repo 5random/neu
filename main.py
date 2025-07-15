@@ -36,8 +36,8 @@ def main():
         
         # NiceGUI starten
         ui.run(
-            host=cfg.gui.host,
-            port=cfg.gui.port,
+            host='0.0.0.0',
+            port=8080,
             title=cfg.gui.title,
             favicon='https://www.tuhh.de/favicon.ico',
             reload=False
