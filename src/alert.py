@@ -19,6 +19,7 @@ import time
 import re
 import cv2
 import numpy as np
+import requests
 from datetime import datetime
 import threading
 from email.mime.multipart import MIMEMultipart
@@ -65,7 +66,7 @@ class AlertSystem:
             logger: Optional Logger für Alert-Tracking
         """
         if app_cfg is None:
-            raise ValueError("AppConfig ist erforderlich")
+            raise ValueError("AppConfig is needed")
         # app_cfg.webcam ist eine WebcamConfig-Instanz
         self.webcam_cfg = app_cfg.webcam
         # app_cfg.motion_detection ist eine MotionDetectionConfig-Instanz
@@ -73,28 +74,28 @@ class AlertSystem:
         self.email_cfg = app_cfg.email
 
         if not email_config:
-            raise ValueError("E-Mail-Konfiguration ist erforderlich")
+            raise ValueError("E-Mail-Config is needed")
     
         if email_config.validate():
-            raise ValueError("Ungültige E-Mail-Konfiguration")
+            raise ValueError("invalid E-Mail-Config")
         
         if not hasattr(email_config, 'smtp_server') or not email_config.smtp_server:
-            raise ValueError("SMTP-Server darf nicht leer sein")
+            raise ValueError("SMTP server must not be empty")
         
         if not hasattr(email_config, 'smtp_port') or not email_config.smtp_port or not (1 <= email_config.smtp_port <= 65535):
-            raise ValueError("SMTP-Port muss zwischen 1 und 65535 liegen")
-        
+            raise ValueError("SMTP port must be between 1 and 65535")
+
         email_pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
         if not hasattr(email_config, 'recipients') or not email_config.recipients:
-            raise ValueError("Mindestens ein Empfänger muss konfiguriert sein")
+            raise ValueError("At least one recipient must be configured")
 
         for recipient in email_config.recipients:
             if not isinstance(recipient, str) or not email_pattern.match(recipient):
-                raise ValueError(f"Ungültige E-Mail-Adresse: {recipient}")
+                raise ValueError(f"Invalid email address: {recipient}")
 
         if not hasattr(email_config, 'sender_email') or not email_pattern.match(email_config.sender_email):
-            raise ValueError("Ungültige Absender-E-Mail-Adresse")
+            raise ValueError("Invalid sender email address")
 
         self.email_config = email_config
         self.measurement_config = measurement_config
@@ -112,7 +113,7 @@ class AlertSystem:
         self._smtp_connection: Optional[smtplib.SMTP] = None
         self._connection_timeout: int = 30  # Sekunden
         
-        self.logger.info("AlertSystem initialisiert")
+        self.logger.info("AlertSystem initialied")
     
     def send_motion_alert(
         self,
@@ -150,12 +151,12 @@ class AlertSystem:
 
                 template_params = {
                     'timestamp': timestamp,
-                    'session_id': session_id or "Unbekannt",
-                    'last_motion_time': last_motion_time.strftime("%H:%M:%S") if last_motion_time else "Unbekannt",
-                    'website_url': self.email_cfg.website_url or "Unbekannt",
-                    'camera_index': self.webcam_cfg.camera_index if self.webcam_cfg else "Unbekannt",
-                    'sensitivity': self.motion_cfg.sensitivity if self.motion_cfg else "Unbekannt",
-                    'roi_enabled': self.motion_cfg.get_roi().enabled if self.motion_cfg else "Unbekannt"
+                    'session_id': session_id or "unknown",
+                    'last_motion_time': last_motion_time.strftime("%H:%M:%S") if last_motion_time else "unknown",
+                    'website_url': self.email_cfg.website_url or "unknown",
+                    'camera_index': self.webcam_cfg.camera_index if self.webcam_cfg else "unknown",
+                    'sensitivity': self.motion_cfg.sensitivity if self.motion_cfg else "unknown",
+                    'roi_enabled': self.motion_cfg.get_roi().enabled if self.motion_cfg else "unknown"
                 }
                 
                 subject = template.subject.format(**template_params)
@@ -163,19 +164,19 @@ class AlertSystem:
                 body = template.body.format(**template_params)
                 
             except (KeyError, ValueError, AttributeError) as e:
-                self.logger.error(f"Fehler beim Rendern des E-Mail-Templates: {e}, verwende Fallback-Template")
+                self.logger.error(f"Error when rendering the email template: {e}, use fallback template")
                 timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
-                subject = f"Bewegungslosigkeit erkannt - {timestamp}"
+                subject = f"no motion detected - {timestamp}"
                 body = (
-                    f"Bewegung wird seit {timestamp} nicht erkannt!\n"
-                    f"Bitte überprüfen Sie die Website unter: {self.email_config.website_url}\n\n"
+                    f"Motion has not been detected since {timestamp}!\n"
+                    f"Please check the website at: {self.email_config.website_url}\n\n"
                     f"Details:\n"
-                    f"Session-ID: {session_id or 'Unbekannt'}\n"
-                    f"Kamera: Index aktuell nicht verfügbar\n"
-                    f"Sensitivität: aktuell nicht verfügbar\n"
-                    f"ROI aktiv: aktuell nicht verfügbar\n"
-                    f"Letzte Bewegung um {last_motion_time.strftime('%H:%M:%S') if last_motion_time else 'Unbekannt'}.\n"
-                    f"Im Anhang finden Sie das aktuelle Webcam-Bild."
+                    f"Session-ID: {session_id or 'unknown'}\n"
+                    f"Camera: Index currently not available\n"
+                    f"Sensitivity: currently not available\n"
+                    f"ROI enabled: currently not available\n"
+                    f"Last motion at {last_motion_time.strftime('%H:%M:%S') if last_motion_time else 'unknown'}.\n"
+                    f"Attached is the current webcam image."
                 )
             
             # E-Mail-Nachrichten für alle Empfänger erstellen
@@ -198,28 +199,28 @@ class AlertSystem:
                 if success_count > 0:
                     with self._state_lock:
                         self.alerts_sent_count = temp_count
-                    self.logger.info(f"Alert #{temp_count} gesendet ({success_count}/{len(messages)} erfolgreich)")
+                    self.logger.info(f"Alert #{temp_count} sent ({success_count}/{len(messages)} successful)")
                     return True
                 else:
                     # Rollback bei Fehlschlag
                     with self._state_lock:
                         self.last_alert_time = previous_alert_time
                         self.alerts_sent_count = previous_count
-                        self.logger.error("Alle E-Mail-Versendungen fehlgeschlagen, Zustand zurückgesetzt")
+                        self.logger.error("All email sending attempts failed, state reset")
                     return False
                 
             except Exception as exc:
                 with self._state_lock:
                         self.last_alert_time = previous_alert_time
                         self.alerts_sent_count = previous_count
-                self.logger.error(f"kritischer Fehler beim Alert-Versand: {exc}; Zustand zurückgesetzt")
+                self.logger.error(f"Critical error when sending alert: {exc}; state reset")
                 return False
 
     def _send_emails_batch(self, messages: List[tuple], max_retries: int = 3) -> int:
-        """Optimierter Batch-E-Mail-Versand"""
+        """Optimized batch email sending"""
         success_count = 0
-        
-        # Einmalige SMTP-Verbindung für alle E-Mails
+
+        # Single SMTP connection for all emails
         for attempt in range(max_retries):
             try:
                 with self._smtp_lock:
@@ -234,12 +235,12 @@ class AlertSystem:
                                 try:
                                     smtp.sendmail(self.email_config.sender_email, recipient, message.as_string())
                                     success_count += 1
-                                    self.logger.info(f"E-Mail erfolgreich gesendet an {recipient}")
+                                    self.logger.info(f"EEmail successfully sent to {recipient}")
                                 except smtplib.SMTPException as exc:
-                                    self.logger.error(f"SMTP-Fehler beim Senden an {recipient}: {exc}")
+                                    self.logger.error(f"SMTP-error when sending to {recipient}: {exc}")
                                 except Exception as exc:
-                                    self.logger.error(f"Allgemeiner Fehler beim Senden an {recipient}: {exc}")
-                        
+                                    self.logger.error(f"General error when sending to {recipient}: {exc}")
+
                             # Nur aus der Retry-Schleife aussteigen, wenn
                             # alle Nachrichten ohne Fehler verschickt wurden
                             if success_count == len(messages):
@@ -251,12 +252,12 @@ class AlertSystem:
 
             except (smtplib.SMTPException, ConnectionError, OSError) as exc:
                 if attempt == max_retries - 1:
-                    self.logger.error(f"SMTP-Verbindung nach {max_retries} Versuchen fehlgeschlagen: {exc}")
+                    self.logger.error(f"SMTP-connection failed after {max_retries} attempts: {exc}")
                 else:
-                    self.logger.warning(f"SMTP-Verbindungsversuch {attempt + 1} fehlgeschlagen, retry in {2 ** attempt}s: {exc}")
+                    self.logger.warning(f"SMTP-connection attempt {attempt + 1} failed, retry in {2 ** attempt}s: {exc}")
                     time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
             except Exception as exc:
-                self.logger.error(f"Kritischer SMTP-Fehler (kein Retry): {exc}")
+                self.logger.error(f"Critical SMTP-error (no retry): {exc}")
                 break
         
         return success_count
@@ -276,8 +277,8 @@ class AlertSystem:
         
         if not cooldown_reached:
             remaining = self.cooldown_minutes * 60 - time_since_last.total_seconds()
-            self.logger.debug(f"Alert-Cooldown aktiv, verbleibend: {remaining:.0f}s")
-        
+            self.logger.debug(f"Alert-cooldown active, remaining: {remaining:.0f}s")
+
         return cooldown_reached
     
     def _should_send_alert(self) -> bool:
@@ -318,14 +319,14 @@ class AlertSystem:
         """
         try:
             if frame is None or frame.size == 0:
-                self.logger.warning("Kein gültiges Kamera-Bild für Anhang")
+                self.logger.warning("No valid camera image for email attachment")
                 return
             
             image_format = 'jpg'
             image_quality = 85
 
-            # Bild-Format und Qualität aus Config
-            
+            # Image format and quality from config
+
             if self.measurement_config:
                 image_format = self.measurement_config.image_format.lower()
                 image_quality = self.measurement_config.image_quality
@@ -348,25 +349,25 @@ class AlertSystem:
                 img_attachment = MIMEImage(buffer.tobytes())
                 img_attachment.add_header('Content-Disposition', f'attachment; filename="{filename}"')
                 msg.attach(img_attachment)
-                
-                self.logger.debug(f"Bild-Anhang hinzugefügt: {filename} ({len(buffer)} bytes)")
-                
-                # Optional: Bild auch lokal speichern
+
+                self.logger.debug(f"Image attachment added: {filename} ({len(buffer)} bytes)")
+
+                # Optional: Save image locally
                 if self.measurement_config and self.measurement_config.save_alert_images:
                     self._save_alert_image(buffer, filename)
             else:
-                self.logger.warning("Bild-Encoding fehlgeschlagen")
-                
+                self.logger.warning("Image encoding failed")
+
         except Exception as exc:
-            self.logger.error(f"Fehler beim Bild-Anhang: {exc}")
-    
+            self.logger.error(f"Error attaching image: {exc}")
+
     def _save_alert_image(self, image_buffer: np.ndarray, filename: str) -> None:
         """
-        Speichert Alert-Bild lokal.
-        
+        Saves alert image locally.
+
         Args:
-            image_buffer: Bild-Daten
-            filename: Dateiname
+            image_buffer: Image data
+            filename: Filename
         """
         try:
             if self.measurement_config:
@@ -378,36 +379,36 @@ class AlertSystem:
                     f.write(image_buffer.tobytes())
                 
                 self._cleanup_image(save_path)
-                self.logger.info(f"Alert-Bild gespeichert: {file_path}")
+                self.logger.info(f"Alert image saved: {file_path}")
         except Exception as exc:
-            self.logger.error(f"Fehler beim Speichern des Alert-Bilds: {exc}")
+            self.logger.error(f"Error saving alert image: {exc}")
 
     def _cleanup_image(self, save_path: Path, max_files: int = 100) -> None:
         """
-        Bereinigt alte Alert-Bilder im Speicherpfad.
-        
+        Cleans up old alert images in the save path.
+
         Args:
-            save_path: Pfad zum Speicherort der Bilder
+            save_path: Path to the image save location
         """
         try:
             image_files = list(save_path.glob("alert_*.jpg")) + list(save_path.glob("alert_*.png"))
             if len(image_files) > max_files:
-                # Sortiere nach Änderungszeit, lösche älteste
+                # Sort by modification time, delete oldest
                 image_files.sort(key=lambda x: x.stat().st_mtime)
                 for old_file in image_files[:-max_files]:
                     old_file.unlink()
-                    self.logger.debug(f"Altes Alert-Bild gelöscht: {old_file}")
+                    self.logger.debug(f"Old alert image deleted: {old_file}")
         except Exception as exc:
-            self.logger.error(f"Fehler beim Aufräumen alter Bilder: {exc}")
-    
-    # === Status-Export für GUI ===
-    
+            self.logger.error(f"Error cleaning up old images: {exc}")
+
+    # === Status export for GUI ===
+
     def get_alert_status(self) -> Dict[str, Any]:
         """
-        Exportiert Alert-Status für GUI.
-        
+        Exports alert status for GUI.
+
         Returns:
-            Dict mit Alert-Informationen
+            Dict with alert information
         """
         with self._state_lock:
             return {
@@ -452,14 +453,14 @@ class AlertSystem:
         with self._smtp_lock:
             try:
                 with smtplib.SMTP(self.email_config.smtp_server, self.email_config.smtp_port, timeout=self._connection_timeout) as smtp:
-                    smtp.noop()  # Einfacher Test-Befehl
-                    self.logger.info("SMTP-Verbindungstest erfolgreich")
+                    smtp.noop()  # Simple test command
+                    self.logger.info("SMTP connection test successful")
                     return True
             except Exception as exc:
-                self.logger.error(f"SMTP-Verbindungstest fehlgeschlagen: {exc}")
+                self.logger.error(f"SMTP connection test failed: {exc}")
                 return False
     
-    def send_test_email(self, test_message: str = "Test-E-Mail vom Webcam-Überwachungssystem") -> bool:
+    def send_test_email(self) -> bool:
         """
         Sendet Test-E-Mail an alle konfigurierten Empfänger.
         
@@ -471,22 +472,48 @@ class AlertSystem:
         """
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            subject = f"Test-E-Mail - {timestamp}"
+            subject = f"Test email - {timestamp}"
+            test_message =(
+                    f"Motion has not been detected since {timestamp}!\n"
+                    f"Please check the website at: {self.email_config.website_url}\n\n"
+                    f"Details:\n"
+                    f"Session-ID: Test\n"
+                    f"Camera: Test\n"
+                    f"Sensitivity: Test\n"
+                    f"ROI active: currently not available\n"
+                    f"Last motion at: not available, as this is a test.\n"
+                    f"Attached is the current webcam image."
+                )
             
+            IMG_SRC = 'https://picsum.photos/id/325/720/405'
+            try:
+                response = requests.get(IMG_SRC, timeout=10)
+                response.raise_for_status()  # Raise an error for bad responses
+                img_array = np.asarray(bytearray(response.content), dtype=np.uint8)
+                frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                if frame is None or frame.size == 0:
+                    self.logger.warning("No valid test image received")
+                    frame = None
+            except Exception as exc:
+                self.logger.warning(f"Error retrieving test image: {exc}")
+                frame = None
+
             messages = []
             for recipient in self.email_config.recipients:
                 msg = self._create_email_message(subject, test_message, recipient)
+                if frame is not None:
+                    self._attach_camera_image(msg, frame, timestamp)
                 messages.append((recipient, msg))
 
             success_count = self._send_emails_batch(messages)
             return success_count > 0
             
         except Exception as exc:
-            self.logger.error(f"Fehler beim Test-E-Mail-Versand: {exc}")
+            self.logger.error(f"Error sending test email: {exc}")
             return False
     
     def health_check(self) -> Dict[str, Any]:
-        """Umfassender Gesundheitscheck des AlertSystems"""
+        """Comprehensive health check of the AlertSystem"""
         health = {
             'status': 'healthy',
             'checks': {},
@@ -498,20 +525,20 @@ class AlertSystem:
             smtp_ok = self.test_connection()
             health['checks']['smtp_connection'] = {
                 'status': 'ok' if smtp_ok else 'error',
-                'message': 'SMTP-Verbindung erfolgreich' if smtp_ok else 'SMTP-Verbindung fehlgeschlagen'
+                'message': 'SMTP connection successful' if smtp_ok else 'SMTP connection failed'
             }
-            
-            # Konfigurationsvalidierung
+
+            # Configuration validation
             config_ok = True
-            config_message = "Konfiguration gültig"
+            config_message = "Configuration valid"
             try:
                 if not self.email_config.recipients:
                     config_ok = False
-                    config_message = "Keine E-Mail-Empfänger konfiguriert"
+                    config_message = "No email recipients configured"
             except Exception as exc:
                 config_ok = False
-                config_message = f"Konfigurationsfehler: {exc}"
-            
+                config_message = f"Configuration error: {exc}"
+
             health['checks']['configuration'] = {
                 'status': 'ok' if config_ok else 'error',
                 'message': config_message
@@ -533,12 +560,12 @@ class AlertSystem:
         except Exception as exc:
             health['status'] = 'error'
             health['error'] = str(exc)
-            self.logger.error(f"Health-Check fehlgeschlagen: {exc}")
-        
+            self.logger.error(f"Health check failed: {exc}")
+
         return health
     
     def get_metrics(self) -> Dict[str, Any]:
-        """Exportiert Metriken für Monitoring"""
+        """Exports metrics for monitoring"""
         with self._state_lock:
             return {
                 'alerts_sent_total': self.alerts_sent_count,

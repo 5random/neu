@@ -19,7 +19,7 @@ def create_motion_status_element(camera, measurement_controller: MeasurementCont
             with ui.row().classes('items-center q-gutter-x-md')\
                         .style('white-space: nowrap'):
                 icon = ui.icon('highlight_off', color='red', size='2rem')
-                status_label = ui.label('Keine Bewegung erkannt')\
+                status_label = ui.label('No motion detected')\
                                 .classes('text-h6')
             timestamp_label = ui.label('').classes('text-body2')\
                                 .style('white-space: nowrap')
@@ -28,12 +28,12 @@ def create_motion_status_element(camera, measurement_controller: MeasurementCont
         """Icon, Text und Zeitstempel aktualisieren."""
         if motion_detected:
             icon.props('name=check_circle color=green')
-            status_label.text = 'Bewegung erkannt'
+            status_label.text = 'Motion detected'
         else:
             icon.props('name=highlight_off color=red')
-            status_label.text = 'Keine Bewegung erkannt'
-        timestamp_label.text = f'Letzte Änderung: {last_changed.strftime("%Y-%m-%d %H:%M:%S")}'
-    
+            status_label.text = 'No motion detected'
+        timestamp_label.text = f'Last changed: {last_changed.strftime("%Y-%m-%d %H:%M:%S")}'
+
     def _motion_callback(frame, result):
         nonlocal motion_detected, last_changed
 

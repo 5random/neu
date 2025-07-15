@@ -56,11 +56,11 @@ def create_measurement_card(measurement_controller: MeasurementController | None
         
         # Motion-Status anzeigen
         motion = status.get('recent_motion_detected', False)
-        motion_label.text = 'Bewegung erkannt' if motion else 'Keine Bewegung'
+        motion_label.text = 'motion detected' if motion else 'no motion detected'
 
         # Alert-Info anzeigen
         if status.get('recent_motion_detected'):
-            alert_label.text = 'Kein Alarm notwendig'
+            alert_label.text = 'No alarm necessary'
             alert_label.classes(remove='text-negative text-grey', add='text-positive')
         else:
             countdown = status.get('alert_countdown')
@@ -73,14 +73,14 @@ def create_measurement_card(measurement_controller: MeasurementController | None
 
         # --- letzte Messung ------------
         last_label.text = (
-            f'Letzte Messung: {last_measurement.strftime("%d.%m.%Y %H:%M:%S")}'
-            if last_measurement else 'Letzte Messung: -'
+            f'last measurement: {last_measurement.strftime("%d.%m.%Y %H:%M:%S")}'
+            if last_measurement else 'Last measurement: -'
         )
 
 
     def style_start_button() -> None:
         if measurement_controller.get_session_status()['is_active']:
-            start_stop_btn.text = 'Stopp'
+            start_stop_btn.text = 'Stop'
             start_stop_btn.icon = 'stop'
             start_stop_btn.props('color=negative')
         else:
@@ -103,7 +103,7 @@ def create_measurement_card(measurement_controller: MeasurementController | None
         if unit == 'h':
             min_val = 1
 
-        duration_input.label = f'Dauer'
+        duration_input.label = f'Duration'
         duration_input.props(f'suffix="{unit}" min={min_val}')
         duration_input.min = float(min_val)
         if duration_input.value is not None and duration_input.value < min_val:
@@ -136,21 +136,21 @@ def create_measurement_card(measurement_controller: MeasurementController | None
 
     # -------------------------- UI ------------------------------
     with ui.card().style('width: 380px'):
-        ui.label('Messungs-Überwachung').classes('text-h5 text-bold mb-2')
+        ui.label('Measurement Monitoring').classes('text-h5 text-bold mb-2')
 
         start_stop_btn = ui.button('Start', icon='play_arrow', color='positive') \
             .classes('q-mb-md')
 
         with ui.row().classes('items-center q-gutter-sm q-mb-sm'):
             enable_limit = ui.checkbox(
-                'max. Dauer', value=config.measurement.session_timeout_minutes > 0
+                'max. duration', value=config.measurement.session_timeout_minutes > 0
             )
 
             min_alert_sec = config.measurement.alert_delay_seconds          # z. B. 300 s
             min_alert_min = (min_alert_sec + 59) // 60 
 
             duration_input = ui.number(
-                label='Dauer ',
+                label='Duration',
                 value=(
                     config.measurement.session_timeout_minutes * 60
                     if config.measurement.session_timeout_minutes > 0
@@ -159,7 +159,7 @@ def create_measurement_card(measurement_controller: MeasurementController | None
                 min=MIN_BASE_SEC,  # Minimum 5 Minuten
                 format='%.0f',
             ).props('dense outlined').style('width:120px').tooltip(
-                'Min. Dauer der Messung beträgt 5 Minuten'
+                'Min. duration of the measurement is 5 minutes (300 seconds).'
             )
 
             if enable_limit.value:
@@ -170,7 +170,7 @@ def create_measurement_card(measurement_controller: MeasurementController | None
             duration_unit = ui.select(
                 options=['s', 'min', 'h'],
                 value='s',
-                label='Einheit',
+                label='Unit',
             ).props('dense outlined').style('max-width: 80px')
 
             update_duration_ui()
@@ -185,9 +185,9 @@ def create_measurement_card(measurement_controller: MeasurementController | None
             percent_label = ui.label('0 %').classes('text-caption')
         progress_row.visible = False
 
-        motion_label = ui.label('Keine Bewegung').classes('text-caption text-grey q-mb-xs')
+        motion_label = ui.label('No motion detected').classes('text-caption text-grey q-mb-xs')
         alert_label = ui.label('').classes('text-caption q-mb-xs')
-        last_label = ui.label('Letzte Messung: –').classes('text-caption text-grey')
+        last_label = ui.label('Last measurement: –').classes('text-caption text-grey')
 
 
     # ----------------------- Event-Logik ------------------------
