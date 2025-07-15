@@ -27,6 +27,7 @@ global_camera: Camera | None = None
 global_measurement_controller: MeasurementController | None = None
 global_alert_system: AlertSystem | None = None
 
+dark = ui.dark_mode(value=False)
 
 def init_camera(config_path: str = "config/config.yaml") -> Camera | None:
     """Initialisiere Kamera und starte die Bilderfassung.
@@ -82,6 +83,18 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
             lambda frame, motion_result: controller.on_motion_detected(motion_result)
         )
 
+    with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
+        # --- Linke Seite -------------------------------------------
+        with ui.row().classes('items-center gap-3'):
+            # Favicon per URL
+            ui.image('https://www.tuhh.de/favicon.ico').classes('w-8 h-8')
+            ui.label('CVD-TRACKER').classes(
+                'text-xl font-semibold tracking-wider text-gray-100')
+
+        # --- Rechte Seite ------------------------------------------
+        with ui.row().classes('items-center gap-4'):
+            ui.switch().bind_value(dark).props('label="Dark Mode" dense')
+            
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
         with ui.column().classes("gap-4"):
             create_camfeed_content()
