@@ -155,6 +155,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
     # ---------- Event-Handler ------------------------------------------------
     def reset_roi() -> None:
         state['p1'] = state['p2'] = None
+        refresh_snapshot()
         refresh_ui()
 
     def _handle_click(e: MouseEventArguments) -> None:
