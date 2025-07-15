@@ -326,9 +326,9 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
 
                         # ROI-Koordinaten-Labels
                         with ui.row().classes('items-center gap-4 text-sm'):
-                            ui.label('Oben-Links:')
+                            ui.label('upper left corner:')
                             tl_label = ui.label('–').classes('font-mono')
-                            ui.label('Unten-Rechts:')
+                            ui.label('bottom right corner:')
                             br_label = ui.label('–').classes('font-mono')
 
                         # Live-Mauskoordinaten (rechtsbündig, grau)
