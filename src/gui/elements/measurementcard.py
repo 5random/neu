@@ -137,7 +137,7 @@ def create_measurement_card(measurement_controller: MeasurementController | None
 
 
     # -------------------------- UI ------------------------------
-    with ui.card().style('width: 380px'):
+    with ui.card().classes('w-full').style('align-self:stretch;'):
         ui.label('Measurement Monitoring').classes('text-h5 text-bold mb-2')
 
         start_stop_btn = ui.button('Start', icon='play_arrow', color='positive') \
