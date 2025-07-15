@@ -67,7 +67,7 @@ def create_measurement_card(measurement_controller: MeasurementController | None
         else:
             countdown = status.get('alert_countdown')
             if countdown is not None:
-                alert_label.text = f'Alarm in {fmt(timedelta(seconds=countdown))}'
+                alert_label.text = f'Alarm triggerd in {fmt(timedelta(seconds=countdown))}'
                 alert_label.classes(remove='text-positive text-grey', add='text-negative')
             else:
                 alert_label.text = ''

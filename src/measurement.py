@@ -446,12 +446,10 @@ def create_measurement_controller_from_config(
     Returns:
         Konfigurierter MeasurementController
     """
-    from .config import load_config
+    from .config import load_config, logger
     
     path = config_path if config_path is not None else "config/config.yaml"
     config = load_config(path)
     measurement_config = config.measurement
-    
-    logger = logging.getLogger("measurement")
     
     return MeasurementController(measurement_config, alert_system, camera, logger)
