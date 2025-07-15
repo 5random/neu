@@ -19,7 +19,7 @@ def create_motion_status_element(camera, measurement_controller: MeasurementCont
             with ui.row().classes('items-center q-gutter-x-md')\
                         .style('white-space: nowrap'):
                 icon = ui.icon('highlight_off', color='red', size='2rem')
-                status_label = ui.label('Keine Bewegung erkannt')\
+                status_label = ui.label('No motion detected')\
                                 .classes('text-h6')
             timestamp_label = ui.label('').classes('text-body2')\
                                 .style('white-space: nowrap')
