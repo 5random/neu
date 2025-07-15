@@ -19,6 +19,7 @@ import time
 import re
 import cv2
 import numpy as np
+import requests
 from datetime import datetime
 import threading
 from email.mime.multipart import MIMEMultipart
@@ -459,7 +460,7 @@ class AlertSystem:
                 self.logger.error(f"SMTP-Verbindungstest fehlgeschlagen: {exc}")
                 return False
     
-    def send_test_email(self, test_message: str = "Test-E-Mail vom Webcam-Überwachungssystem") -> bool:
+    def send_test_email(self) -> bool:
         """
         Sendet Test-E-Mail an alle konfigurierten Empfänger.
         
@@ -472,10 +473,36 @@ class AlertSystem:
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             subject = f"Test-E-Mail - {timestamp}"
+            test_message =(
+                    f"Bewegung wird seit {timestamp} nicht erkannt!\n"
+                    f"Bitte überprüfen Sie die Website unter: {self.email_config.website_url}\n\n"
+                    f"Details:\n"
+                    f"Session-ID: Test\n"
+                    f"Kamera: Test\n"
+                    f"Sensitivität: Test\n"
+                    f"ROI aktiv: aktuell nicht verfügbar\n"
+                    f"Letzte Bewegung um :nicht verfügbar, da Test.\n"
+                    f"Im Anhang finden Sie das aktuelle Webcam-Bild."
+                )
             
+            IMG_SRC = 'https://picsum.photos/id/325/720/405'
+            try:
+                response = requests.get(IMG_SRC, timeout=10)
+                response.raise_for_status()  # Raise an error for bad responses
+                img_array = np.asarray(bytearray(response.content), dtype=np.uint8)
+                frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                if frame is None or frame.size == 0:
+                    self.logger.warning("Kein gültiges Test-Bild empfangen")
+                    frame = None
+            except Exception as exc:
+                self.logger.warning(f"Fehler beim Abrufen des Test-Bildes: {exc}")
+                frame = None
+
             messages = []
             for recipient in self.email_config.recipients:
                 msg = self._create_email_message(subject, test_message, recipient)
+                if frame is not None:
+                    self._attach_camera_image(msg, frame, timestamp)
                 messages.append((recipient, msg))
 
             success_count = self._send_emails_batch(messages)
