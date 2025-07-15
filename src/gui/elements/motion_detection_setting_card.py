@@ -47,15 +47,18 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         h = s // 2
         return (
             f'<line x1="{x-h}" y1="{y}" x2="{x+h}" y2="{y}" '
-            f'stroke="{col}" stroke-width="3" stroke-linecap="round" />'
+            f'stroke="{col}" stroke-width="3" stroke-linecap="round" '
+             'pointer-events="none" />'
             f'<line x1="{x}" y1="{y-h}" x2="{x}" y2="{y+h}" '
-            f'stroke="{col}" stroke-width="3" stroke-linecap="round" />'
+            f'stroke="{col}" stroke-width="3" stroke-linecap="round" '
+             'pointer-events="none" />'
         )
 
     def svg_circle(x: int, y: int, r: int = 8, col: str = 'gold') -> str:
         return (
             f'<circle cx="{x}" cy="{y}" r="{r}" '
-            f'stroke="{col}" stroke-width="3" fill="none" />'
+            f'stroke="{col}" stroke-width="3" fill="none" '
+             'pointer-events="none" />'
         )
 
     # ---------- ROI-Logik ----------------------------------------------------
@@ -91,7 +94,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             x0, y0, x1, y1 = b
             parts.append(
                 f'<rect x="{x0}" y="{y0}" width="{x1-x0}" height="{y1-y0}" '
-                'stroke="lime" stroke-width="3" fill="none" />'
+                'stroke="lime" stroke-width="3" fill="none" pointer-events="none" />'
             )
             parts.extend([svg_circle(x0, y0), svg_circle(x1, y1)])
 
