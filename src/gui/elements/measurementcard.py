@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from nicegui import ui
+from nicegui import ui, background_tasks
 
 from src.alert import AlertSystem
 from src.config import load_config, save_config
@@ -20,7 +20,9 @@ def create_measurement_card(measurement_controller: MeasurementController | None
     last_measurement: datetime | None = None
 
     def on_motion(_):
-        update_view.refresh()
+        async def _refresh():
+            update_view.refresh()
+        background_tasks.create_lazy(_refresh(), name='refresh_view')
 
     measurement_controller.register_motion_callback(on_motion)
     
@@ -217,7 +219,7 @@ def create_measurement_card(measurement_controller: MeasurementController | None
         """Sekündlicher Takt: Auto-Stopp & Live-Update."""
         measurement_controller.check_session_timeout()
         status = measurement_controller.get_session_status()
-        update_view()
+        update_view.refresh()
         style_start_button()
 
 

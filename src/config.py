@@ -164,7 +164,8 @@ class MeasurementConfig:
             errors.append("alert_delay_seconds < 60")
         if self.session_timeout_minutes < 1:
             errors.append("session_timeout_minutes < 1")
-        if self.image_format.lower() == "jpg" and not 1 <= self.image_quality <= 100:
+        img_fmt = self.image_format.lower()
+        if img_fmt in ("jpg", "jpeg") and not 1 <= self.image_quality <= 100:
             errors.append("image_quality außerhalb [1, 100]")
         return errors
 
@@ -195,9 +196,11 @@ class EmailConfig:
         errors: List[str] = []
         for mail in [self.sender_email, *self.recipients]:
             if not self.EMAIL_RE.match(mail):
-                errors.append(f"Ungültige E‑Mail: {mail}")
+                errors.append(f"invalid email address: {mail}")
         if not 1 <= self.smtp_port <= 65535:
-            errors.append("smtp_port außerhalb [1, 65535]")
+            errors.append("smtp_port must be between [1, 65535]")
+        if not self.smtp_server:
+            errors.append("smtp_server must not be empty")
         return errors
 
     def alert_template(self) -> EmailTemplate:
@@ -205,19 +208,19 @@ class EmailConfig:
         
         # Robuster Default-Body mit allen verfügbaren Parametern
         default_body = (
-            "Bewegung wird seit {timestamp} nicht erkannt!\n"
-            "Bitte überprüfen Sie die Website unter: {website_url}\n\n"
+            "No Motion detected since {timestamp}!\n"
+            "Please check the website at: {website_url}\n\n"
             "Details:\n"
             "Session-ID: {session_id}\n"
-            "Letzte Bewegung um {last_motion_time}\n"
-            "Kamera: Index {camera_index}\n"
-            "Sensitivität: {sensitivity}\n"
-            "ROI aktiv: {roi_enabled}\n\n"
-            "Im Anhang finden Sie das aktuelle Webcam-Bild."
+            "Last motion at {last_motion_time}\n"
+            "Camera: Index {camera_index}\n"
+            "Sensitivity: {sensitivity}\n"
+            "ROI enabled: {roi_enabled}\n\n"
+            "Attached is the current webcam image."
         )
         
         return EmailTemplate(
-            subject=data.get("subject", "CVD-Tracker: Bewegungsalarm - {timestamp}"),
+            subject=data.get("subject", "CVD-Tracker: No Motion Detected - {timestamp}"),
             body=data.get("body", default_body),
         )
 # ---------------------------------------------------------------------------

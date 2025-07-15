@@ -28,10 +28,8 @@ from email.mime.image import MIMEImage
 from pathlib import Path
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
-logger = logging.getLogger(__name__)
-
 if TYPE_CHECKING:
-    from .config import EmailConfig, MeasurementConfig, AppConfig
+    from .config import EmailConfig, MeasurementConfig, AppConfig, logger
 
 
 class AlertSystem:
@@ -53,8 +51,8 @@ class AlertSystem:
     def __init__(
         self,
         email_config: 'EmailConfig',
-        measurement_config: Optional['MeasurementConfig'] = None,
-        app_cfg: Optional['AppConfig'] = None,
+        measurement_config: 'MeasurementConfig',
+        app_cfg: 'AppConfig',
         logger: Optional[logging.Logger] = None
     ):
         """
@@ -71,7 +69,6 @@ class AlertSystem:
         self.webcam_cfg = app_cfg.webcam
         # app_cfg.motion_detection ist eine MotionDetectionConfig-Instanz
         self.motion_cfg = app_cfg.motion_detection
-        self.email_cfg = app_cfg.email
 
         if not email_config:
             raise ValueError("E-Mail-Config is needed")
@@ -79,23 +76,14 @@ class AlertSystem:
         if email_config.validate():
             raise ValueError("invalid E-Mail-Config")
         
-        if not hasattr(email_config, 'smtp_server') or not email_config.smtp_server:
-            raise ValueError("SMTP server must not be empty")
-        
-        if not hasattr(email_config, 'smtp_port') or not email_config.smtp_port or not (1 <= email_config.smtp_port <= 65535):
-            raise ValueError("SMTP port must be between 1 and 65535")
-
-        email_pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
-
         if not hasattr(email_config, 'recipients') or not email_config.recipients:
             raise ValueError("At least one recipient must be configured")
 
-        for recipient in email_config.recipients:
-            if not isinstance(recipient, str) or not email_pattern.match(recipient):
-                raise ValueError(f"Invalid email address: {recipient}")
-
-        if not hasattr(email_config, 'sender_email') or not email_pattern.match(email_config.sender_email):
-            raise ValueError("Invalid sender email address")
+        if not measurement_config:
+            raise ValueError("MeasurementConfig is needed")
+        
+        if measurement_config.validate():
+            raise ValueError("Invalid measurement config")
 
         self.email_config = email_config
         self.measurement_config = measurement_config
@@ -104,7 +92,7 @@ class AlertSystem:
         # Alert-State-Management
         self.last_alert_time: Optional[datetime] = None
         self.alerts_sent_count: int = 0
-        self.cooldown_minutes: int = max(1, getattr(email_config, 'cooldown_minutes', 5))  # Minimum 1 Minute zwischen E-Mails
+        self.cooldown_minutes: int = max(5, self.measurement_config.alert_delay_seconds // 60)  # Minimum 5 Minuten zwischen E-Mails
 
         self._state_lock = threading.RLock()
         self._smtp_lock = threading.Lock()
@@ -113,7 +101,7 @@ class AlertSystem:
         self._smtp_connection: Optional[smtplib.SMTP] = None
         self._connection_timeout: int = 30  # Sekunden
         
-        self.logger.info("AlertSystem initialied")
+        self.logger.info("AlertSystem initialized")
     
     def send_motion_alert(
         self,
@@ -153,7 +141,7 @@ class AlertSystem:
                     'timestamp': timestamp,
                     'session_id': session_id or "unknown",
                     'last_motion_time': last_motion_time.strftime("%H:%M:%S") if last_motion_time else "unknown",
-                    'website_url': self.email_cfg.website_url or "unknown",
+                    'website_url': self.email_config.website_url or "unknown",
                     'camera_index': self.webcam_cfg.camera_index if self.webcam_cfg else "unknown",
                     'sensitivity': self.motion_cfg.sensitivity if self.motion_cfg else "unknown",
                     'roi_enabled': self.motion_cfg.get_roi().enabled if self.motion_cfg else "unknown"
@@ -181,16 +169,27 @@ class AlertSystem:
             
             # E-Mail-Nachrichten für alle Empfänger erstellen
             try:
-                messages = []
-                for recipient in self.email_config.recipients:
-                    msg = self._create_email_message(subject, body, recipient)
-                    
-                    # Bild-Anhang hinzufügen wenn verfügbar
-                    if camera_frame is not None:
-                        camframe = camera_frame.copy()
-                        self._attach_camera_image(msg, camframe, timestamp)
+                messages: list[tuple[str, MIMEMultipart]] = []
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                img_buffer = None
+                filename: str | None = None
 
-                    messages.append((recipient, msg))
+                if camera_frame is not None:
+                    ok, img_buffer, filename = self._encode_frame(camera_frame, ts=timestamp)
+                    assert img_buffer is not None and filename is not None
+                    if ok and self.measurement_config.save_alert_images:
+                        self._save_alert_image(img_buffer, filename)
+
+                        for recipient in self.email_config.recipients:
+                            msg = self._create_email_message(subject, body, recipient)
+                            
+                            # Bild-Anhang hinzufügen wenn verfügbar
+                            if ok and img_buffer is not None and filename is not None:
+                                img_attach = MIMEImage(img_buffer.tobytes())
+                                img_attach.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+                                msg.attach(img_attach)
+
+                            messages.append((recipient, msg))
                 
                 # E-Mails versenden
                 success_count = self._send_emails_batch(messages)
@@ -235,7 +234,7 @@ class AlertSystem:
                                 try:
                                     smtp.sendmail(self.email_config.sender_email, recipient, message.as_string())
                                     success_count += 1
-                                    self.logger.info(f"EEmail successfully sent to {recipient}")
+                                    self.logger.info(f"Email successfully sent to {recipient}")
                                 except smtplib.SMTPException as exc:
                                     self.logger.error(f"SMTP-error when sending to {recipient}: {exc}")
                                 except Exception as exc:
@@ -308,58 +307,88 @@ class AlertSystem:
         
         return msg
     
-    def _attach_camera_image(self, msg: MIMEMultipart, frame: np.ndarray, timestamp: str) -> None:
+    def _encode_frame(
+        self,
+        frame: np.ndarray,
+        ts: Optional[str] = None
+    ) -> tuple[bool, Optional[np.ndarray], Optional[str]]:
         """
-        Fügt Kamera-Bild als E-Mail-Anhang hinzu.
-        
+        Kodiert ein BGR‑Frame in JPEG/PNG gemäß MeasurementConfig.
+
         Args:
-            msg: MIME-Nachricht
-            frame: OpenCV-Frame (BGR)
-            timestamp: Zeitstempel für Dateinamen
+            frame: OpenCV‑Frame (BGR‑ndarray)
+            ts:   Optional Zeitstempel‑String; wenn None ⇒ jetzt erzeugen
+
+        Returns:
+            (ok, buffer, filename)
+            ok        – True wenn Encoding erfolgreich
+            buffer    – kodiertes Bild als np.ndarray oder None
+            filename  – empfohlener Dateiname (str) oder None
         """
-        try:
-            if frame is None or frame.size == 0:
-                self.logger.warning("No valid camera image for email attachment")
-                return
-            
-            image_format = 'jpg'
-            image_quality = 85
+        if frame is None or frame.size == 0:
+            return False, None, None
 
-            # Image format and quality from config
+        img_fmt = self.measurement_config.image_format.lower()
+        # „jpg“ und „jpeg“ behandeln wir gleich
+        is_jpeg = img_fmt in ("jpg", "jpeg")
 
-            if self.measurement_config:
-                image_format = self.measurement_config.image_format.lower()
-                image_quality = self.measurement_config.image_quality
-            
-            # OpenCV-Frame zu JPEG konvertieren
-            encode_params = []
-            if image_format == 'jpg':
-                encode_params = [cv2.IMWRITE_JPEG_QUALITY, image_quality]
-            elif image_format == 'png':
-                encode_params = [cv2.IMWRITE_PNG_COMPRESSION, 3]
-            
-            success, buffer = cv2.imencode(f'.{image_format}', frame, encode_params)
-            
-            if success:
-                # MIME-Image-Attachment erstellen
-                safe_timestamp = re.sub(r'[^\w\s-]', '', timestamp)  # Nur sichere Zeichen für Dateinamen
-                safe_timestamp = safe_timestamp[:50]  # Länge begrenzen
-                filename = f"alert_{safe_timestamp}.{image_format}"
+        params = (
+            [cv2.IMWRITE_JPEG_QUALITY, self.measurement_config.image_quality]
+            if is_jpeg else
+            [cv2.IMWRITE_PNG_COMPRESSION, 3]
+        )
 
-                img_attachment = MIMEImage(buffer.tobytes())
-                img_attachment.add_header('Content-Disposition', f'attachment; filename="{filename}"')
-                msg.attach(img_attachment)
+        ok, buf = cv2.imencode(f".{img_fmt}", frame, params)
+        if not ok:
+            return False, None, None
 
-                self.logger.debug(f"Image attachment added: {filename} ({len(buffer)} bytes)")
+        if ts is None:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_ts = re.sub(r"[^\w\s-]", "", ts)[:50]
+        filename = f"alert_{safe_ts}.{img_fmt}"
 
-                # Optional: Save image locally
-                if self.measurement_config and self.measurement_config.save_alert_images:
-                    self._save_alert_image(buffer, filename)
-            else:
-                self.logger.warning("Image encoding failed")
+        return True, buf, filename
+    
+    def _attach_camera_image(
+        self,
+        msg: MIMEMultipart,
+        frame: np.ndarray,
+        ts: Optional[str] = None
+    ) -> None:
+        """
+        Hängt das übergebene BGR‑Frame als Anhang an die MIME‑Nachricht an.
 
-        except Exception as exc:
-            self.logger.error(f"Error attaching image: {exc}")
+        Args:
+            msg:   Bereits erzeugte MIME‑Nachricht
+            frame: OpenCV‑Frame (BGR)
+            ts:    Zeitstempel‑String (wird für Dateinamen genutzt);
+                None ⇒ jetzt erzeugen
+        """
+        # --- Bild kodieren ---------------------------------------------------
+        ok, buf, filename = self._encode_frame(frame, ts=ts)
+        if not ok or buf is None or filename is None:
+            self.logger.warning("Image encoding failed – no attachment added")
+            return
+        # --------------------------------------------------------------------
+
+        # --- Attachment erzeugen & anhängen ---------------------------------
+        img_attach = MIMEImage(buf.tobytes())           # buf ist ndarray mit Bytes
+        img_attach.add_header(
+            "Content-Disposition",
+            f'attachment; filename="{filename}"'
+        )
+        msg.attach(img_attach)
+        # --------------------------------------------------------------------
+
+        # --- (optional) lokal speichern -------------------------------------
+        # Wenn du das Speichern NICHT schon in send_motion_alert() erledigst:
+        # if self.measurement_config.save_alert_images:
+        #     self._save_alert_image(buf, filename)
+        # --------------------------------------------------------------------
+
+        self.logger.debug(
+            "Image attachment added: %s (%d bytes)", filename, buf.size
+        )
 
     def _save_alert_image(self, image_buffer: np.ndarray, filename: str) -> None:
         """

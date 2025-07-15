@@ -17,6 +17,8 @@ import logging
 import time
 from datetime import datetime, timedelta
 import math
+from collections import deque
+from threading import Lock
 from typing import Optional, Dict, Any, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -82,8 +84,9 @@ class MeasurementController:
         self._motion_callbacks: list[Callable[['MotionResult'], None]] = []
         
         # Motion-Historie für bessere Alert-Entscheidungen
-        self.motion_history: list[bool] = []  # Letzte Motion-States (True/False)
         self.motion_history_max_size: int = 10  # Anzahl der gespeicherten Motion-States
+        self.motion_history: deque[bool] = deque(maxlen=self.motion_history_max_size)  # Letzte Motion-States (True/False)
+
         
         # Anti-Spam-Mechanismus
         self.alerts_sent_this_session: int = 0
@@ -94,6 +97,8 @@ class MeasurementController:
         self.last_alert_check: Optional[datetime] = None
         
         self.logger.info("MeasurementController initialized")
+
+        self.history_lock = Lock()  # Thread-sicherer Zugriff auf Motion-Historie
     
     # === Session-Management ===
     def _ensure_valid_time(self) -> None:
@@ -219,10 +224,8 @@ class MeasurementController:
             return
 
         # Motion-Status in Historie speichern
-        self.motion_history.append(motion_result.motion_detected)
-        if len(self.motion_history) > self.motion_history_max_size:
-            if self.motion_history:  # Nur poppen, wenn nicht leer
-                self.motion_history.pop(0)  # Älteste Einträge entfernen
+        with self.history_lock:
+            self.motion_history.append(motion_result.motion_detected)
         
         if motion_result.motion_detected:
             self.last_motion_time = datetime.now()
@@ -271,7 +274,8 @@ class MeasurementController:
         # Motion-Historie analysieren: Gab es kürzlich noch Bewegung?
         if len(self.motion_history) >= 3:
             # Wenn in den letzten 3 Motion-Checks noch Bewegung war, warten
-            recent_motion = any(self.motion_history[-3:])
+            with self.history_lock:
+                recent_motion = any(list(self.motion_history)[-3:])
             if recent_motion:
                 return
         
@@ -374,7 +378,7 @@ class MeasurementController:
             'alerts_sent_this_session': self.alerts_sent_this_session,
             'max_alerts_per_session': self.max_alerts_per_session,
             'motion_history_size': len(self.motion_history),
-            'recent_motion_detected': any(self.motion_history[-3:]) if len(self.motion_history) >= 3 else None,
+            'recent_motion_detected': any(list(self.motion_history)[-3:]) if len(self.motion_history) >= 3 else None,
             'session_timeout_minutes': self.config.session_timeout_minutes,
         }
     
