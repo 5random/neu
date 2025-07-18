@@ -294,9 +294,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                     IMG_H, IMG_W = h, w  # Update global dimensions
                     ratio_style = (
                         f"aspect-ratio:{w}/{h};"
-                        "width:100%;height:auto;"
-                        "object-fit:contain;max-height:300px;"
-                    )
+                        "width:100%;height:auto;")
                     image.set_source(src)          # <-- Bild austauschen
                     image.style(ratio_style)       # <-- Style anpassen
         except Exception as e:
@@ -371,9 +369,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                         h, w = (frame.shape[:2] if frame is not None else (IMG_H, IMG_W))
                         ratio_style = (
                             f"aspect-ratio:{w}/{h};"
-                            "width:100%;height:auto;"
-                            "object-fit:contain;max-height:300px;"
-    )
+                            "width:100%;height:auto;")
 
                         image = (
                             ui.interactive_image(
