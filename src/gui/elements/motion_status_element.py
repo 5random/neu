@@ -11,10 +11,10 @@ def create_motion_status_element(camera, measurement_controller: MeasurementCont
     last_changed: datetime = datetime.now() # Zeitstempel der letzten Änderung
 
     # ---------- UI ----------
-    with ui.column().classes('w-full items-start q-gutter-y-md'):
-
+    with ui.card().classes('w-full h-full shadow-2 q-pa-md').style('align-self:stretch;'):
+        ui.label('Motion Detection Status').classes('text-h6 font-semibold mb-2')
         # Karte mit fester, breiterem Layout ------------------------------
-        with ui.card().classes('w-full shadow-2 q-pa-md').style('align-self:stretch; min-height:140px'):
+        with ui.column().classes('w-full items-start q-gutter-y-md'):
             with ui.row().classes('items-center q-gutter-x-md')\
                         .style('white-space: nowrap'):
                 icon = ui.icon('highlight_off', color='red', size='2rem')

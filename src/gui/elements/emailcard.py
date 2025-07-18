@@ -72,12 +72,14 @@ def create_emailcard():
 
 
     # -- Alles in einer Karte ----------------------------------------------------
-    with ui.card().classes("w-full max-w-2xl"):
-
+    with ui.card().style("align-self:stretch; flex-direction:column; flex-wrap:wrap;").style("align-self:stretch; width: 100%; flex-direction:column; flex-wrap:wrap;").classes("w-full"):
+        ui.label('Email Settings')\
+                .style("align-self:flex-start; display:block;")\
+                .classes('text-h6 font-semibold mb-2')
         # -- Tabs -----------------------------------------------------------------
         with ui.tabs() as tabs:
-            tab_rcp  = ui.tab("Recipients")
-            tab_smtp = ui.tab("SMTP")
+            tab_rcp  = ui.tab("Recipients").tooltip("Manage email recipients")
+            tab_smtp = ui.tab("SMTP").tooltip("Configure SMTP settings")
 
         # -- Tab-Panels -----------------------------------------------------------
         with ui.tab_panels(tabs, value=tab_rcp).classes("w-full"):
@@ -89,7 +91,8 @@ def create_emailcard():
                         ui.input("New Email")
                         .classes("w-64")
                         .on("keyup.enter", lambda _: add_recipient())
-                    )
+                    ).tooltip("Enter email address and press Enter to add or the add button")
+                    
                     with ui.button(
                         icon='add_circle',
                         color="primary",
@@ -115,28 +118,13 @@ def create_emailcard():
                     ).bind_enabled_from(table, "selected", lambda s: bool(s)).props('round'):
                         ui.tooltip('Delete selected email addresses')
 
-                    def send_test_email():
-                        alert = AlertSystem(config.email, config.measurement, config)
-                        if alert.send_test_email():
-                            ui.notify("Test email sent successfully", color="positive")
-                        else:
-                            ui.notify("Error sending test email", color="negative")
-
-
-                    with ui.button(
-                        icon='send',
-                        color="info",
-                        on_click= lambda _: send_test_email()
-                    ).props('round').classes("ml-auto"):
-                        ui.tooltip('Send test email to all recipients')
-
             # Panel: SMTP-Einstellungen
             with ui.tab_panel(tab_smtp):
                 smtp = state["smtp"]
 
                 with ui.row().classes("items-center gap-2"):
-                    ui.input("Sender").bind_value(smtp, "sender")
-                    ui.input("SMTP-Server").bind_value(smtp, "server")
+                    ui.input("Sender").bind_value(smtp, "sender").tooltip("Email address of the sender")
+                    ui.input("Server").bind_value(smtp, "server").tooltip("SMTP server address")
                     with ui.number("Port", min=1, max=65535).bind_value(smtp, "port", forward=int):
                         ui.tooltip("Port must be between 1 and 65535.")
 
@@ -148,9 +136,18 @@ def create_emailcard():
                     else:
                         persist_state()
                         ui.notify("Saved", color="positive")
+                
+                def send_test_email():
+                        alert = AlertSystem(config.email, config.measurement, config)
+                        if alert.send_test_email():
+                            ui.notify("Test email sent successfully", color="positive")
+                        else:
+                            ui.notify("Error sending test email", color="negative")
 
-                with ui.button(icon='save', color="primary", on_click=attempt_save).props('round'):
-                    ui.tooltip('Save SMTP settings')
+                with ui.row().classes('w-full items-center'):
+                    ui.button(icon='save', color="primary", on_click=attempt_save).props('round').tooltip('Save SMTP settings')
+                    ui.element('div').classes('w-px h-8 bg-gray-300 mx-2')
+                    ui.button(icon='send', color="info", on_click= lambda _: send_test_email()).props('round').tooltip('Send test email to all recipients')
 
     # Tabellen-Inhalt initial laden
     refresh_table()

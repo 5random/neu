@@ -3,6 +3,7 @@ from typing import Optional, Tuple, TypedDict, cast
 import cv2
 import base64
 import numpy as np
+import asyncio
 
 
 from nicegui import ui
@@ -20,9 +21,14 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
     IMG_SRC = 'https://picsum.photos/id/325/720/405'
     IMG_W, IMG_H = 720, 405
 
+
     if camera is None:
         ui.notify(
             'Camera not available, ROI editor in demo mode.', type='warning')
+    else:
+        res = camera.get_camera_status()
+        if res and res.get('resolution'):
+            IMG_W, IMG_H = res['resolution']['width'], res['resolution']['height']
 
     # ---------- Zustand ------------------------------------------------------
     class ROIState(TypedDict):
@@ -30,7 +36,6 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         p2: Optional[Tuple[int, int]]
 
     state: ROIState = {'p1': None, 'p2': None}
-    #ROI_FILE = Path('roi_config.json')
 
     # UI-Referenzen
     image: Optional[InteractiveImage] = None
@@ -41,6 +46,8 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
     roi_editor_container: Optional[Element] = None
     button_roi_edit: Optional[Element] = None  # Referenz auf Öffnen-Button
     sensitivity_knob: Knob | None = None
+
+    debounce_task = None
 
     # ---------- SVG-Hilfsfunktionen -----------------------------------------
     def svg_cross(x: int, y: int, s: int = 14, col: str = 'deepskyblue') -> str:
@@ -73,10 +80,10 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         b = roi_bounds()
         if b:
             x0, y0, x1, y1 = b
-            return f'ROI: ({x0}, {y0}) – ({x1}, {y1})'
+            return f'ROI: ({x0}, {y0}) - ({x1}, {y1})'
         elif state['p1']:
             x, y = state['p1']
-            return f'ROI: ({x}, {y}) – (…)'
+            return f'ROI: ({x}, {y}) - (…)'
         return 'ROI: not active'
 
     # ---------- UI-Updates ---------------------------------------------------
@@ -109,9 +116,9 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             br_label.text = f'({x1}, {y1})'
         elif state['p1']:
             tl_label.text = f'({state["p1"][0]}, {state["p1"][1]})'
-            br_label.text = '–'
+            br_label.text = '-'
         else:
-            tl_label.text = br_label.text = '–'
+            tl_label.text = br_label.text = '-'
 
     def refresh_ui() -> None:
         update_overlay()
@@ -140,6 +147,8 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
 
     def update_sensitivity(value: int) -> None:
         """Aktualisiert die Sensitivität des Motion Detectors."""
+        nonlocal debounce_task
+
         if camera is None or camera.motion_detector is None:
             return
         cam = cast(Camera, camera)
@@ -147,13 +156,20 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         # Sensitivität in Prozent (0-100)
         sens_value = max(0.01, value / 100.0)  # mind. 1%
         md.update_sensitivity(sens_value)
-        if cam.motion_detector:
-            cam.app_config.motion_detection.sensitivity = sens_value
-            if hasattr(cam, 'save_uvc_config'):
-                cam.save_uvc_config()  # Speichert die Konfiguration
+        async def save_config_delayed():
+            await asyncio.sleep(0.5)
+            if cam.motion_detector:
+                cam.app_config.motion_detection.sensitivity = sens_value
+                if hasattr(cam, 'save_uvc_config'):
+                    cam.save_uvc_config()  # Speichert die Konfiguration
 
-        ui.notify(f'Sensitivity set to {sens_value:.2f}', type='info',
-                  position='bottom-right')
+        ui.notify(f'Sensitivity saved', type='info',
+                position='bottom-right')
+        
+        if debounce_task is not None and not debounce_task.done():
+            debounce_task.cancel()
+        
+        debounce_task = asyncio.create_task(save_config_delayed())
 
     # ---------- Event-Handler ------------------------------------------------
     def reset_roi() -> None:
@@ -179,7 +195,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         """Versorgt Live-Koordinaten & leitet Klicks weiter."""
         if coords_label:
             if e.type == 'mouseleave':
-                coords_label.text = '(–, –)'
+                coords_label.text = '(-, -)'
             else:  # 'move' oder 'click'
                 coords_label.text = f'({int(e.image_x)}, {int(e.image_y)})'
 
@@ -195,6 +211,10 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
 
             if camera is None:
                 ui.notify('Camera not available!', type='warning',
+                          position='bottom-right')
+                return
+            elif x0 < 0 or y0 < 0 or x1 > IMG_W or y1 > IMG_H:
+                ui.notify('Invalid ROI position!', type='warning',
                           position='bottom-right')
                 return
             
@@ -255,47 +275,43 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             refresh_ui()
 
     # ---------- UI-Aufbau ----------------------------------------------------
-    with ui.card().style("align-self:stretch; flex-direction:column; justify-content:center; align-items:start; display:flex; min-height:px;"):
-        ui.label('Motion Detection Settings').classes(
-            'text-h6 font-semibold mb-2'
-        )
-        with ui.column().classes('gap-4'):
+    with ui.card().style("align-self:stretch; flex-direction:column; justify-content:center; align-items:start; display:flex;"):
+        ui.label('Motion Detection Settings').classes('text-h6 font-semibold mb-2')
+        with ui.column().style("align-self:stretch;").classes('gap-4'):
 
             # ── Sensitivität in eigener Card ────────────────────────────────
-            with ui.card().style("align-self:stretch; justify-content:center; align-items:center; min-height:60px;"):
-                ui.label('Sensitivity').classes('text-h6 font-semibold mb-2')
-                with ui.row().classes('items-center gap-4'):
+            with ui.card().classes('w-full').style("align-items:center;"):
+                ui.label('Sensitivity:').classes('font-semibold mb-2 self-start')
+                with ui.row().classes('justify-center gap-4'):
                     sensitivity_knob = ui.knob(
                         min=0, max=100, value=10, step=1, show_value=True, on_change=lambda e: update_sensitivity(e.value)
-                    ).style("align-self:stretch; display:flex; justify-content:center; align-items:center; flex-direction:column; flex-wrap:nowrap;").classes('flex-grow')
+                    ).tooltip('Adjust motion detection sensitivity (0-100%)')
 
             ui.separator()
 
             # ── ROI-Bereich jetzt ebenfalls in eigener Card ─────────────────
-            with ui.card().style("align-self:stretch;"):
+            with ui.card().classes('w-full').style("align-self:stretch;"):
                 with ui.column().classes('w-full gap-2'):
-
+                    ui.label('Region of Interest (ROI)').classes('font-semibold mb-2 self-start')
                     # Kopfzeile mit Titel und Edit-Button
-                    with ui.row().classes('items-center justify-between w-full'):
-                        ui.label('Region of Interest (ROI)')\
-                            .classes('text-h6 font-semibold mb-2')
+                    with ui.row().classes('items-center gap-2 justify-center'):
                         button_roi_edit = ui.button(
                             icon='crop',
-                            color='secondary',
+                            color='primary',
                             on_click=toggle_roi_editor
-                        ).tooltip('edit ROI').classes('text-gray-500 ml-auto')
+                        ).props('round').tooltip('edit ROI').classes('text-gray-500 ml-auto')
 
-                    # ROI-Status-Text
-                    label_roi = ui.label(roi_text())\
-                        .style("align-self:stretch; display:flex; justify-content:center;"
-                               "align-items:center;")\
-                        .classes('text-sm font-mono mb-2')
+                        # ROI-Status-Text
+                        label_roi = ui.label(roi_text())\
+                            .style("align-self:stretch; display:flex; justify-content:center;"
+                                "align-items:center;")\
+                            .classes('text-sm font-mono mb-2')
 
                     # ── ROI-Editor (initial versteckt) ────────────────────
                     roi_editor_container = ui.column().classes('gap-4')
                     with roi_editor_container:
 
-                        ui.label('Editor').classes('text-h6 font-semibold')
+                        ui.label('ROI Editor:').classes('font-semibold mb-2 self-start')
 
                         frame: np.ndarray | None = None
                         image_src = IMG_SRC
@@ -314,7 +330,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                         h, w = (frame.shape[:2] if frame is not None else (IMG_H, IMG_W))
                         ratio_style = (
                             f"aspect-ratio:{w}/{h};"
-                            "width:100%;height:auto;"
+                            "width:100%;height:100%;"
                             "object-fit:contain;max-height:300px;"
     )
 
@@ -323,7 +339,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                                 image_src,
                                 on_mouse=handle_mouse,
                                 events=['click', 'move', 'mouseleave'],
-                                cross=True,
+                                cross='blue',
                             )
                             .style(ratio_style)
                             .classes('rounded-borders')
@@ -332,23 +348,23 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                         # ROI-Koordinaten-Labels
                         with ui.row().classes('items-center gap-4 text-sm'):
                             ui.label('upper left corner:')
-                            tl_label = ui.label('–').classes('font-mono')
+                            tl_label = ui.label('-').classes('font-mono')
                             ui.label('bottom right corner:')
-                            br_label = ui.label('–').classes('font-mono')
+                            br_label = ui.label('-').classes('font-mono')
 
                         # Live-Mauskoordinaten (rechtsbündig, grau)
                         with ui.row().classes('justify-end'):
-                            coords_label = ui.label('(–, –)')\
+                            coords_label = ui.label('(-, -)')\
                                 .classes('text-sm font-mono text-gray-500')
 
                         # Aktions-Buttons
                         with ui.row().classes('gap-2'):
-                            ui.button(icon='restart_alt', color='secondary', on_click=reset_roi)\
-                                .classes('flex-grow').tooltip('reset ROI')
                             ui.button(icon='save', color='primary', on_click=save_roi)\
-                                .classes('flex-grow').tooltip('save')
+                                .classes('flex-grow').props('round').tooltip('save')
+                            ui.button(icon='restart_alt', color='secondary', on_click=reset_roi)\
+                                .classes('flex-grow').props('round').tooltip('reset ROI')
                             ui.button(icon='close', color='negative', on_click=toggle_roi_editor)\
-                                .classes('flex-grow').tooltip('close')
+                                .classes('flex-grow').props('round').tooltip('close')
 
                     # Editor initial versteckt
                     roi_editor_container.set_visibility(False)

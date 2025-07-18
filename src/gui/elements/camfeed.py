@@ -15,7 +15,7 @@ def create_camfeed_content():
     
     with ui.card().style("align-self:stretch; justify-content:center; align-items:start;"):
         ui.label('Camera Feed').classes('text-h6 font-semibold mb-2')
-        videoimage = ui.interactive_image().classes('w-auto h-full rounded-lg shadow-md')
+        videoimage = ui.interactive_image().classes('w-full h-full rounded-lg')
         
         # Live-Video-Feed aktualisieren
         ui.timer(interval=0.2, callback=lambda: videoimage.set_source(f'/video/frame?{time.time()}'))

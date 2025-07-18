@@ -137,16 +137,18 @@ def create_measurement_card(measurement_controller: MeasurementController | None
 
 
     # -------------------------- UI ------------------------------
-    with ui.card().classes('w-full').style('align-self:stretch;'):
-        ui.label('Measurement Monitoring').classes('text-h5 text-bold mb-2')
-
-        start_stop_btn = ui.button('Start', icon='play_arrow', color='positive') \
-            .classes('q-mb-md')
+    with ui.card().classes('w-full h-full').style('align-self:stretch;'):
+        ui.label('Measurement Monitoring').classes('text-h6 font-semibold mb-2')
 
         with ui.row().classes('items-center q-gutter-sm q-mb-sm'):
+            start_stop_btn = ui.button('Start', icon='play_arrow', color='positive') \
+                .tooltip('Start or stop the measurement session')
+            
+            ui.element('div').classes('w-px h-8 bg-gray-300 mx-2')
+
             enable_limit = ui.checkbox(
-                'max. duration', value=config.measurement.session_timeout_minutes > 0
-            )
+                'max. Duration', value=config.measurement.session_timeout_minutes > 0
+            ).tooltip('toggle maximum measurement duration')
 
             min_alert_sec = config.measurement.alert_delay_seconds          # z. B. 300 s
             min_alert_min = (min_alert_sec + 59) // 60 
@@ -160,7 +162,7 @@ def create_measurement_card(measurement_controller: MeasurementController | None
                 ),
                 min=MIN_BASE_SEC,  # Minimum 5 Minuten
                 format='%.0f',
-            ).props('dense outlined').style('width:120px').tooltip(
+            ).props('dense outlined').style('min-width:80').tooltip(
                 'Min. duration of the measurement is 5 minutes (300 seconds).'
             )
 
@@ -173,7 +175,9 @@ def create_measurement_card(measurement_controller: MeasurementController | None
                 options=['s', 'min', 'h'],
                 value='s',
                 label='Unit',
-            ).props('dense outlined').style('max-width: 80px')
+            ).props('dense outlined').style('min-width:80px;').tooltip(
+                'Select the unit for the duration with seconds (s), minutes (min), or hours (h).'
+            )
 
             update_duration_ui()
             duration_unit.on('update:model-value', update_duration_ui)
@@ -181,15 +185,16 @@ def create_measurement_card(measurement_controller: MeasurementController | None
 
         timer_label = ui.label('-').classes('text-subtitle1 q-mb-xs')
 
-        # Fortschritts-Balken + Prozent
-        with ui.row().classes('items-center q-mb-xs') as progress_row:
-            progress = ui.linear_progress(value=0.0, color='accent').style('flex:1')
-            percent_label = ui.label('0 %').classes('text-caption')
+        # Fortschrittsbalken und Prozent
+        with ui.row().classes('w-full flex-nowrap').style("align-self:flex-start; flex-direction:row; display:flex; flex-wrap:nowrap; gap:8px;") as progress_row:
+            progress = ui.linear_progress(value=0.0, color='accent', show_value=False).classes('w-8/12 h-4')
+            percent_label = ui.label('0 %').classes('text-caption text-right').style('flex-wrap:nowrap;')
         progress_row.visible = False
 
-        motion_label = ui.label('No motion detected').classes('text-caption text-grey q-mb-xs')
-        alert_label = ui.label('').classes('text-caption q-mb-xs')
-        last_label = ui.label('Last measurement: –').classes('text-caption text-grey')
+        with ui.row().classes('w-full items-center q-gutter-sm').style("flex-wrap:wrap; gap:8px; align-self:flex-start; flex-direction:row; justify-content:start;"):
+            motion_label = ui.label('No motion detected').classes('text-caption text-grey q-mb-xs').style('width: 140px;')
+            alert_label = ui.label('').classes('text-caption q-mb-xs').style('width: 160px;')
+            last_label = ui.label('Last measurement: –').classes('text-caption text-grey')
 
 
     # ----------------------- Event-Logik ------------------------

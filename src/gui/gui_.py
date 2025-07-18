@@ -22,6 +22,7 @@ global_alert_system: AlertSystem | None = None
 
 dark = ui.dark_mode(value=False)
 
+
 def init_camera(config_path: str = "config/config.yaml") -> Camera | None:
     """Initialisiere Kamera und starte die Bilderfassung.
 
@@ -85,17 +86,28 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 'text-xl font-semibold tracking-wider text-gray-100')
 
         # --- Rechte Seite ------------------------------------------
+        def toggle_dark():
+                dark.toggle()
+                new_icon = 'light_mode' if dark.value else 'dark_mode'
+                btn.props(f'icon={new_icon}')
+
         with ui.row().classes('items-center gap-4'):
-            ui.switch().bind_value(dark).props('label="Dark Mode" dense')
+            btn= (ui.button(
+                icon='light_mode' if dark.value else 'dark_mode',
+                on_click=toggle_dark,
+            ).props('flat round dense').classes('text-xl'))
+            
             
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
         with ui.column().classes("gap-4"):
             create_camfeed_content()
-            create_motion_status_element(global_camera, global_measurement_controller)
-            create_measurement_card(global_measurement_controller)
+            with ui.grid(columns="1fr 2fr").classes("gap-4 w-full h-full").style("grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); grid-auto-rows:1fr; align-items:stretch;"):
+                create_motion_status_element(global_camera, global_measurement_controller)
+                create_measurement_card(global_measurement_controller)
 
         with ui.column().classes("gap-4"):
             create_uvc_content(camera=global_camera)
             create_motiondetection_card(camera=global_camera)
             create_emailcard()
-
+    
+    
