@@ -92,18 +92,39 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         if image is None:
             return
 
+        original_h, original_w = (IMG_H, IMG_W)
+
+        if original_h > 300:
+            scale = 300 / original_h
+            display_w = original_w * scale
+            display_h = 300
+        else:
+            scale = 1.0
+            display_w = original_w
+            display_h = original_h
+
         parts: list[str] = []
         if state['p1']:
-            parts.append(svg_cross(*state['p1']))
+            scaled_x = state['p1'][0] * scale
+            scaled_y = state['p1'][1] * scale
+            parts.append(svg_cross(int(scaled_x), int(scaled_y)))
+            #parts.append(svg_cross(*state['p1']))
         if state['p2']:
-            parts.append(svg_cross(*state['p2']))
+            scaled_x = state['p2'][0] * scale
+            scaled_y = state['p2'][1] * scale
+            parts.append(svg_cross(int(scaled_x), int(scaled_y)))
+            #parts.append(svg_cross(*state['p2']))
         if (b := roi_bounds()):
             x0, y0, x1, y1 = b
+            scaled_x0 = int(x0 * scale)
+            scaled_y0 = int(y0 * scale)
+            scaled_x1 = int(x1 * scale)
+            scaled_y1 = int(y1 * scale)
             parts.append(
-                f'<rect x="{x0}" y="{y0}" width="{x1-x0}" height="{y1-y0}" '
+                f'<rect x="{scaled_x0}" y="{scaled_y0}" width="{scaled_x1-scaled_x0}" height="{scaled_y1-scaled_y0}" '
                 'stroke="lime" stroke-width="3" fill="none" pointer-events="none" />'
             )
-            parts.extend([svg_circle(x0, y0), svg_circle(x1, y1)])
+            parts.extend([svg_circle(scaled_x0, scaled_y0), svg_circle(scaled_x1, scaled_y1)])
 
         image.content = ''.join(parts)
 
@@ -178,13 +199,22 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         refresh_ui()
 
     def _handle_click(e: MouseEventArguments) -> None:
-        x, y = int(e.image_x), int(e.image_y)
+        
+        original_h, original_w = (IMG_H, IMG_W)
+
+        if original_h > 300:
+            scale = 300 / original_h
+        else:
+            scale = 1.0
+        
+        original_x, original_y = int(e.image_x/scale), int(e.image_y/scale)
+
         target = (
             'p1' if state['p1'] is None
             else ('p2' if state['p2'] is None else None)
         )
         if target:
-            state[target] = (x, y)
+            state[target] = (original_x, original_y)
         else:  # dritter Klick → neue Auswahl
             reset_roi()
             _handle_click(e)
@@ -197,7 +227,9 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             if e.type == 'mouseleave':
                 coords_label.text = '(-, -)'
             else:  # 'move' oder 'click'
-                coords_label.text = f'({int(e.image_x)}, {int(e.image_y)})'
+                original_h, original_w = (IMG_H, IMG_W)
+                scale = 300 / original_h if original_h > 300 else 1.0
+                coords_label.text = f'({int(e.image_x/scale)}, {int(e.image_y/scale)})'
 
         if e.type == 'click':
             _handle_click(e)
@@ -249,6 +281,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
     
     def refresh_snapshot() -> None:
         """Aktualisiert das Snapshot-Bild im Editor."""
+        nonlocal IMG_H, IMG_W
         if image is None or camera is None:
             return
         try:
@@ -257,7 +290,15 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                 success, buffer = cv2.imencode('.jpg', frame)
                 if success:
                     src = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode()}"
+                    h, w = (frame.shape[:2] if frame is not None else (IMG_H, IMG_W))
+                    IMG_H, IMG_W = h, w  # Update global dimensions
+                    ratio_style = (
+                        f"aspect-ratio:{w}/{h};"
+                        "width:100%;height:auto;"
+                        "object-fit:contain;max-height:300px;"
+                    )
                     image.set_source(src)          # <-- Bild austauschen
+                    image.style(ratio_style)       # <-- Style anpassen
         except Exception as e:
             ui.notify(f"Snapshot error: {e}", type="warning")
 
@@ -330,7 +371,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                         h, w = (frame.shape[:2] if frame is not None else (IMG_H, IMG_W))
                         ratio_style = (
                             f"aspect-ratio:{w}/{h};"
-                            "width:100%;height:100%;"
+                            "width:100%;height:auto;"
                             "object-fit:contain;max-height:300px;"
     )
 
