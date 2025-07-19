@@ -1,3 +1,4 @@
+from pathlib import Path
 from nicegui import ui, app
 
 from src.gui.elements import (
@@ -96,8 +97,9 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 icon='light_mode' if dark.value else 'dark_mode',
                 on_click=toggle_dark,
             ).props('flat round dense').classes('text-xl'))
-            
-            
+            #ui.button( icon='download', on_click=lambda: ui.download.from_url('/logs/cvd_tracker.log')).props('flat round dense').classes('text-xl')
+
+
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
         with ui.column().classes("gap-4"):
             create_camfeed_content()
