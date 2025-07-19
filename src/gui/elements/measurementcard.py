@@ -82,11 +82,9 @@ def create_measurement_card(measurement_controller: MeasurementController | None
 
     def style_start_button() -> None:
         if measurement_controller.get_session_status()['is_active']:
-            start_stop_btn.text = 'Stop'
             start_stop_btn.icon = 'stop'
             start_stop_btn.props('color=negative')
         else:
-            start_stop_btn.text = 'Start'
             start_stop_btn.icon = 'play_arrow'
             start_stop_btn.props('color=positive')
 
@@ -141,7 +139,7 @@ def create_measurement_card(measurement_controller: MeasurementController | None
         ui.label('Measurement Monitoring').classes('text-h6 font-semibold mb-2')
 
         with ui.row().classes('items-center q-gutter-sm q-mb-sm'):
-            start_stop_btn = ui.button('Start', icon='play_arrow', color='positive') \
+            start_stop_btn = ui.button(icon='play_arrow', color='positive').props('round') \
                 .tooltip('Start or stop the measurement session')
             
             ui.element('div').classes('w-px h-8 bg-gray-300 mx-2')
@@ -200,10 +198,14 @@ def create_measurement_card(measurement_controller: MeasurementController | None
     # ----------------------- Event-Logik ------------------------
 
 
-
     def toggle_duration(_):
         if not measurement_controller.get_session_status()['is_active']:
-            duration_input.enable() if enable_limit.value else duration_input.disable()
+            if enable_limit.value:
+                duration_input.enable()
+                duration_unit.enable()
+            else:
+                duration_input.disable()
+                duration_unit.disable()
 
 
     def start_stop(_):

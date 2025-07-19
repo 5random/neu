@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 logs/
+alerts/
 # Temporary files
 *.log
 *.tmp
@@ -11,3 +12,21 @@ logs/
 .env.*
 .vscode/
 .idea/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.svg
+*.webp
+*.yaml
+*.yml
+*.json
+*.xml
+*.pdf
+*.zip
+*.tar
+*.gz
+*.rar
+*.7z

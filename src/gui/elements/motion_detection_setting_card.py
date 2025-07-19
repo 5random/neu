@@ -376,7 +376,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                                 image_src,
                                 on_mouse=handle_mouse,
                                 events=['click', 'move', 'mouseleave'],
-                                cross='blue',
+                                cross='#19bfd2',
                             )
                             .style(ratio_style)
                             .classes('rounded-borders')
