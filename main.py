@@ -8,7 +8,7 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 from nicegui import ui
-from nicegui_toolkit import inject_layout_tool
+#10from nicegui_toolkit import inject_layout_tool
 from src.config import load_config
 from src.gui.gui_ import create_gui
 
