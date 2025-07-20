@@ -20,6 +20,7 @@ import re
 import cv2
 import numpy as np
 import requests
+import math
 from datetime import datetime
 import threading
 from email.mime.multipart import MIMEMultipart
@@ -92,7 +93,10 @@ class AlertSystem:
         # Alert-State-Management
         self.last_alert_time: Optional[datetime] = None
         self.alerts_sent_count: int = 0
-        self.cooldown_minutes: int = max(5, self.measurement_config.alert_delay_seconds // 60)  # Minimum 5 Minuten zwischen E-Mails
+        self.cooldown_minutes: int = max(
+            5,
+            math.ceil(self.measurement_config.alert_delay_seconds / 60),
+        )  # Minimum 5 Minuten zwischen E-Mails
 
         self._state_lock = threading.RLock()
         self._smtp_lock = threading.Lock()
@@ -172,11 +176,11 @@ class AlertSystem:
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 img_buffer = None
                 filename: str | None = None
+                ok = False
 
                 if camera_frame is not None:
                     ok, img_buffer, filename = self._encode_frame(camera_frame, ts=timestamp)
-                    assert img_buffer is not None and filename is not None
-                    if ok and self.measurement_config.save_alert_images:
+                    if ok and img_buffer is not None and filename is not None and self.measurement_config.save_alert_images:
                         self._save_alert_image(img_buffer, filename)
 
                 msg = self._create_email_message(subject, body, ", ".join(self.email_config.recipients))
@@ -477,16 +481,14 @@ class AlertSystem:
     def send_test_email(self) -> bool:
         """
         Sendet Test-E-Mail an alle konfigurierten Empfänger.
-        
-        Args:
-            test_message: Test-Nachricht
-            
+
         Returns:
             True wenn mindestens eine E-Mail erfolgreich gesendet
         """
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             subject = f"Test email - {timestamp}"
+            # Beispielinhalt der Test-E-Mail erzeugen
             test_message =(
                     f"Motion has not been detected since {timestamp}!\n"
                     f"Please check the website at: {self.email_config.website_url}\n\n"
@@ -503,7 +505,7 @@ class AlertSystem:
             try:
                 response = requests.get(IMG_SRC, timeout=10)
                 response.raise_for_status()  # Raise an error for bad responses
-                img_array = np.asarray(bytearray(response.content), dtype=np.uint8)
+                img_array = np.frombuffer(response.content, dtype=np.uint8)
                 frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                 if frame is None or frame.size == 0:
                     self.logger.warning("No valid test image received")

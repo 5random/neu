@@ -2,13 +2,16 @@ from datetime import datetime, timedelta
 from nicegui import ui, background_tasks
 
 from src.alert import AlertSystem
-from src.config import load_config, save_config
+from src.config import AppConfig, save_config
 from src.measurement import MeasurementController
 from src.cam.camera import Camera
 
-def create_measurement_card(measurement_controller: MeasurementController | None = None, camera: Camera | None = None):
-    
-    config = load_config()
+def create_measurement_card(
+    measurement_controller: MeasurementController | None = None,
+    camera: Camera | None = None,
+    *,
+    config: AppConfig,
+) -> None:
     if measurement_controller is None:
         alert_system = AlertSystem(config.email, config.measurement, config)
         measurement_controller = MeasurementController(config.measurement, alert_system)
@@ -235,10 +238,8 @@ def create_measurement_card(measurement_controller: MeasurementController | None
     enable_limit.on('update:model-value', toggle_duration)
     enable_limit.on('update:model-value', lambda e: persist_settings())
      
-    duration_input.on('blur', lambda e:
-    persist_settings() if enable_limit.value else None)
-    duration_input.on('keydown.enter', lambda e:
-    persist_settings() if enable_limit.value else None)
+    duration_input.on('blur', lambda e: persist_settings() if enable_limit.value else None)
+    duration_input.on('keydown.enter', lambda e: persist_settings() if enable_limit.value else None)
     ui.timer(1.0, tick)
 
     persist_settings()

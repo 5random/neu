@@ -6,7 +6,6 @@ import signal
 import threading
 import time
 from dataclasses import asdict
-from turtle import width
 from typing import Callable, Optional
 import os
 
