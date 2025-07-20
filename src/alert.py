@@ -173,23 +173,23 @@ class AlertSystem:
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 img_buffer = None
                 filename: str | None = None
+                ok = False
 
                 if camera_frame is not None:
                     ok, img_buffer, filename = self._encode_frame(camera_frame, ts=timestamp)
-                    assert img_buffer is not None and filename is not None
-                    if ok and self.measurement_config.save_alert_images:
+                    if ok and self.measurement_config.save_alert_images and img_buffer is not None and filename is not None:
                         self._save_alert_image(img_buffer, filename)
 
-                        for recipient in self.email_config.recipients:
-                            msg = self._create_email_message(subject, body, recipient)
-                            
-                            # Bild-Anhang hinzufügen wenn verfügbar
-                            if ok and img_buffer is not None and filename is not None:
-                                img_attach = MIMEImage(img_buffer.tobytes())
-                                img_attach.add_header('Content-Disposition', f'attachment; filename="{filename}"')
-                                msg.attach(img_attach)
+                for recipient in self.email_config.recipients:
+                    msg = self._create_email_message(subject, body, recipient)
 
-                            messages.append((recipient, msg))
+                    # Bild-Anhang hinzufügen wenn verfügbar
+                    if ok and img_buffer is not None and filename is not None:
+                        img_attach = MIMEImage(img_buffer.tobytes())
+                        img_attach.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+                        msg.attach(img_attach)
+
+                    messages.append((recipient, msg))
                 
                 # E-Mails versenden
                 success_count = self._send_emails_batch(messages)
