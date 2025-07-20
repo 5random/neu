@@ -18,6 +18,7 @@ import time
 from datetime import datetime, timedelta
 import math
 from collections import deque
+from itertools import islice
 from threading import Lock
 from typing import Optional, Dict, Any, Callable, TYPE_CHECKING
 
@@ -275,7 +276,8 @@ class MeasurementController:
         if len(self.motion_history) >= 3:
             # Wenn in den letzten 3 Motion-Checks noch Bewegung war, warten
             with self.history_lock:
-                recent_motion = any(list(self.motion_history)[-3:])
+                start = len(self.motion_history) - 3
+                recent_motion = any(islice(self.motion_history, start, None))
             if recent_motion:
                 return
         
@@ -378,7 +380,17 @@ class MeasurementController:
             'alerts_sent_this_session': self.alerts_sent_this_session,
             'max_alerts_per_session': self.max_alerts_per_session,
             'motion_history_size': len(self.motion_history),
-            'recent_motion_detected': any(list(self.motion_history)[-3:]) if len(self.motion_history) >= 3 else None,
+            'recent_motion_detected': (
+                any(
+                    islice(
+                        self.motion_history,
+                        len(self.motion_history) - 3,
+                        None,
+                    )
+                )
+                if len(self.motion_history) >= 3
+                else None
+            ),
             'session_timeout_minutes': self.config.session_timeout_minutes,
         }
     
