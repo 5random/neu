@@ -159,19 +159,20 @@ class MotionDetector:
             else:
                 gray_frame = frame.copy()
             
-            # Gausssche Unschärfe für Rauschreduzierung
-            blurred = cv2.GaussianBlur(gray_frame, (5, 5), 0)
-            
-            # ROI anwenden falls aktiviert
+            # ROI direkt nach Graustufen anwenden
             roi_used = False
+            roi_frame = gray_frame
             if hasattr(self.roi, 'enabled') and self.roi.enabled:
-                h, w = blurred.shape[:2]
+                h, w = gray_frame.shape[:2]
                 x = max(0, min(self.roi.x, w - 1))
                 y = max(0, min(self.roi.y, h - 1))
                 x2 = max(x + 1, min(self.roi.x + self.roi.width, w))
                 y2 = max(y + 1, min(self.roi.y + self.roi.height, h))
-                blurred = blurred[y:y2, x:x2]
+                roi_frame = gray_frame[y:y2, x:x2]
                 roi_used = True
+
+            # Gausssche Unschärfe für Rauschreduzierung
+            blurred = cv2.GaussianBlur(roi_frame, (5, 5), 0)
             
             # Learning-Phase verwalten
             if self.is_learning:
