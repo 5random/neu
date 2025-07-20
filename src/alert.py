@@ -20,6 +20,7 @@ import re
 import cv2
 import numpy as np
 import requests
+import math
 from datetime import datetime
 import threading
 from email.mime.multipart import MIMEMultipart
@@ -92,7 +93,10 @@ class AlertSystem:
         # Alert-State-Management
         self.last_alert_time: Optional[datetime] = None
         self.alerts_sent_count: int = 0
-        self.cooldown_minutes: int = max(5, self.measurement_config.alert_delay_seconds // 60)  # Minimum 5 Minuten zwischen E-Mails
+        self.cooldown_minutes: int = max(
+            5,
+            math.ceil(self.measurement_config.alert_delay_seconds / 60),
+        )  # Minimum 5 Minuten zwischen E-Mails
 
         self._state_lock = threading.RLock()
         self._smtp_lock = threading.Lock()
