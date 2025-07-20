@@ -103,9 +103,11 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
         with ui.column().classes("gap-4"):
             create_camfeed_content()
-            with ui.grid(columns="1fr 2fr").classes("gap-4 w-full h-full").style("grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); grid-auto-rows:1fr; align-items:stretch;"):
-                create_motion_status_element(global_camera, global_measurement_controller)
-                create_measurement_card(global_measurement_controller)
+            with ui.grid(columns="1fr 2fr").classes("gap-4 w-full").style("grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); align-items: stretch;"):
+                with ui.column().classes("h-full"):
+                    create_motion_status_element(global_camera, global_measurement_controller)
+                with ui.column().classes("h-full"):
+                    create_measurement_card(global_measurement_controller)
 
         with ui.column().classes("gap-4"):
             create_uvc_content(camera=global_camera)
