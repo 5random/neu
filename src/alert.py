@@ -518,7 +518,7 @@ class AlertSystem:
             try:
                 response = requests.get(IMG_SRC, timeout=10)
                 response.raise_for_status()  # Raise an error for bad responses
-                img_array = np.asarray(bytearray(response.content), dtype=np.uint8)
+                img_array = np.frombuffer(response.content, dtype=np.uint8)
                 frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                 if frame is None or frame.size == 0:
                     self.logger.warning("No valid test image received")
