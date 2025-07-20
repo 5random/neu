@@ -30,7 +30,7 @@ def main() -> int:
     args = parse_args()
     try:
         # Konfiguration laden und Logger einrichten
-        cfg = load_config()
+        cfg = load_config(args.config)
         logger = cfg.logging.setup_logger("cvd_tracker.main")
 
         logger.info("Starting CVD-Tracker application...")
