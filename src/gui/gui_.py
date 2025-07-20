@@ -31,15 +31,15 @@ def init_camera(config_path: str = "config/config.yaml") -> Camera | None:
         config_path: Pfad zur zu ladenden Konfiguration
     """
 
-    logger.info("Initialisiere Kamera ...")
+    logger.info("Initializing camera ...")
     try:
         cam = Camera(config_path)
         cam.initialize_routes()
         cam.start_frame_capture()
-        logger.info("Kamera erfolgreich initialisiert")
+        logger.info("Camera initialized successfully")
         return cam
     except Exception as e:
-        logger.error(f"FEHLER: {e}")
+        logger.error(f"ERROR: {e}")
         return None
 
 
@@ -53,13 +53,13 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     global global_camera, global_measurement_controller, global_alert_system
     global_camera = init_camera(config_path)
     if not global_camera:
-        ui.notify("Kamera konnte nicht initialisiert werden.", type='negative')
-        return 
+        ui.notify("Camera could not be initialized.", type='negative')
+        return
     if global_alert_system is None:
         try:
             global_alert_system = create_alert_system_from_config(config_path)
         except Exception as exc:
-            logger.error(f"AlertSystem-Init fehlgeschlagen: {exc}")
+            logger.error(f"AlertSystem-Init failed: {exc}")
             global_alert_system = None
     if global_measurement_controller is None:
         try:
@@ -69,7 +69,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 camera=global_camera,
             )
         except Exception as exc:
-            logger.error(f"MeasurementController-Init fehlgeschlagen: {exc}")
+            logger.error(f"MeasurementController-Init failed: {exc}")
             global_measurement_controller = None
 
     if global_measurement_controller:
