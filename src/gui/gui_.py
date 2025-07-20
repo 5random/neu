@@ -12,7 +12,7 @@ from src.gui.elements import (
 
 from src.measurement import create_measurement_controller_from_config, MeasurementController
 from src.alert import create_alert_system_from_config, AlertSystem
-from src.config import logger
+from src.config import logger, load_config
 
 from src.cam.camera import Camera
 
@@ -51,6 +51,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     """
 
     global global_camera, global_measurement_controller, global_alert_system
+    config = load_config(config_path)
     global_camera = init_camera(config_path)
     if not global_camera:
         ui.notify("Camera could not be initialized.", type='negative')
@@ -107,11 +108,11 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 with ui.column().classes("h-full"):
                     create_motion_status_element(global_camera, global_measurement_controller)
                 with ui.column().classes("h-full"):
-                    create_measurement_card(global_measurement_controller)
+                    create_measurement_card(global_measurement_controller, config=config)
 
         with ui.column().classes("gap-4"):
             create_uvc_content(camera=global_camera)
             create_motiondetection_card(camera=global_camera)
-            create_emailcard()
+            create_emailcard(config=config)
     
     
