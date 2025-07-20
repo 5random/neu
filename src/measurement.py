@@ -102,11 +102,12 @@ class MeasurementController:
     
     # === Session-Management ===
     def _ensure_valid_time(self) -> None:
-        min_minutes = max(5, math.ceil(self.config.alert_delay_seconds // 60))
+        alert_delay_minutes = math.ceil(self.config.alert_delay_seconds / 60)
+        min_minutes = max(5, alert_delay_minutes)
         if 0 < self.config.session_timeout_minutes < min_minutes:
             self.logger.warning(
                 f"Session timeout ({self.config.session_timeout_minutes}min) "
-                f"is shorter than alert delay 5 minutes - "
+                f"is shorter than alert delay {alert_delay_minutes} minutes - "
                 f"setting to {min_minutes}min"
             )
             self.config.session_timeout_minutes = min_minutes
