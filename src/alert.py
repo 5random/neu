@@ -454,7 +454,11 @@ class AlertSystem:
             save_path: Path to the image save location
         """
         try:
-            image_files = list(save_path.glob("alert_*.jpg")) + list(save_path.glob("alert_*.png"))
+            image_files = (
+                list(save_path.glob("alert_*.jpg")) +
+                list(save_path.glob("alert_*.jpeg")) +
+                list(save_path.glob("alert_*.png"))
+            )
             if len(image_files) > max_files:
                 # Sort by modification time, delete oldest
                 image_files.sort(key=lambda x: x.stat().st_mtime)
