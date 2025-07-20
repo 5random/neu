@@ -16,6 +16,8 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+# Track whether the application logger was already initialized
+_initialized_logger = False
 from enum import Enum
 
 # ---------------------------------------------------------------------------
@@ -270,7 +272,12 @@ class LoggingConfig:
     
     def setup_logger(self, name: str = "cvd_tracker") -> logging.Logger:
         """RotatingFileHandler-Logger einrichten"""
+        global _initialized_logger
         logger = logging.getLogger(name)
+        if _initialized_logger:
+            # avoid adding handlers multiple times
+            return logger
+
         logger.setLevel(getattr(logging, self.level.upper()))
         
         # Vorherige Handler entfernen
@@ -305,7 +312,10 @@ class LoggingConfig:
             handler.setFormatter(formatter)
             logger.addHandler(handler)
 
-        logger.info(f"🚀 Logging initialized: {self.file} (max: {self.max_file_size_mb}MB, backups: {self.backup_count})")
+        logger.info(
+            f"🚀 Logging initialized: {self.file} (max: {self.max_file_size_mb}MB, backups: {self.backup_count})"
+        )
+        _initialized_logger = True
         return logger
 
 # ---------------------------------------------------------------------------
