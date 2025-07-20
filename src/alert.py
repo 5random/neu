@@ -492,16 +492,14 @@ class AlertSystem:
     def send_test_email(self) -> bool:
         """
         Sendet Test-E-Mail an alle konfigurierten Empfänger.
-        
-        Args:
-            test_message: Test-Nachricht
-            
+
         Returns:
             True wenn mindestens eine E-Mail erfolgreich gesendet
         """
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             subject = f"Test email - {timestamp}"
+            # Beispielinhalt der Test-E-Mail erzeugen
             test_message =(
                     f"Motion has not been detected since {timestamp}!\n"
                     f"Please check the website at: {self.email_config.website_url}\n\n"
