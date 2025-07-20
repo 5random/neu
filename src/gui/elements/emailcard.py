@@ -1,11 +1,10 @@
 from typing import Dict
 import re
 from nicegui import ui
-from src.config import save_config, load_config
+from src.config import AppConfig, save_config
 from src.alert import AlertSystem
 
-def create_emailcard():
-    config = load_config()
+def create_emailcard(*, config: AppConfig) -> None:
     state: Dict = {
         "recipients": list(config.email.recipients),
         "smtp": {
