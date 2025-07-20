@@ -51,22 +51,28 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
 
     # ---------- SVG-Hilfsfunktionen -----------------------------------------
     def svg_cross(x: int, y: int, s: int = 14, col: str = 'deepskyblue') -> str:
-        h = s // 2
+        dis_scale = 300 / IMG_H if IMG_H > 300 else 1.0
+        h = int(s / dis_scale) // 2 # Höhe des Kreuzes skaliert
+
         return (
             f'<line x1="{x-h}" y1="{y}" x2="{x+h}" y2="{y}" '
             f'stroke="{col}" stroke-width="3" stroke-linecap="round" '
-             'pointer-events="none" />'
+             'pointer-events="none" vector-effect="non-scaling-stroke" />'
             f'<line x1="{x}" y1="{y-h}" x2="{x}" y2="{y+h}" '
             f'stroke="{col}" stroke-width="3" stroke-linecap="round" '
-             'pointer-events="none" />'
+             'pointer-events="none" vector-effect="non-scaling-stroke" />'
         )
 
     def svg_circle(x: int, y: int, r: int = 8, col: str = 'gold') -> str:
+        dis_scale = 300 / IMG_H if IMG_H > 300 else 1.0
+        r = int(r / dis_scale)
         return (
             f'<circle cx="{x}" cy="{y}" r="{r}" '
             f'stroke="{col}" stroke-width="3" fill="none" '
-             'pointer-events="none" />'
+             'pointer-events="none" vector-effect="non-scaling-stroke" />'
         )
+    
+
 
     # ---------- ROI-Logik ----------------------------------------------------
     def roi_bounds() -> Optional[Tuple[int, int, int, int]]:
@@ -92,39 +98,18 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         if image is None:
             return
 
-        original_h, original_w = (IMG_H, IMG_W)
-
-        if original_h > 300:
-            scale = 300 / original_h
-            display_w = original_w * scale
-            display_h = 300
-        else:
-            scale = 1.0
-            display_w = original_w
-            display_h = original_h
-
         parts: list[str] = []
         if state['p1']:
-            scaled_x = state['p1'][0] * scale
-            scaled_y = state['p1'][1] * scale
-            parts.append(svg_cross(int(scaled_x), int(scaled_y)))
-            #parts.append(svg_cross(*state['p1']))
+            parts.append(svg_cross(*state['p1']))
         if state['p2']:
-            scaled_x = state['p2'][0] * scale
-            scaled_y = state['p2'][1] * scale
-            parts.append(svg_cross(int(scaled_x), int(scaled_y)))
-            #parts.append(svg_cross(*state['p2']))
+            parts.append(svg_cross(*state['p2']))
         if (b := roi_bounds()):
             x0, y0, x1, y1 = b
-            scaled_x0 = int(x0 * scale)
-            scaled_y0 = int(y0 * scale)
-            scaled_x1 = int(x1 * scale)
-            scaled_y1 = int(y1 * scale)
             parts.append(
-                f'<rect x="{scaled_x0}" y="{scaled_y0}" width="{scaled_x1-scaled_x0}" height="{scaled_y1-scaled_y0}" '
-                'stroke="lime" stroke-width="3" fill="none" pointer-events="none" />'
+                f'<rect x="{x0}" y="{y0}" width="{x1-x0}" height="{y1-y0}" '
+                'stroke="lime" stroke-width="3" fill="none" pointer-events="none" vector-effect="non-scaling-stroke" />'
             )
-            parts.extend([svg_circle(scaled_x0, scaled_y0), svg_circle(scaled_x1, scaled_y1)])
+            parts.extend([svg_circle(x0, y0), svg_circle(x1, y1)])
 
         image.content = ''.join(parts)
 
@@ -200,21 +185,14 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
 
     def _handle_click(e: MouseEventArguments) -> None:
         
-        original_h, original_w = (IMG_H, IMG_W)
-
-        if original_h > 300:
-            scale = 300 / original_h
-        else:
-            scale = 1.0
-        
-        original_x, original_y = int(e.image_x/scale), int(e.image_y/scale)
+        x, y = int(e.image_x), int(e.image_y)
 
         target = (
             'p1' if state['p1'] is None
             else ('p2' if state['p2'] is None else None)
         )
         if target:
-            state[target] = (original_x, original_y)
+            state[target] = (x, y)
         else:  # dritter Klick → neue Auswahl
             reset_roi()
             _handle_click(e)
@@ -227,9 +205,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             if e.type == 'mouseleave':
                 coords_label.text = '(-, -)'
             else:  # 'move' oder 'click'
-                original_h, original_w = (IMG_H, IMG_W)
-                scale = 300 / original_h if original_h > 300 else 1.0
-                coords_label.text = f'({int(e.image_x/scale)}, {int(e.image_y/scale)})'
+                coords_label.text = f'({int(e.image_x)}, {int(e.image_y)})'
 
         if e.type == 'click':
             _handle_click(e)
@@ -245,10 +221,11 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                 ui.notify('Camera not available!', type='warning',
                           position='bottom-right')
                 return
-            elif x0 < 0 or y0 < 0 or x1 > IMG_W or y1 > IMG_H:
-                ui.notify('Invalid ROI position!', type='warning',
+            else:
+                if x0 < 0 or y0 < 0 or x1 >= int(IMG_W) or y1 >= int(IMG_H):
+                    ui.notify('Invalid ROI position!', type='warning',
                           position='bottom-right')
-                return
+                    return
             
             cam = cast(Camera, camera)
             if cam is not None and cam.motion_detector is not None:

@@ -6,6 +6,7 @@ import signal
 import threading
 import time
 from dataclasses import asdict
+from turtle import width
 from typing import Callable, Optional
 import os
 
@@ -102,6 +103,7 @@ class Camera:
                 raise RuntimeError("No frame received from camera")
 
             self.logger.info("Camera successfully initialized")
+
         except Exception as exc:
             self.logger.error(f"Initialization failed: {exc}")
             if self.video_capture is not None:
@@ -120,7 +122,7 @@ class Camera:
         self._safe_set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         self.logger.info(
-            "Aktive Auflösung: %dx%d @ %.1f FPS",
+            "current camera status: %dx%d @ %.1f FPS",
             int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
             int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
             self.video_capture.get(cv2.CAP_PROP_FPS),
