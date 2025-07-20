@@ -192,15 +192,12 @@ class MotionDetector:
             fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self.noise_kernel)
             fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self.cleanup_kernel)
             
-            # Konturen finden
-            contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            # Konturen filtern und Gesamtfläche berechnen
-            total_area = 0.0
-            for contour in contours:
-                area = cv2.contourArea(contour)
-                if area >= self.min_contour_area:
-                    total_area += area
+            # Verbundene Komponenten finden
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(fg_mask)
+
+            # Gesamtfläche berechnen basierend auf Komponentenstats
+            areas = stats[1:, cv2.CC_STAT_AREA]  # Hintergrund ausschließen
+            total_area = float(np.sum(areas[areas >= self.min_contour_area]))
             
             # Bewegungsentscheidung
             motion_detected = not self.is_learning and total_area > 0
