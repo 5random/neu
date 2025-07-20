@@ -171,9 +171,8 @@ class AlertSystem:
                     f"Attached is the current webcam image."
                 )
             
-            # E-Mail-Nachrichten für alle Empfänger erstellen
+            # E-Mail-Nachricht erstellen
             try:
-                messages: list[tuple[str, MIMEMultipart]] = []
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 img_buffer = None
                 filename: str | None = None
@@ -184,25 +183,24 @@ class AlertSystem:
                     if ok and img_buffer is not None and filename is not None and self.measurement_config.save_alert_images:
                         self._save_alert_image(img_buffer, filename)
 
-                for recipient in self.email_config.recipients:
-                    msg = self._create_email_message(subject, body, recipient)
+                msg = self._create_email_message(subject, body, ", ".join(self.email_config.recipients))
 
-                    # Bild-Anhang hinzufügen wenn verfügbar
-                    if ok and img_buffer is not None and filename is not None:
-                        img_attach = MIMEImage(img_buffer.tobytes())
-                        img_attach.add_header('Content-Disposition', f'attachment; filename="{filename}"')
-                        msg.attach(img_attach)
+                # Bild-Anhang hinzufügen wenn verfügbar
+                if img_buffer is not None and filename is not None:
+                    img_attach = MIMEImage(img_buffer.tobytes())
+                    img_attach.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+                    msg.attach(img_attach)
 
-                    messages.append((recipient, msg))
-                
-                # E-Mails versenden
-                success_count = self._send_emails_batch(messages)
-                
+                # E-Mail versenden
+                success_count = self._send_emails_batch(msg, self.email_config.recipients)
+
                 # Erfolg wenn mindestens eine E-Mail gesendet wurde
                 if success_count > 0:
                     with self._state_lock:
                         self.alerts_sent_count = temp_count
-                    self.logger.info(f"Alert #{temp_count} sent ({success_count}/{len(messages)} successful)")
+                    self.logger.info(
+                        f"Alert #{temp_count} sent ({success_count}/{len(self.email_config.recipients)} successful)"
+                    )
                     return True
                 else:
                     # Rollback bei Fehlschlag
@@ -219,37 +217,24 @@ class AlertSystem:
                 self.logger.error(f"Critical error when sending alert: {exc}; state reset")
                 return False
 
-    def _send_emails_batch(self, messages: List[tuple], max_retries: int = 3) -> int:
-        """Optimized batch email sending"""
+    def _send_emails_batch(self, message: MIMEMultipart, recipients: List[str], max_retries: int = 3) -> int:
+        """Send a single message to multiple recipients"""
         success_count = 0
 
-        # Single SMTP connection for all emails
         for attempt in range(max_retries):
             try:
                 with self._smtp_lock:
-                    
-                        with smtplib.SMTP(
-                            self.email_config.smtp_server, 
-                            self.email_config.smtp_port, 
-                            timeout=self._connection_timeout
-                        ) as smtp:
-                            
-                            for recipient, message in messages:
-                                try:
-                                    smtp.sendmail(self.email_config.sender_email, recipient, message.as_string())
-                                    success_count += 1
-                                    self.logger.info(f"Email successfully sent to {recipient}")
-                                except smtplib.SMTPException as exc:
-                                    self.logger.error(f"SMTP-error when sending to {recipient}: {exc}")
-                                except Exception as exc:
-                                    self.logger.error(f"General error when sending to {recipient}: {exc}")
-
-                            # Nur aus der Retry-Schleife aussteigen, wenn
-                            # alle Nachrichten ohne Fehler verschickt wurden
-                            if success_count == len(messages):
-                                break
-
-                # Bei teilweisem Erfolg nicht erneut versuchen
+                    with smtplib.SMTP(
+                        self.email_config.smtp_server,
+                        self.email_config.smtp_port,
+                        timeout=self._connection_timeout,
+                    ) as smtp:
+                        failed = smtp.sendmail(
+                            self.email_config.sender_email,
+                            recipients,
+                            message.as_string(),
+                        )
+                        success_count = len(recipients) - len(failed)
                 if success_count > 0:
                     break
 
@@ -529,14 +514,11 @@ class AlertSystem:
                 self.logger.warning(f"Error retrieving test image: {exc}")
                 frame = None
 
-            messages = []
-            for recipient in self.email_config.recipients:
-                msg = self._create_email_message(subject, test_message, recipient)
-                if frame is not None:
-                    self._attach_camera_image(msg, frame, timestamp)
-                messages.append((recipient, msg))
+            msg = self._create_email_message(subject, test_message, ", ".join(self.email_config.recipients))
+            if frame is not None:
+                self._attach_camera_image(msg, frame, timestamp)
 
-            success_count = self._send_emails_batch(messages)
+            success_count = self._send_emails_batch(msg, self.email_config.recipients)
             return success_count > 0
             
         except Exception as exc:
