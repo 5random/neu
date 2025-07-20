@@ -173,10 +173,12 @@ class AlertSystem:
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 img_buffer = None
                 filename: str | None = None
+                image_bytes: bytes | None = None
 
                 if camera_frame is not None:
                     ok, img_buffer, filename = self._encode_frame(camera_frame, ts=timestamp)
                     assert img_buffer is not None and filename is not None
+                    image_bytes = img_buffer.tobytes()
                     if ok and self.measurement_config.save_alert_images:
                         self._save_alert_image(img_buffer, filename)
 
@@ -184,8 +186,8 @@ class AlertSystem:
                             msg = self._create_email_message(subject, body, recipient)
                             
                             # Bild-Anhang hinzufügen wenn verfügbar
-                            if ok and img_buffer is not None and filename is not None:
-                                img_attach = MIMEImage(img_buffer.tobytes())
+                            if ok and image_bytes is not None and filename is not None:
+                                img_attach = MIMEImage(image_bytes)
                                 img_attach.add_header('Content-Disposition', f'attachment; filename="{filename}"')
                                 msg.attach(img_attach)
 
