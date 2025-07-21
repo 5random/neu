@@ -54,11 +54,11 @@ motion_detection:
   min_contour_area: 252
   region_of_interest:
     enabled: true
-    height: 265
-    width: 169
-    x: 145
-    y: 164
-  sensitivity: 0.98
+    height: 199
+    width: 412
+    x: 79
+    y: 125
+  sensitivity: 0.18
 uvc_controls:
   backlight_compensation: 48
   brightness: 0
@@ -67,7 +67,7 @@ uvc_controls:
     auto: true
     value: 100
   gain: 6
-  gamma: 152
+  gamma: 144
   hue: 0
   saturation: 32
   sharpness: 3

@@ -183,7 +183,7 @@ class AlertSystem:
                     if ok and img_buffer is not None and filename is not None and self.measurement_config.save_alert_images:
                         self._save_alert_image(img_buffer, filename)
 
-                msg = self._create_email_message(subject, body, ", ".join(self.email_config.recipients))
+                msg = self._create_email_message(subject, body, self.email_config.recipients)
 
                 # Bild-Anhang hinzufügen wenn verfügbar
                 if img_buffer is not None and filename is not None:
@@ -273,7 +273,7 @@ class AlertSystem:
         with self._state_lock:
             return self._should_send_alert_unsafe()
 
-    def _create_email_message(self, subject: str, body: str, recipient: str) -> MIMEMultipart:
+    def _create_email_message(self, subject: str, body: str, recipients: list[str]) -> MIMEMultipart:
         """
         Erstellt MIME-Multipart-E-Mail-Nachricht.
         
@@ -287,7 +287,7 @@ class AlertSystem:
         """
         msg = MIMEMultipart()
         msg['From'] = self.email_config.sender_email
-        msg['To'] = recipient
+        msg['To'] = ", ".join(recipients)
         msg['Subject'] = subject
         msg['Date'] = datetime.now().strftime("%a, %d %b %Y %H:%M:%S %z")
         
@@ -367,13 +367,6 @@ class AlertSystem:
             f'attachment; filename="{filename}"'
         )
         msg.attach(img_attach)
-        # --------------------------------------------------------------------
-
-        # --- (optional) lokal speichern -------------------------------------
-        # Wenn du das Speichern NICHT schon in send_motion_alert() erledigst:
-        # if self.measurement_config.save_alert_images:
-        #     self._save_alert_image(buf, filename)
-        # --------------------------------------------------------------------
 
         self.logger.debug(
             "Image attachment added: %s (%d bytes)", filename, buf.size
@@ -393,6 +386,10 @@ class AlertSystem:
                 save_path.mkdir(parents=True, exist_ok=True)
                 
                 file_path = save_path / filename
+                if image_buffer is None or image_buffer.size == 0:
+                    self.logger.warning(f'No valid image buffer to save, skipping save: {filename}')
+                    return
+                
                 with open(file_path, 'wb') as f:
                     f.write(image_buffer.tobytes())
                 
@@ -514,7 +511,7 @@ class AlertSystem:
                 self.logger.warning(f"Error retrieving test image: {exc}")
                 frame = None
 
-            msg = self._create_email_message(subject, test_message, ", ".join(self.email_config.recipients))
+            msg = self._create_email_message(subject, test_message, self.email_config.recipients)
             if frame is not None:
                 self._attach_camera_image(msg, frame, timestamp)
 
@@ -524,6 +521,35 @@ class AlertSystem:
         except Exception as exc:
             self.logger.error(f"Error sending test email: {exc}")
             return False
+    
+    def cleanup(self) -> None:
+        """
+        Cleanup-Methode für sauberes Shutdown.
+        
+        Schließt SMTP-Verbindungen und gibt Ressourcen frei.
+        """
+        try:
+            self.logger.info("Starting AlertSystem cleanup...")
+            
+            # SMTP-Verbindung schließen falls vorhanden
+            with self._smtp_lock:
+                if self._smtp_connection:
+                    try:
+                        self._smtp_connection.quit()
+                    except Exception as e:
+                        self.logger.debug(f"Error closing SMTP connection: {e}")
+                    finally:
+                        self._smtp_connection = None
+            
+            # State zurücksetzen
+            with self._state_lock:
+                self.last_alert_time = None
+                self.alerts_sent_count = 0
+            
+            self.logger.info("AlertSystem cleanup completed")
+            
+        except Exception as exc:
+            self.logger.error(f"Error during AlertSystem cleanup: {exc}")
     
     def health_check(self) -> Dict[str, Any]:
         """Comprehensive health check of the AlertSystem"""

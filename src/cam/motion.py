@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..config import MotionDetectionConfig, ROI
+    from ..config import MotionDetectionConfig, ROI, logger
 
 
 @dataclass
@@ -64,6 +64,14 @@ class MotionDetector:
         """
         self.config = config
         self.logger = logger or logging.getLogger(__name__)
+
+        # Validate configuration
+        if not hasattr(config, 'sensitivity') or not 0.1 <= config.sensitivity <= 1.0:
+            raise ValueError("Invalid sensitivity in config")
+        if not hasattr(config, 'min_contour_area') or config.min_contour_area < 1:
+            raise ValueError("Invalid min_contour_area in config")
+        if not hasattr(config, 'background_learning_rate') or not 0.001 <= config.background_learning_rate <= 1.0:
+            raise ValueError("Invalid background_learning_rate in config")
         
         # OpenCV Background Subtractor
         self.background_subtractor = cv2.createBackgroundSubtractorMOG2(
@@ -81,7 +89,7 @@ class MotionDetector:
         try:
             self.roi = config.get_roi()
         except Exception as exc:
-            self.logger.warning(f"ROI-Setup failed: {exc}")
+            self.logger.warning(f"ROI-Setup failed: {exc}, using fallback ROI")
             # Fallback: ROI deaktiviert
             from types import SimpleNamespace
             self.roi = SimpleNamespace(enabled=False, x=0, y=0, width=0, height=0)
@@ -94,11 +102,17 @@ class MotionDetector:
         # Kernels für Morphological Operations
         self.noise_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self.cleanup_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        
+
+        # Memory-Pool für wiederverwendbare Arrays
+        self._frame_pool = {}
+        self._mask_pool = {}
+
         # Tracking für Alert-System
         self.last_motion_time = None
-
-        self.logger.info(f"MotionDetector initialized - Sensitivity: {self.sensitivity}")
+        if self.roi.enabled:
+            self.logger.info(f"MotionDetector initialized - Sensitivity: {self.sensitivity}, ROI enabled: {self.roi.x}, {self.roi.y}, {self.roi.width}, {self.roi.height}")
+        else:
+            self.logger.info(f"MotionDetector initialized - Sensitivity: {self.sensitivity}, ROI disabled or using fallback")
 
     def update_sensitivity(self, new_sensitivity: float) -> bool:
         """
@@ -135,6 +149,13 @@ class MotionDetector:
         """Gibt Zeitstempel der letzten Bewegung zurück (für Alert-System)."""
         return self.last_motion_time
     
+    def _get_working_array(self, shape: Tuple[int, int], dtype=np.uint8) -> np.ndarray:
+        """Wiederverwendbare Arrays aus Pool."""
+        key = (shape, dtype)
+        if key not in self._frame_pool:
+            self._frame_pool[key] = np.empty(shape, dtype=dtype)
+        return self._frame_pool[key]
+    
     def detect_motion(self, frame: np.ndarray) -> MotionResult:
         """
         Erkennt Bewegung in einem Frame.
@@ -152,28 +173,39 @@ class MotionDetector:
             self.logger.warning("Invalid frame")
             return MotionResult(False, 0.0, timestamp, False)
         
+        if len(frame.shape) <2 or frame.shape[0] < 10 or frame.shape[1] < 10:
+            self.logger.warning("received Frame too small for processing")
+            return MotionResult(False, 0.0, timestamp, False)
+        
         try:
             # Frame zu Graustufen konvertieren
+            h, w = frame.shape[:2]
             if len(frame.shape) == 3:
-                gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                gray_frame = self._get_working_array((h, w), np.uint8)
+                cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY, dst=gray_frame)
             else:
                 gray_frame = frame.copy()
             
             # ROI direkt nach Graustufen anwenden
             roi_used = False
-            roi_frame = gray_frame
-            if hasattr(self.roi, 'enabled') and self.roi.enabled:
-                h, w = gray_frame.shape[:2]
-                x = max(0, min(self.roi.x, w - 1))
-                y = max(0, min(self.roi.y, h - 1))
-                x2 = max(x + 1, min(self.roi.x + self.roi.width, w))
-                y2 = max(y + 1, min(self.roi.y + self.roi.height, h))
-                roi_frame = gray_frame[y:y2, x:x2]
+            roi_frame = self._apply_roi(gray_frame)
+            if roi_frame is not gray_frame:
                 roi_used = True
 
-            # Gausssche Unschärfe für Rauschreduzierung
-            blurred = cv2.GaussianBlur(roi_frame, (5, 5), 0)
-            
+            # Validate final ROI frame size
+            if roi_frame.shape[0] < 10 or roi_frame.shape[1] < 10:
+                self.logger.warning("ROI too small for processing, using full frame")
+                roi_frame = gray_frame
+                roi_used = False
+
+            # Adaptive Gaussian blur kernel size
+            kernel_size = min(5, roi_frame.shape[0]//3, roi_frame.shape[1]//3)
+            kernel_size = max(3, kernel_size)  # Minimum size 3
+            if kernel_size % 2 == 0:
+                kernel_size += 1  # Ensure odd number
+
+            blurred = cv2.GaussianBlur(roi_frame, (kernel_size, kernel_size), 0)
+
             # Learning-Phase verwalten
             if self.is_learning:
                 self.learning_frame_count += 1
@@ -196,8 +228,10 @@ class MotionDetector:
             num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(fg_mask)
 
             # Gesamtfläche berechnen basierend auf Komponentenstats
-            areas = stats[1:, cv2.CC_STAT_AREA]  # Hintergrund ausschließen
-            total_area = float(np.sum(areas[areas >= self.min_contour_area]))
+            total_area = 0.0
+            if num_labels > 1:
+                areas = stats[1:, cv2.CC_STAT_AREA]  # Hintergrund ausschließen
+                total_area = float(np.sum(areas[areas >= self.min_contour_area]))
             
             # Bewegungsentscheidung
             motion_detected = not self.is_learning and total_area > 0
@@ -212,11 +246,78 @@ class MotionDetector:
                 timestamp=timestamp,
                 roi_used=roi_used
             )
-            
+        
+        except cv2.error as exc:
+            self.logger.error(f"OpenCV error detecting motion: {exc}")
+            return MotionResult(False, 0.0, timestamp, False)
         except Exception as exc:
-            self.logger.error(f"Error detecting motion: {exc}")
+            self.logger.error(f"Unexpected error detecting motion: {exc}")
             return MotionResult(False, 0.0, timestamp, False)
 
+    def _apply_roi(self, gray_frame: np.ndarray) -> np.ndarray:
+        """
+        Applies ROI to frame with safe bounds checking.
+        
+        Args:
+            gray_frame: Input grayscale frame
+            
+        Returns:
+            ROI frame or original frame if ROI invalid
+        """
+        if not (hasattr(self.roi, 'enabled') and self.roi.enabled):
+            return gray_frame
+        
+        h, w = gray_frame.shape[:2]
+        
+        # Calculate safe ROI bounds
+        x1 = max(0, min(self.roi.x, w - 1))
+        y1 = max(0, min(self.roi.y, h - 1))
+        x2 = max(x1 + 1, min(self.roi.x + self.roi.width, w))
+        y2 = max(y1 + 1, min(self.roi.y + self.roi.height, h))
+        
+        # Validate ROI dimensions
+        if x2 <= x1 or y2 <= y1:
+            self.logger.warning(f"Invalid ROI bounds: ({x1}, {y1}) to ({x2}, {y2})")
+            return gray_frame
+        
+        roi_width = x2 - x1
+        roi_height = y2 - y1
+        
+        # Check minimum size and if needed, adjust ROI to ensure minimum size
+        if roi_width < 20 or roi_height < 20:
+            self.logger.warning(f"ROI too small: {roi_width}x{roi_height}, expanding for stability")
+            
+            # Minimale sinnvolle Größe für OpenCV-Operationen
+            min_size = 30
+            
+            # Zentrum der aktuellen ROI beibehalten
+            center_x = (x1 + x2) // 2
+            center_y = (y1 + y2) // 2
+            
+            # Neue ROI um Zentrum berechnen
+            new_x1 = max(0, center_x - min_size // 2)
+            new_y1 = max(0, center_y - min_size // 2)
+            new_x2 = min(w, new_x1 + min_size)
+            new_y2 = min(h, new_y1 + min_size)
+            
+            # Falls an Bildrand: ROI entsprechend verschieben
+            if new_x2 - new_x1 < min_size and new_x1 > 0:
+                new_x1 = max(0, new_x2 - min_size)
+            if new_y2 - new_y1 < min_size and new_y1 > 0:
+                new_y1 = max(0, new_y2 - min_size)
+            
+            x1, y1, x2, y2 = new_x1, new_y1, new_x2, new_y2
+            self.logger.info(f"ROI expanded to: ({x1}, {y1}) - ({x2}, {y2})")
+            roi_frame = gray_frame[y1:y2, x1:x2]
+            return roi_frame
+        
+        return gray_frame[y1:y2, x1:x2]
+    
+    def cleanup(self) -> None:
+        """Clean up resources when detector is no longer needed."""
+        self.background_subtractor.clear()
+        self._frame_pool.clear()
+        self.logger.info("MotionDetector cleaned up")
 
 def create_motion_detector_from_config(config_path: Optional[str] = None) -> MotionDetector:
     """

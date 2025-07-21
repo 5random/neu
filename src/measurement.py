@@ -439,7 +439,35 @@ class MeasurementController:
         elapsed_seconds = time_since_motion.total_seconds()
         remaining = alert_delay_seconds - elapsed_seconds
         return max(0, int(remaining))
-
+    
+    def cleanup(self) -> None:
+        """
+        Cleanup-Methode für sauberes Shutdown.
+        
+        Stoppt aktive Sessions und gibt Ressourcen frei.
+        """
+        try:
+            self.logger.info("Starting MeasurementController cleanup...")
+            
+            # Session stoppen falls aktiv
+            if self.is_session_active:
+                self.stop_session()
+            
+            # Callbacks leeren
+            self._motion_callbacks.clear()
+            
+            # State zurücksetzen
+            with self.history_lock:
+                self.motion_history.clear()
+            
+            # Referenzen auf None setzen für Garbage Collection
+            self.alert_system = None
+            self.camera = None
+            
+            self.logger.info("MeasurementController cleanup completed")
+            
+        except Exception as exc:
+            self.logger.error(f"Error during MeasurementController cleanup: {exc}")
 
 # === Factory-Funktionen ===
 
