@@ -1,0 +1,293 @@
+from typing import Dict, Optional, Any
+import re
+import asyncio
+
+from nicegui import ui
+from nicegui.client import Client
+
+from src.config import AppConfig, save_config
+from src.alert import AlertSystem
+
+
+def create_emailcard(*, config: AppConfig) -> None:
+    """
+    Karte mit drei Tabs:
+    1) Übersicht   – read-only Konfig & Test-Mail
+    2) Recipients  – Empfänger verwalten
+    3) SMTP        – SMTP-Settings inkl. Live-Validierung
+    """
+
+    # ------------------------------------------------------------------ #
+    # interner Zustand                                                   #
+    # ------------------------------------------------------------------ #
+    state: Dict = {
+        "recipients": list(config.email.recipients),
+        "smtp": {
+            "server": config.email.smtp_server,
+            "port": config.email.smtp_port,
+            "sender": config.email.sender_email,
+        },
+    }
+
+    recipient_list: Optional[Any] = None
+    table: Optional[Any] = None
+    email_inp: Optional[Any] = None
+    smtp_labels: Dict[str, Any] = {}
+
+    # ------------------------------------------------------------------ #
+    # Hilfsfunktionen                                                    #
+    # ------------------------------------------------------------------ #
+    def persist_state() -> bool:
+        """Speichert Konfiguration, meldet Fehler im UI."""
+        try:
+            config.email.recipients = list(state["recipients"])
+            config.email.smtp_server = state["smtp"]["server"]
+            config.email.smtp_port = int(state["smtp"]["port"])
+            config.email.sender_email = state["smtp"]["sender"]
+            save_config(config)
+            ui.notify("Config saved successfully", color="positive", position='bottom-right')
+            return True
+        except Exception as exc:  # noqa: BLE001
+            ui.notify(f"Tried to save config but failed: {exc}", color="negative", position='bottom-right')
+            return False
+
+    EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z0-9]{2,}$")
+
+    def is_valid_email(addr: str) -> bool:
+        return bool(EMAIL_RE.match(addr))
+
+    def validate_smtp(cfg: Dict) -> list[str]:
+        errors: list[str] = []
+        if not is_valid_email(cfg.get("sender", "")):
+            errors.append("Email address is invalid.")
+        if not cfg.get("server"):
+            errors.append("SMTP server must not be empty.")
+        port = cfg.get("port")
+        if not isinstance(port, (int, float)) or not 1 <= int(port) <= 65535:
+            errors.append("Port must be between 1 and 65535.")
+        return errors
+
+    async def send_async_test_email(client: Client) -> None:
+        alert = None
+        try:
+            # UI-Updates über client context
+            with client:
+                ui.notify("Sending test email...", color="info", position='bottom-right')
+            
+            alert = AlertSystem(config.email, config.measurement, config)
+            success = await alert.send_test_email_async()
+            
+            with client:
+                if success:
+                    ui.notify("Test email sent successfully", color="positive", position='bottom-right')
+                else:
+                    ui.notify("Error sending test email", color="negative", position='bottom-right')
+        except Exception as exc:
+            with client:
+                ui.notify(f"Failed to send test email: {exc}", color="negative", position='bottom-right')
+        finally:
+            if alert is not None:
+                try:
+                    alert.cleanup()
+                except Exception as exc:
+                    with client:
+                        ui.notify(f"Failed to cleanup alert system: {exc}", color="negative", position='bottom-right')
+
+    def send_test_email() -> None:
+        """Sende Test-E-Mail an alle Empfänger."""
+        if not state["recipients"]:
+            ui.notify("Can't send test email: No recipients configured", color="warning", position='bottom-right')
+            return
+        
+        client: Client = ui.context.client
+        
+        asyncio.create_task(send_async_test_email(client))
+
+    # ------------------------------------------------------------------ #
+    # UI-Helper                                                          #
+    # ------------------------------------------------------------------ #
+    def refresh_table() -> None:
+        if table is not None:
+            table.rows = [{"address": addr} for addr in state["recipients"]]
+            table.update()
+
+    def refresh_recipient_list() -> None:
+        if recipient_list is None:
+            return
+        recipient_list.clear()
+        with recipient_list:
+            for addr in state["recipients"]:
+                ui.item(addr)
+
+    def refresh_overview() -> None:
+        """Aktualisiert die Overview-Anzeige"""
+        refresh_recipient_list()
+        for key in ["sender", "server", "port"]:
+            if key in smtp_labels and smtp_labels[key] is not None:
+                smtp_labels[key].text = str(state["smtp"][key])
+
+    def add_recipient() -> None:
+        if email_inp is None:
+            return
+        addr = (email_inp.value or "").strip()
+        if not is_valid_email(addr):
+            ui.notify("Invalid email address", color="negative", position='bottom-right')
+            return
+        if addr in state["recipients"]:
+            ui.notify("Address already exists", color="warning", position='bottom-right')
+            return
+
+        state["recipients"].append(addr)
+        email_inp.value = ""
+        if persist_state():
+            refresh_table()
+            refresh_overview()
+
+    def delete_selected() -> None:
+        if table is None:
+            return
+        selected_rows = table.selected or []
+        if not selected_rows:
+            return
+        selected_addresses = [row["address"] for row in selected_rows]
+        state["recipients"] = [
+            addr for addr in state["recipients"] if addr not in selected_addresses
+        ]
+        if persist_state():
+            refresh_table()
+            table.selected = []
+            refresh_overview()
+            ui.notify(f"{len(selected_addresses)} address(es) deleted", color="positive", position='bottom-right')
+
+    # ------------------------------------------------------------------ #
+    # Haupt-Card                                                         #
+    # ------------------------------------------------------------------ #
+    with ui.card().classes("w-full flex-shrink-0"):
+        ui.label("Email Settings").classes("text-h6 font-semibold mb-2")
+
+        # Tabs
+        with ui.tabs() as tabs:
+            tab_overview = ui.tab("Overview").tooltip("Overview of the email configuration")
+            tab_rcp = ui.tab("Recipients").tooltip("Manage email recipients")
+            tab_smtp = ui.tab("SMTP").tooltip("Configure SMTP settings")
+
+        # Panels
+        with ui.tab_panels(tabs, value=tab_overview).classes("w-full"):
+
+            # ---------------------- Übersicht --------------------------- #
+            with ui.tab_panel(tab_overview):
+                with ui.column().classes("gap-2"):
+                    ui.label("Recipients").classes("text-subtitle2 text-grey-7 mt-1")
+
+                    recipient_list = ui.list().props("dense").classes("pl-2")
+                    refresh_recipient_list()
+
+                    ui.separator()
+
+                    ui.label("SMTP Settings").classes("text-subtitle2 text-grey-7")
+                    with ui.row().classes("items-center"):
+                        for key, label_txt in [("sender", "Sender"), ("server", "Server"), ("port", "Port")]:
+                            ui.label(f"{label_txt}:").classes("w-24 text-right text-grey-6")
+                            smtp_labels[key] = ui.label(str(state["smtp"][key])).classes("flex-grow")
+
+                ui.separator()
+
+                ui.button(
+                    icon="send",
+                    color="info",
+                    on_click=lambda _: send_test_email(),
+                ).props("round").tooltip("Send test email to all recipients")
+
+            # ---------------------- Recipients --------------------------- #
+            with ui.tab_panel(tab_rcp):
+                with ui.row().classes("items-center gap-2"):
+                    email_inp = (
+                        ui.input("New Email")
+                        .classes("w-64")
+                        .on("keyup.enter", lambda _: add_recipient())
+                    ).tooltip(
+                        "Enter email address and press Enter to add "
+                        "or click the add button"
+                    )
+
+                    with ui.button(
+                        icon="add_circle",
+                        color="primary",
+                        on_click=lambda _: add_recipient(),
+                    ).bind_enabled_from(email_inp, "value", is_valid_email).props("round"):
+                        ui.tooltip("Add email address")
+
+                ui.separator()
+
+                table = ui.table(
+                    columns=[{"name": "address", "label": "Address", "field": "address"}],
+                    rows=[],
+                    row_key="address",
+                    selection="multiple",
+                ).classes("w-full")
+
+                with ui.row().classes("w-full items-center gap-2 mt-2"):
+                    with ui.button(
+                        icon="delete",
+                        color="negative",
+                        on_click=lambda _: delete_selected(),
+                    ).bind_enabled_from(table, "selected", lambda s: bool(s)).props("round"):
+                        ui.tooltip("Delete selected email addresses")
+
+            # ---------------------- SMTP ---------------------------------- #
+            with ui.tab_panel(tab_smtp):
+                smtp = state["smtp"]
+
+                with ui.row().classes("items-center gap-2"):
+                    sender_inp = (
+                        ui.input("Sender")
+                        .bind_value(smtp, "sender")
+                        .tooltip("Email address of the sender")
+                    )
+                    server_inp = (
+                        ui.input("Server")
+                        .bind_value(smtp, "server")
+                        .tooltip("SMTP server address")
+                    )
+                    port_inp = (
+                        ui.number("Port", min=1, max=65535)
+                        .bind_value(smtp, "port", forward=int)
+                        .tooltip("Port must be between 1 and 65535.")
+                    )
+                    with ui.icon("check_circle").props("size=md").classes("ml-auto") as status_icon:
+                        status_tt = ui.tooltip("")
+
+                def update_status_icon() -> None:
+                    errors = validate_smtp(smtp)
+                    if errors:
+                        status_icon.props("name=error_outline color=negative")
+                        status_tt.text = "\n".join(errors)
+                    else:
+                        status_icon.props("name=check_circle color=positive")
+                        status_tt.text = "All SMTP settings valid ✔︎"
+                    status_icon.update()
+
+                def manual_save() -> None:
+                    errors = validate_smtp(smtp)
+                    if errors:
+                        ui.notify(" ".join(errors), color="negative", position='bottom-right')
+                    else:
+                        if persist_state():
+                            update_status_icon()
+                            refresh_overview()
+
+                for inp in (sender_inp, server_inp, port_inp):
+                    inp.on("update:model-value", lambda _: update_status_icon())
+
+                update_status_icon()
+
+                ui.button(
+                    icon="save",
+                    color="primary",
+                    on_click=manual_save,
+                ).props("round").tooltip("Save SMTP settings")
+
+    # ------------------------------------------------------------------ #
+    # Tabelle initial befüllen                                           #
+    # ------------------------------------------------------------------ #
+    refresh_table()

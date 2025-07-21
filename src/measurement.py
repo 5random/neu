@@ -20,6 +20,9 @@ import math
 from collections import deque
 from itertools import islice
 from threading import Lock
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict, Any, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -47,7 +50,7 @@ class MeasurementController:
         controller.start_session()
         # Motion-Events über register_motion_callback()
         if controller.should_trigger_alert():
-            controller.trigger_alert()
+            success = await controller.trigger_alert()
     """
     
     def __init__(
@@ -100,7 +103,9 @@ class MeasurementController:
         self.logger.info("MeasurementController initialized")
 
         self.history_lock = Lock()  # Thread-sicherer Zugriff auf Motion-Historie
-    
+
+        self._alert_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="alert_executor")  # Executor für Alert-Operationen
+
     # === Session-Management ===
     def _ensure_valid_time(self) -> None:
         alert_delay_minutes = math.ceil(self.config.alert_delay_seconds / 60)
@@ -256,6 +261,7 @@ class MeasurementController:
         - Anti-Spam-Mechanismus (max. Alerts pro Session)
         - Motion-Historie-basierte Entscheidungen
         - Automatische Alert-Auslösung bei Erreichen des Delays
+        Verwendet jetzt non-blocking Threading-Variante
         """
         if not self.is_session_active or self.alert_triggered:
             return
@@ -284,11 +290,18 @@ class MeasurementController:
         
         # Standard Alert-Delay-Check
         if self.should_trigger_alert():
-            # Automatisch Alert auslösen
-            if self.trigger_alert():
+            asyncio.create_task(self._trigger_alert_internal())
+
+    async def _trigger_alert_internal(self) -> None:
+        """Interne async Hilfsfunktion für automatische Alert-Auslösung"""
+        try:
+            success = await self.trigger_alert()
+            if success:
                 self.alerts_sent_this_session += 1
-                self.logger.info(f"Alert triggered automatically"
+                self.logger.info(f"Alert triggered automatically (async) "
                                f"({self.alerts_sent_this_session}/{self.max_alerts_per_session})")
+        except Exception as exc:
+            self.logger.error(f"Error in automatic alert trigger: {exc}")
 
     # === Alert-System ===
     
@@ -313,10 +326,10 @@ class MeasurementController:
         alert_delay = timedelta(seconds=self.config.alert_delay_seconds)
         
         return time_since_motion >= alert_delay
-    
-    def trigger_alert(self) -> bool:
+
+    async def trigger_alert(self) -> bool:
         """
-        Löst Alert aus (E-Mail-Benachrichtigung).
+        Löst Alert asynchron aus mit echtem async/await.
         
         Returns:
             True wenn Alert erfolgreich ausgelöst
@@ -329,12 +342,17 @@ class MeasurementController:
                 camera_frame = None
                 if self.camera:
                     try:
-                        camera_frame = self.camera.take_snapshot()
+                        # Snapshot auch async falls möglich
+                        loop = asyncio.get_event_loop()
+                        camera_frame = await loop.run_in_executor(
+                            self._alert_executor,
+                            self.camera.take_snapshot
+                        )
                     except Exception as exc:
                         self.logger.error(f"Snapshot failed: {exc}")
 
-                # E-Mail-Alert senden
-                success = self.alert_system.send_motion_alert(
+                # E-Mail-Alert asynchron senden
+                success = await self.alert_system.send_motion_alert_async(
                     last_motion_time=self.last_motion_time,
                     session_id=self.session_id,
                     camera_frame=camera_frame,
@@ -343,22 +361,24 @@ class MeasurementController:
                 if success:
                     self.alert_triggered = True
                     self.alert_trigger_time = datetime.now()
-                    self.logger.info("Alert triggered successfully")
+                    self.logger.info("Alert triggered successfully (async)")
                     return True
                 else:
-                    self.logger.error("Alert sending failed")
+                    self.logger.error("Alert sending failed (async)")
                     return False
             else:
                 # Fallback: Alert als "gesendet" markieren auch ohne AlertSystem
                 self.alert_triggered = True
                 self.alert_trigger_time = datetime.now()
-                self.logger.warning("Alert triggered (no AlertSystem available)")
+                self.logger.warning("Alert triggered (no AlertSystem available, async)")
                 return True
                 
         except Exception as exc:
-            self.logger.error(f"Error triggering alert: {exc}")
+            self.logger.error(f"Error triggering alert (async): {exc}")
             return False
+
     
+
     # === Status-Export für GUI ===
     
     def get_session_status(self) -> Dict[str, Any]:
@@ -448,6 +468,9 @@ class MeasurementController:
         """
         try:
             self.logger.info("Starting MeasurementController cleanup...")
+
+            if hasattr(self, '_alert_executor'):
+                self._alert_executor.shutdown(wait=True)
             
             # Session stoppen falls aktiv
             if self.is_session_active:

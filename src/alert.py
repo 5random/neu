@@ -23,6 +23,8 @@ import requests
 import math
 from datetime import datetime
 import threading
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
@@ -46,7 +48,7 @@ class AlertSystem:
     
     Usage:
         alert_system = AlertSystem(email_config, measurement_config)
-        success = alert_system.send_motion_alert(last_motion_time, session_id)
+        success = await alert_system.send_motion_alert_async(last_motion_time, session_id)
     """
     
     def __init__(
@@ -104,6 +106,8 @@ class AlertSystem:
         # SMTP-Verbindung Cache
         self._smtp_connection: Optional[smtplib.SMTP] = None
         self._connection_timeout: int = 30  # Sekunden
+
+        self._executor = ThreadPoolExecutor(max_workers=2)
         
         self.logger.info("AlertSystem initialized")
     
@@ -216,6 +220,16 @@ class AlertSystem:
                         self.alerts_sent_count = previous_count
                 self.logger.error(f"Critical error when sending alert: {exc}; state reset")
                 return False
+
+    async def send_motion_alert_async(
+        self,
+        last_motion_time: Optional[datetime] = None,
+        session_id: Optional[str] = None,
+        camera_frame: Optional[np.ndarray] = None
+    ) -> bool:
+        """ Async Wrapper für send_motion_alert """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self._executor, self.send_motion_alert, last_motion_time, session_id, camera_frame)
 
     def _send_emails_batch(self, message: MIMEMultipart, recipients: List[str], max_retries: int = 3) -> int:
         """Send a single message to multiple recipients"""
@@ -522,12 +536,18 @@ class AlertSystem:
             self.logger.error(f"Error sending test email: {exc}")
             return False
     
+    async def send_test_email_async(self) -> bool:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self._executor, self.send_test_email)
+    
     def cleanup(self) -> None:
         """
         Cleanup-Methode für sauberes Shutdown.
         
         Schließt SMTP-Verbindungen und gibt Ressourcen frei.
         """
+        if hasattr(self, '_executor'):
+            self._executor.shutdown(wait=True)
         try:
             self.logger.info("Starting AlertSystem cleanup...")
             
@@ -649,6 +669,7 @@ def test_template_rendering():
     project_root = Path(__file__).parents[1]
     sys.path.insert(0, str(project_root))
     from src.config import load_config
+    logger = logging.getLogger(__name__)
     try:
         """Testet ob Template-Rendering funktioniert"""
         template = load_config("config/config.yaml").email.alert_template()
