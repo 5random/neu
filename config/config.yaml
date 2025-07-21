@@ -58,7 +58,7 @@ motion_detection:
     width: 412
     x: 79
     y: 125
-  sensitivity: 0.18
+  sensitivity: 0.29
 uvc_controls:
   backlight_compensation: 48
   brightness: 0
