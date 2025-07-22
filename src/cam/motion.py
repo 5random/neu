@@ -204,7 +204,8 @@ class MotionDetector:
             if kernel_size % 2 == 0:
                 kernel_size += 1  # Ensure odd number
 
-            blurred = cv2.GaussianBlur(roi_frame, (kernel_size, kernel_size), 0)
+            blur_buf = self._get_working_array(roi_frame.shape)
+            cv2.GaussianBlur(roi_frame, (kernel_size, kernel_size), 0, dst=blur_buf)
 
             # Learning-Phase verwalten
             if self.is_learning:
@@ -215,14 +216,15 @@ class MotionDetector:
 
             # Background Subtraction
             learning_rate = self.learning_rate if self.is_learning else (self.learning_rate * 0.1)
-            fg_mask = self.background_subtractor.apply(blurred, learningRate=learning_rate)
-            
+            fg_mask = self._get_working_array(roi_frame.shape)
+            self.background_subtractor.apply(blur_buf, fg_mask, learningRate=learning_rate)
+
             # Schatten entfernen
-            _, fg_mask = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
-            
+            _, fg_mask = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY, dst=fg_mask)
+
             # Morphological Operations für Rauschunterdrückung
-            fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self.noise_kernel)
-            fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self.cleanup_kernel)
+            cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self.noise_kernel, dst=fg_mask)
+            cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self.cleanup_kernel, dst=fg_mask)
             
             # Verbundene Komponenten finden
             num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(fg_mask)
