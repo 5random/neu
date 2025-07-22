@@ -20,8 +20,11 @@ import re
 import cv2
 import numpy as np
 import requests
+import math
 from datetime import datetime
 import threading
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
@@ -45,7 +48,7 @@ class AlertSystem:
     
     Usage:
         alert_system = AlertSystem(email_config, measurement_config)
-        success = alert_system.send_motion_alert(last_motion_time, session_id)
+        success = await alert_system.send_motion_alert_async(last_motion_time, session_id)
     """
     
     def __init__(
@@ -63,6 +66,9 @@ class AlertSystem:
             measurement_config: Optional für Bild-Speicherung
             logger: Optional Logger für Alert-Tracking
         """
+        
+        self.logger = logger or logging.getLogger(__name__)
+
         if app_cfg is None:
             raise ValueError("AppConfig is needed")
         # app_cfg.webcam ist eine WebcamConfig-Instanz
@@ -73,8 +79,9 @@ class AlertSystem:
         if not email_config:
             raise ValueError("E-Mail-Config is needed")
     
-        if email_config.validate():
-            raise ValueError("invalid E-Mail-Config")
+        email_errors = email_config.validate()
+        if email_errors:
+            raise ValueError(f"invalid E-Mail-Config: {', '.join(email_errors)}")
         
         if not hasattr(email_config, 'recipients') or not email_config.recipients:
             raise ValueError("At least one recipient must be configured")
@@ -82,17 +89,22 @@ class AlertSystem:
         if not measurement_config:
             raise ValueError("MeasurementConfig is needed")
         
-        if measurement_config.validate():
-            raise ValueError("Invalid measurement config")
+        measurement_errors = measurement_config.validate()
+        if measurement_errors:
+            self.logger.warning(f"Invalid measurement config: {', '.join(measurement_errors)}")
 
         self.email_config = email_config
         self.measurement_config = measurement_config
-        self.logger = logger or logging.getLogger(__name__)
+
+        
         
         # Alert-State-Management
         self.last_alert_time: Optional[datetime] = None
         self.alerts_sent_count: int = 0
-        self.cooldown_minutes: int = max(5, self.measurement_config.alert_delay_seconds // 60)  # Minimum 5 Minuten zwischen E-Mails
+        self.cooldown_minutes: int = max(
+            5,
+            math.ceil(self.measurement_config.alert_delay_seconds / 60),
+        )  # Minimum 5 Minuten zwischen E-Mails
 
         self._state_lock = threading.RLock()
         self._smtp_lock = threading.Lock()
@@ -100,6 +112,10 @@ class AlertSystem:
         # SMTP-Verbindung Cache
         self._smtp_connection: Optional[smtplib.SMTP] = None
         self._connection_timeout: int = 30  # Sekunden
+
+        self._executor = ThreadPoolExecutor(max_workers=2)
+
+        self._alert_system_cleanup = False  # Flag für sauberen Shutdown
 
         self.logger.info("AlertSystem initialized")
 
@@ -151,6 +167,10 @@ class AlertSystem:
         Returns:
             True wenn E-Mail erfolgreich gesendet
         """
+        if self._alert_system_cleanup:
+            self.logger.error("AlertSystem has been cleaned up, cannot send alert")
+            raise RuntimeError("AlertSystem has been cleaned up")
+    
         current_time = datetime.now()
 
         with self._state_lock:
@@ -198,39 +218,37 @@ class AlertSystem:
                     f"Attached is the current webcam image."
                 )
             
-            # E-Mail-Nachrichten für alle Empfänger erstellen
+            # E-Mail-Nachricht erstellen
             try:
-                messages: list[tuple[str, MIMEMultipart]] = []
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 img_buffer = None
                 filename: str | None = None
-
                 ok = False
-
+                
                 if camera_frame is not None:
                     ok, img_buffer, filename = self._encode_frame(camera_frame, ts=timestamp)
-                    if ok and self.measurement_config.save_alert_images and img_buffer is not None and filename is not None:
+
+                    if ok and img_buffer is not None and filename is not None and self.measurement_config.save_alert_images:
                         self._save_alert_image(img_buffer, filename)
 
-                for recipient in self.email_config.recipients:
-                    msg = self._create_email_message(subject, body, recipient)
+                msg = self._create_email_message(subject, body, self.email_config.recipients)
 
-                    # Bild-Anhang hinzufügen wenn verfügbar
-                    if ok and img_buffer is not None and filename is not None:
-                        img_attach = MIMEImage(img_buffer.tobytes())
-                        img_attach.add_header('Content-Disposition', f'attachment; filename="{filename}"')
-                        msg.attach(img_attach)
+                # Bild-Anhang hinzufügen wenn verfügbar
+                if img_buffer is not None and filename is not None:
+                    img_attach = MIMEImage(img_buffer.tobytes())
+                    img_attach.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+                    msg.attach(img_attach)
 
-                    messages.append((recipient, msg))
-                
-                # E-Mails versenden
-                success_count = self._send_emails_batch(messages)
-                
+                # E-Mail versenden
+                success_count = self._send_emails_batch(msg, self.email_config.recipients)
+
                 # Erfolg wenn mindestens eine E-Mail gesendet wurde
                 if success_count > 0:
                     with self._state_lock:
                         self.alerts_sent_count = temp_count
-                    self.logger.info(f"Alert #{temp_count} sent ({success_count}/{len(messages)} successful)")
+                    self.logger.info(
+                        f"Alert #{temp_count} sent ({success_count}/{len(self.email_config.recipients)} successful)"
+                    )
                     return True
                 else:
                     # Rollback bei Fehlschlag
@@ -247,31 +265,35 @@ class AlertSystem:
                 self.logger.error(f"Critical error when sending alert: {exc}; state reset")
                 return False
 
-    def _send_emails_batch(self, messages: List[tuple], max_retries: int = 3) -> int:
-        """Send a batch of emails reusing a persistent SMTP connection."""
+    async def send_motion_alert_async(
+        self,
+        last_motion_time: Optional[datetime] = None,
+        session_id: Optional[str] = None,
+        camera_frame: Optional[np.ndarray] = None
+    ) -> bool:
+        """ Async Wrapper für send_motion_alert """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self._executor, self.send_motion_alert, last_motion_time, session_id, camera_frame)
+
+    def _send_emails_batch(self, message: MIMEMultipart, recipients: List[str], max_retries: int = 3) -> int:
+        """Send a single message to multiple recipients"""
+
         success_count = 0
 
         for attempt in range(max_retries):
             try:
                 with self._smtp_lock:
-                    smtp = self._ensure_smtp_connection()
-
-                    for recipient, message in messages:
-                        try:
-                            smtp.sendmail(
-                                self.email_config.sender_email,
-                                recipient,
-                                message.as_string(),
-                            )
-                            success_count += 1
-                            self.logger.info(f"Email successfully sent to {recipient}")
-                        except smtplib.SMTPException as exc:
-                            self.logger.error(f"SMTP-error when sending to {recipient}: {exc}")
-                        except Exception as exc:
-                            self.logger.error(f"General error when sending to {recipient}: {exc}")
-
-                    if success_count == len(messages):
-                        break
+                    with smtplib.SMTP(
+                        self.email_config.smtp_server,
+                        self.email_config.smtp_port,
+                        timeout=self._connection_timeout,
+                    ) as smtp:
+                        failed = smtp.sendmail(
+                            self.email_config.sender_email,
+                            recipients,
+                            message.as_string(),
+                        )
+                        success_count = len(recipients) - len(failed)
 
                 if success_count > 0:
                     break
@@ -318,7 +340,7 @@ class AlertSystem:
         with self._state_lock:
             return self._should_send_alert_unsafe()
 
-    def _create_email_message(self, subject: str, body: str, recipient: str) -> MIMEMultipart:
+    def _create_email_message(self, subject: str, body: str, recipients: list[str]) -> MIMEMultipart:
         """
         Erstellt MIME-Multipart-E-Mail-Nachricht.
         
@@ -332,7 +354,7 @@ class AlertSystem:
         """
         msg = MIMEMultipart()
         msg['From'] = self.email_config.sender_email
-        msg['To'] = recipient
+        msg['To'] = ", ".join(recipients)
         msg['Subject'] = subject
         msg['Date'] = datetime.now().strftime("%a, %d %b %Y %H:%M:%S %z")
         
@@ -412,13 +434,6 @@ class AlertSystem:
             f'attachment; filename="{filename}"'
         )
         msg.attach(img_attach)
-        # --------------------------------------------------------------------
-
-        # --- (optional) lokal speichern -------------------------------------
-        # Wenn du das Speichern NICHT schon in send_motion_alert() erledigst:
-        # if self.measurement_config.save_alert_images:
-        #     self._save_alert_image(buf, filename)
-        # --------------------------------------------------------------------
 
         self.logger.debug(
             "Image attachment added: %s (%d bytes)", filename, buf.size
@@ -438,6 +453,10 @@ class AlertSystem:
                 save_path.mkdir(parents=True, exist_ok=True)
                 
                 file_path = save_path / filename
+                if image_buffer is None or image_buffer.size == 0:
+                    self.logger.warning(f'No valid image buffer to save, skipping save: {filename}')
+                    return
+                
                 with open(file_path, 'wb') as f:
                     f.write(image_buffer.tobytes())
                 
@@ -530,16 +549,14 @@ class AlertSystem:
     def send_test_email(self) -> bool:
         """
         Sendet Test-E-Mail an alle konfigurierten Empfänger.
-        
-        Args:
-            test_message: Test-Nachricht
-            
+
         Returns:
             True wenn mindestens eine E-Mail erfolgreich gesendet
         """
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             subject = f"Test email - {timestamp}"
+            # Beispielinhalt der Test-E-Mail erzeugen
             test_message =(
                     f"Motion has not been detected since {timestamp}!\n"
                     f"Please check the website at: {self.email_config.website_url}\n\n"
@@ -556,7 +573,7 @@ class AlertSystem:
             try:
                 response = requests.get(IMG_SRC, timeout=10)
                 response.raise_for_status()  # Raise an error for bad responses
-                img_array = np.asarray(bytearray(response.content), dtype=np.uint8)
+                img_array = np.frombuffer(response.content, dtype=np.uint8)
                 frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                 if frame is None or frame.size == 0:
                     self.logger.warning("No valid test image received")
@@ -565,19 +582,54 @@ class AlertSystem:
                 self.logger.warning(f"Error retrieving test image: {exc}")
                 frame = None
 
-            messages = []
-            for recipient in self.email_config.recipients:
-                msg = self._create_email_message(subject, test_message, recipient)
-                if frame is not None:
-                    self._attach_camera_image(msg, frame, timestamp)
-                messages.append((recipient, msg))
+            msg = self._create_email_message(subject, test_message, self.email_config.recipients)
+            if frame is not None:
+                self._attach_camera_image(msg, frame, timestamp)
 
-            success_count = self._send_emails_batch(messages)
+            success_count = self._send_emails_batch(msg, self.email_config.recipients)
             return success_count > 0
             
         except Exception as exc:
             self.logger.error(f"Error sending test email: {exc}")
             return False
+    
+    async def send_test_email_async(self) -> bool:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self._executor, self.send_test_email)
+    
+    def cleanup(self) -> None:
+        """
+        Cleanup-Methode für sauberes Shutdown.
+        
+        Schließt SMTP-Verbindungen und gibt Ressourcen frei.
+        """
+        try:
+            self.logger.info("Starting AlertSystem cleanup...")
+            
+            # ThreadPoolExecutor shutdown
+            if hasattr(self, '_executor'):
+                self._executor.shutdown(wait=True)
+            
+            # SMTP-Verbindung schließen falls vorhanden
+            with self._smtp_lock:
+                if self._smtp_connection:
+                    try:
+                        self._smtp_connection.quit()
+                    except Exception as e:
+                        self.logger.debug(f"Error closing SMTP connection: {e}")
+                    finally:
+                        self._smtp_connection = None
+            
+            # State zurücksetzen
+            with self._state_lock:
+                self.last_alert_time = None
+                self.alerts_sent_count = 0
+            
+            self._alert_system_cleanup = True  # Set cleanup flag
+            self.logger.info("AlertSystem cleanup completed")
+            
+        except Exception as exc:
+            self.logger.error(f"Error during AlertSystem cleanup: {exc}")
     
     def health_check(self) -> Dict[str, Any]:
         """Comprehensive health check of the AlertSystem"""
@@ -677,6 +729,7 @@ def test_template_rendering():
     project_root = Path(__file__).parents[1]
     sys.path.insert(0, str(project_root))
     from src.config import load_config
+    logger = logging.getLogger(__name__)
     try:
         """Testet ob Template-Rendering funktioniert"""
         template = load_config("config/config.yaml").email.alert_template()

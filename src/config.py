@@ -7,18 +7,15 @@ import re
 import yaml
 import logging
 import logging.handlers
-
-# Basic logging setup to capture early messages before configuration is loaded
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+import threading
 
 logger = logging.getLogger(__name__)
-# Track whether the application logger was already initialized
-_initialized_logger = False
+logger.propagate = False  # Verhindert, dass Logs an die Root-Logger propagiert werden
+
 from enum import Enum
+
+_configured_loggers: set[str] = set()
+_configured_loggers_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Logging Enums & Classes
@@ -274,15 +271,21 @@ class LoggingConfig:
         """RotatingFileHandler-Logger einrichten"""
         global _initialized_logger
         logger = logging.getLogger(name)
-        if _initialized_logger:
-            # avoid adding handlers multiple times
-            return logger
 
+        with _configured_loggers_lock:
+            if name in _configured_loggers:
+                return logger
+            # Prevent duplicate setup - check if already configured
+            if logger.handlers and any(isinstance(h, logging.handlers.RotatingFileHandler) for h in logger.handlers):
+                _configured_loggers.add(name)
+                return logger
+              
         logger.setLevel(getattr(logging, self.level.upper()))
-        
-        # Vorherige Handler entfernen
+
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
+        
+        logger.propagate = False  # Verhindert, dass Logs an die Root-Logger propagiert werden
         
         # Log-Verzeichnis erstellen
         log_path = Path(self.file)
@@ -305,12 +308,15 @@ class LoggingConfig:
         # Formatter für alle Handler
         formatter = logging.Formatter(
             fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+            datefmt='%d.%m.%Y %H:%M:%S'
         )
         
         for handler in handlers:
             handler.setFormatter(formatter)
             logger.addHandler(handler)
+        
+        with _configured_loggers_lock:
+            _configured_loggers.add(name)  # Logger als konfiguriert markieren
 
         logger.info(
             f"🚀 Logging initialized: {self.file} (max: {self.max_file_size_mb}MB, backups: {self.backup_count})"
@@ -369,18 +375,18 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
             data = yaml.safe_load(f)
 
     except FileNotFoundError:
-        logger.error("❌ config file not found: %s", path)
-        logger.info("🔧 Using default config")
+        print(f"❌ Config file not found: {path}")  # Fallback print statt logger
+        print("🔧 Using default config")
         return _create_default_config()
 
     except yaml.YAMLError as e:
-        logger.error("❌ YAML parsing error: %s", e)
-        logger.info("🔧 Using default config")
+        print(f"❌ YAML parsing error: {e}")  # Fallback print statt logger
+        print("🔧 Using default config")
         return _create_default_config()
 
     except Exception as e:
-        logger.error("❌ Unexpected error loading config: %s", e)
-        logger.info("🔧 Using default config")
+        print(f"❌ Unexpected error loading config: {e}")  # Fallback print statt logger
+        print("🔧 Using default config")
         return _create_default_config()
     
     # Defaults für Logging anwenden
@@ -490,7 +496,7 @@ def _create_default_config() -> AppConfig:
             smtp_server="smtp.example.com",
             smtp_port=25,
             sender_email="sender@example.com",
-            templates={"alert": {"subject": "CVD-Alert: no motion detected - {timestamp}", "body": 
+            templates={"alert": {"subject": "CVD-TRACKER-Alert: no motion detected - {timestamp}", "body": 
                                  "Movement has not been detected since {timestamp}!"
                                  "\nPlease check the issue via the web application at: {website_url}."
                                  "\n\nDetails:"
@@ -498,7 +504,7 @@ def _create_default_config() -> AppConfig:
                                  "\nLast motion at: {last_motion_time}"
                                  "\nCamera: Index {camera_index}"
                                  "\nSensitivity: {sensitivity}"
-                                 "\nROI active: {roi_enabled}"
+                                 "\nROI enabled: {roi_enabled}"
                                  "\n\nAttached is the current webcam image."
                                  }}
                                  

@@ -3,8 +3,15 @@ from fastapi import Request
 from datetime import datetime
 
 from src.measurement import MeasurementController
+from src.cam.camera import Camera
 
-def create_motion_status_element(camera, measurement_controller: MeasurementController | None = None):
+def create_motion_status_element(camera: Camera | None, measurement_controller: MeasurementController | None = None):
+    if camera is None:
+        # Fallback-UI ohne Kamera-Integration
+        with ui.card().classes('w-full h-full shadow-2 q-pa-md').style('align-self:stretch;'):
+            ui.label('Motion Detection Status').classes('text-h6 font-semibold mb-2')
+            ui.label('Camera not available - motion detection disabled').classes('text-warning')
+        return
     
     # ---------- interne Statusvariablen ----------
     motion_detected: bool = False           # Start: keine Bewegung

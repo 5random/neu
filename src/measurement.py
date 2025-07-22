@@ -19,6 +19,8 @@ from datetime import datetime, timedelta
 import math
 from collections import deque
 from threading import Lock
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Optional, Dict, Any, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -46,7 +48,7 @@ class MeasurementController:
         controller.start_session()
         # Motion-Events über register_motion_callback()
         if controller.should_trigger_alert():
-            controller.trigger_alert()
+            success = controller.trigger_alert_sync()    
     """
     
     def __init__(
@@ -93,20 +95,24 @@ class MeasurementController:
         self.max_alerts_per_session: int = 5  # Maximal 5 Alerts pro Session
         
         # Alert-Timer-Präzision
-        self.alert_check_interval: float = 3.0  # Alle 3 Sekunden Alert-Status prüfen
+        self.alert_check_interval: float = 5.0  # Alle 5 Sekunden Alert-Status prüfen
         self.last_alert_check: Optional[datetime] = None
         
         self.logger.info("MeasurementController initialized")
 
         self.history_lock = Lock()  # Thread-sicherer Zugriff auf Motion-Historie
-    
+
+        self._alert_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="alert_executor")  # Executor für Alert-Operationen
+        self._camera_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="camera_executor")  # Executor für Kamera-Operationen
+
     # === Session-Management ===
     def _ensure_valid_time(self) -> None:
-        min_minutes = max(5, math.ceil(self.config.alert_delay_seconds // 60))
+        alert_delay_minutes = math.ceil(self.config.alert_delay_seconds / 60)
+        min_minutes = max(5, alert_delay_minutes)
         if 0 < self.config.session_timeout_minutes < min_minutes:
             self.logger.warning(
                 f"Session timeout ({self.config.session_timeout_minutes}min) "
-                f"is shorter than alert delay 5 minutes - "
+                f"is shorter than alert delay {alert_delay_minutes} minutes - "
                 f"setting to {min_minutes}min"
             )
             self.config.session_timeout_minutes = min_minutes
@@ -254,8 +260,13 @@ class MeasurementController:
         - Anti-Spam-Mechanismus (max. Alerts pro Session)
         - Motion-Historie-basierte Entscheidungen
         - Automatische Alert-Auslösung bei Erreichen des Delays
+        Verwendet jetzt non-blocking Threading-Variante
         """
         if not self.is_session_active or self.alert_triggered:
+            return
+        
+        if self.alerts_sent_this_session >= self.max_alerts_per_session:
+            self.logger.warning("Max alerts per session reached - skipping alert check")
             return
         
         now = datetime.now()
@@ -267,25 +278,89 @@ class MeasurementController:
         
         self.last_alert_check = now
         
-        # Anti-Spam-Check: Maximale Alerts pro Session erreicht?
-        if self.alerts_sent_this_session >= self.max_alerts_per_session:
-            return
-        
         # Motion-Historie analysieren: Gab es kürzlich noch Bewegung?
+        # THREAD-SICHER mit Lock:
         if len(self.motion_history) >= 3:
-            # Wenn in den letzten 3 Motion-Checks noch Bewegung war, warten
             with self.history_lock:
-                recent_motion = any(list(self.motion_history)[-3:])
+                # Sichere Kopie erstellen INNERHALB des Locks
+                history_copy = list(self.motion_history)
+                recent_motion = any(history_copy[-3:]) if len(history_copy) >= 3 else False
             if recent_motion:
                 return
         
         # Standard Alert-Delay-Check
         if self.should_trigger_alert():
-            # Automatisch Alert auslösen
-            if self.trigger_alert():
+            try:
+                self._alert_executor.submit(self._trigger_alert_sync)
+            except Exception as exc:
+                self.logger.error(f"Error submitting alert trigger task: {exc}")
+
+    def _trigger_alert_sync(self) -> None:
+        """Synchrone Hilfsfunktion für automatische Alert-Auslösung"""
+        try:
+            # Frühzeitige Validierung um unnötige Arbeit zu vermeiden
+            if not self.should_trigger_alert():
+                return
+                
+            success = self.trigger_alert_sync()
+            if success:
                 self.alerts_sent_this_session += 1
-                self.logger.info(f"Alert triggered automatically"
+                self.logger.info(f"Alert triggered automatically (sync) "
                                f"({self.alerts_sent_this_session}/{self.max_alerts_per_session})")
+        except Exception as exc:
+            self.logger.error(f"Error in automatic alert trigger: {exc}")
+
+    def trigger_alert_sync(self) -> bool:
+        """
+        Löst Alert synchron aus für Threading-basierte Verwendung.
+        Optimiert für minimale GUI-Blockierung.
+        
+        Returns:
+            True wenn Alert erfolgreich ausgelöst
+        """
+        # Doppelte Validierung vermeiden - wurde bereits in _trigger_alert_sync geprüft
+        if not self.alert_system:
+            # Fallback: Alert als "gesendet" markieren
+            self.alert_triggered = True
+            self.alert_trigger_time = datetime.now()
+            self.logger.warning("Alert triggered (no AlertSystem available, sync)")
+            return True
+        
+        try:
+            camera_frame = None
+            if self.camera:
+                try:
+                    # Timeout mit concurrent.futures statt signal (thread-sicher)
+
+                    future = self._camera_executor.submit(self.camera.take_snapshot)
+                    try:
+                        camera_frame = future.result(timeout=2.0)  # 2 Sekunden Timeout
+                    except FutureTimeoutError:
+                        self.logger.error("Camera snapshot timed out after 2 seconds")
+
+                except Exception as exc:
+                    self.logger.error(f"Snapshot failed or timed out: {exc}")
+                    # Weitermachen ohne Bild - Alert trotzdem senden
+
+            # E-Mail-Alert synchron senden (läuft im ThreadPoolExecutor)
+            success = self.alert_system.send_motion_alert(
+                last_motion_time=self.last_motion_time,
+                session_id=self.session_id,
+                camera_frame=camera_frame,
+            )
+            
+            if success:
+                self.alert_triggered = True
+                self.alert_trigger_time = datetime.now()
+                self.logger.info("Alert triggered successfully (sync)")
+                return True
+            else:
+                self.logger.error("Alert sending failed (sync)")
+                return False
+                
+        except Exception as exc:
+            self.logger.error(f"Error triggering alert (sync): {exc}")
+            return False
 
     # === Alert-System ===
     
@@ -310,52 +385,7 @@ class MeasurementController:
         alert_delay = timedelta(seconds=self.config.alert_delay_seconds)
         
         return time_since_motion >= alert_delay
-    
-    def trigger_alert(self) -> bool:
-        """
-        Löst Alert aus (E-Mail-Benachrichtigung).
-        
-        Returns:
-            True wenn Alert erfolgreich ausgelöst
-        """
-        if not self.should_trigger_alert():
-            return False
-        
-        try:
-            if self.alert_system:
-                camera_frame = None
-                if self.camera:
-                    try:
-                        camera_frame = self.camera.take_snapshot()
-                    except Exception as exc:
-                        self.logger.error(f"Snapshot failed: {exc}")
 
-                # E-Mail-Alert senden
-                success = self.alert_system.send_motion_alert(
-                    last_motion_time=self.last_motion_time,
-                    session_id=self.session_id,
-                    camera_frame=camera_frame,
-                )
-                
-                if success:
-                    self.alert_triggered = True
-                    self.alert_trigger_time = datetime.now()
-                    self.logger.info("Alert triggered successfully")
-                    return True
-                else:
-                    self.logger.error("Alert sending failed")
-                    return False
-            else:
-                # Fallback: Alert als "gesendet" markieren auch ohne AlertSystem
-                self.alert_triggered = True
-                self.alert_trigger_time = datetime.now()
-                self.logger.warning("Alert triggered (no AlertSystem available)")
-                return True
-                
-        except Exception as exc:
-            self.logger.error(f"Error triggering alert: {exc}")
-            return False
-    
     # === Status-Export für GUI ===
     
     def get_session_status(self) -> Dict[str, Any]:
@@ -365,6 +395,15 @@ class MeasurementController:
         Returns:
             Dict mit Session-Informationen einschließlich Alert-System-Status
         """
+        # Thread-sichere Motion-Historie-Abfrage
+        with self.history_lock:
+            motion_history_size = len(self.motion_history)
+            recent_motion_detected = (
+                any(list(self.motion_history)[-3:])
+                if motion_history_size >= 3
+                else None
+            )
+            
         return {
             'is_active': self.is_session_active,
             'session_id': self.session_id,
@@ -377,8 +416,8 @@ class MeasurementController:
             'alert_countdown': self._get_alert_countdown(),
             'alerts_sent_this_session': self.alerts_sent_this_session,
             'max_alerts_per_session': self.max_alerts_per_session,
-            'motion_history_size': len(self.motion_history),
-            'recent_motion_detected': any(list(self.motion_history)[-3:]) if len(self.motion_history) >= 3 else None,
+            'motion_history_size': motion_history_size,
+            'recent_motion_detected': recent_motion_detected,
             'session_timeout_minutes': self.config.session_timeout_minutes,
         }
     
@@ -426,7 +465,40 @@ class MeasurementController:
         elapsed_seconds = time_since_motion.total_seconds()
         remaining = alert_delay_seconds - elapsed_seconds
         return max(0, int(remaining))
+    
+    def cleanup(self) -> None:
+        """
+        Cleanup-Methode für sauberes Shutdown.
+        
+        Stoppt aktive Sessions und gibt Ressourcen frei.
+        """
+        try:
+            self.logger.info("Starting MeasurementController cleanup...")
 
+            if hasattr(self, '_alert_executor'):
+                self._alert_executor.shutdown(wait=True)
+            if hasattr(self, '_camera_executor'):
+                self._camera_executor.shutdown(wait=True)
+            
+            # Session stoppen falls aktiv
+            if self.is_session_active:
+                self.stop_session()
+            
+            # Callbacks leeren
+            self._motion_callbacks.clear()
+            
+            # State zurücksetzen
+            with self.history_lock:
+                self.motion_history.clear()
+            
+            # Referenzen auf None setzen für Garbage Collection
+            self.alert_system = None
+            self.camera = None
+            
+            self.logger.info("MeasurementController cleanup completed")
+            
+        except Exception as exc:
+            self.logger.error(f"Error during MeasurementController cleanup: {exc}")
 
 # === Factory-Funktionen ===
 
