@@ -66,6 +66,9 @@ class AlertSystem:
             measurement_config: Optional für Bild-Speicherung
             logger: Optional Logger für Alert-Tracking
         """
+        
+        self.logger = logger or logging.getLogger(__name__)
+
         if app_cfg is None:
             raise ValueError("AppConfig is needed")
         # app_cfg.webcam ist eine WebcamConfig-Instanz
@@ -76,8 +79,9 @@ class AlertSystem:
         if not email_config:
             raise ValueError("E-Mail-Config is needed")
     
-        if email_config.validate():
-            raise ValueError("invalid E-Mail-Config")
+        email_errors = email_config.validate()
+        if email_errors:
+            raise ValueError(f"invalid E-Mail-Config: {', '.join(email_errors)}")
         
         if not hasattr(email_config, 'recipients') or not email_config.recipients:
             raise ValueError("At least one recipient must be configured")
@@ -85,12 +89,14 @@ class AlertSystem:
         if not measurement_config:
             raise ValueError("MeasurementConfig is needed")
         
-        if measurement_config.validate():
-            raise ValueError("Invalid measurement config")
+        measurement_errors = measurement_config.validate()
+        if measurement_errors:
+            self.logger.warning(f"Invalid measurement config: {', '.join(measurement_errors)}")
 
         self.email_config = email_config
         self.measurement_config = measurement_config
-        self.logger = logger or logging.getLogger(__name__)
+
+        
         
         # Alert-State-Management
         self.last_alert_time: Optional[datetime] = None

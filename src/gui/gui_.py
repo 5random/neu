@@ -149,7 +149,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
         with ui.column().classes("gap-4"):
             create_uvc_content(camera=global_camera)
             create_motiondetection_card(camera=global_camera)
-            create_emailcard(config=config)
+            create_emailcard(config=config, alert_system=global_alert_system)
 
 def cleanup_application():
     """Cleanup-Funktion für sauberes Shutdown."""

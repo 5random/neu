@@ -97,7 +97,7 @@ class MeasurementController:
         self.max_alerts_per_session: int = 5  # Maximal 5 Alerts pro Session
         
         # Alert-Timer-Präzision
-        self.alert_check_interval: float = 3.0  # Alle 3 Sekunden Alert-Status prüfen
+        self.alert_check_interval: float = 5.0  # Alle 5 Sekunden Alert-Status prüfen
         self.last_alert_check: Optional[datetime] = None
         
         self.logger.info("MeasurementController initialized")
@@ -105,6 +105,7 @@ class MeasurementController:
         self.history_lock = Lock()  # Thread-sicherer Zugriff auf Motion-Historie
 
         self._alert_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="alert_executor")  # Executor für Alert-Operationen
+        self._camera_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="camera_executor")  # Executor für Kamera-Operationen
 
     # === Session-Management ===
     def _ensure_valid_time(self) -> None:
@@ -266,6 +267,10 @@ class MeasurementController:
         if not self.is_session_active or self.alert_triggered:
             return
         
+        if self.alerts_sent_this_session >= self.max_alerts_per_session:
+            self.logger.warning("Max alerts per session reached - skipping alert check")
+            return
+        
         now = datetime.now()
         
         # Prüfe ob genug Zeit seit letztem Check vergangen ist
@@ -275,33 +280,88 @@ class MeasurementController:
         
         self.last_alert_check = now
         
-        # Anti-Spam-Check: Maximale Alerts pro Session erreicht?
-        if self.alerts_sent_this_session >= self.max_alerts_per_session:
-            return
-        
         # Motion-Historie analysieren: Gab es kürzlich noch Bewegung?
         if len(self.motion_history) >= 3:
             # Wenn in den letzten 3 Motion-Checks noch Bewegung war, warten
             with self.history_lock:
-                start = len(self.motion_history) - 3
-                recent_motion = any(islice(self.motion_history, start, None))
+                recent_motion = any(list(self.motion_history)[-3:])
             if recent_motion:
                 return
         
         # Standard Alert-Delay-Check
         if self.should_trigger_alert():
-            asyncio.create_task(self._trigger_alert_internal())
+            try:
+                self._alert_executor.submit(self._trigger_alert_sync)
+            except Exception as exc:
+                self.logger.error(f"Error submitting alert trigger task: {exc}")
 
-    async def _trigger_alert_internal(self) -> None:
-        """Interne async Hilfsfunktion für automatische Alert-Auslösung"""
+    def _trigger_alert_sync(self) -> None:
+        """Synchrone Hilfsfunktion für automatische Alert-Auslösung"""
         try:
-            success = await self.trigger_alert()
+            # Frühzeitige Validierung um unnötige Arbeit zu vermeiden
+            if not self.should_trigger_alert():
+                return
+                
+            success = self.trigger_alert_sync()
             if success:
                 self.alerts_sent_this_session += 1
-                self.logger.info(f"Alert triggered automatically (async) "
+                self.logger.info(f"Alert triggered automatically (sync) "
                                f"({self.alerts_sent_this_session}/{self.max_alerts_per_session})")
         except Exception as exc:
             self.logger.error(f"Error in automatic alert trigger: {exc}")
+
+    def trigger_alert_sync(self) -> bool:
+        """
+        Löst Alert synchron aus für Threading-basierte Verwendung.
+        Optimiert für minimale GUI-Blockierung.
+        
+        Returns:
+            True wenn Alert erfolgreich ausgelöst
+        """
+        # Doppelte Validierung vermeiden - wurde bereits in _trigger_alert_sync geprüft
+        if not self.alert_system:
+            # Fallback: Alert als "gesendet" markieren
+            self.alert_triggered = True
+            self.alert_trigger_time = datetime.now()
+            self.logger.warning("Alert triggered (no AlertSystem available, sync)")
+            return True
+        
+        try:
+            camera_frame = None
+            if self.camera:
+                try:
+                    # Timeout mit concurrent.futures statt signal (thread-sicher)
+                    from concurrent.futures import TimeoutError as FutureTimeoutError
+
+                    future = self._camera_executor.submit(self.camera.take_snapshot)
+                    try:
+                        camera_frame = future.result(timeout=2.0)  # 2 Sekunden Timeout
+                    except FutureTimeoutError:
+                        self.logger.error("Camera snapshot timed out after 2 seconds")
+                        
+                except (TimeoutError, Exception) as exc:
+                    self.logger.error(f"Snapshot failed or timed out: {exc}")
+                    # Weitermachen ohne Bild - Alert trotzdem senden
+
+            # E-Mail-Alert synchron senden (läuft im ThreadPoolExecutor)
+            success = self.alert_system.send_motion_alert(
+                last_motion_time=self.last_motion_time,
+                session_id=self.session_id,
+                camera_frame=camera_frame,
+            )
+            
+            if success:
+                self.alert_triggered = True
+                self.alert_trigger_time = datetime.now()
+                self.logger.info("Alert triggered successfully (sync)")
+                return True
+            else:
+                self.logger.error("Alert sending failed (sync)")
+                return False
+                
+        except Exception as exc:
+            self.logger.error(f"Error triggering alert (sync): {exc}")
+            return False
 
     # === Alert-System ===
     
@@ -326,58 +386,6 @@ class MeasurementController:
         alert_delay = timedelta(seconds=self.config.alert_delay_seconds)
         
         return time_since_motion >= alert_delay
-
-    async def trigger_alert(self) -> bool:
-        """
-        Löst Alert asynchron aus mit echtem async/await.
-        
-        Returns:
-            True wenn Alert erfolgreich ausgelöst
-        """
-        if not self.should_trigger_alert():
-            return False
-        
-        try:
-            if self.alert_system:
-                camera_frame = None
-                if self.camera:
-                    try:
-                        # Snapshot auch async falls möglich
-                        loop = asyncio.get_event_loop()
-                        camera_frame = await loop.run_in_executor(
-                            self._alert_executor,
-                            self.camera.take_snapshot
-                        )
-                    except Exception as exc:
-                        self.logger.error(f"Snapshot failed: {exc}")
-
-                # E-Mail-Alert asynchron senden
-                success = await self.alert_system.send_motion_alert_async(
-                    last_motion_time=self.last_motion_time,
-                    session_id=self.session_id,
-                    camera_frame=camera_frame,
-                )
-                
-                if success:
-                    self.alert_triggered = True
-                    self.alert_trigger_time = datetime.now()
-                    self.logger.info("Alert triggered successfully (async)")
-                    return True
-                else:
-                    self.logger.error("Alert sending failed (async)")
-                    return False
-            else:
-                # Fallback: Alert als "gesendet" markieren auch ohne AlertSystem
-                self.alert_triggered = True
-                self.alert_trigger_time = datetime.now()
-                self.logger.warning("Alert triggered (no AlertSystem available, async)")
-                return True
-                
-        except Exception as exc:
-            self.logger.error(f"Error triggering alert (async): {exc}")
-            return False
-
-    
 
     # === Status-Export für GUI ===
     
@@ -471,6 +479,8 @@ class MeasurementController:
 
             if hasattr(self, '_alert_executor'):
                 self._alert_executor.shutdown(wait=True)
+            if hasattr(self, '_camera_executor'):
+                self._camera_executor.shutdown(wait=True)
             
             # Session stoppen falls aktiv
             if self.is_session_active:

@@ -8,15 +8,11 @@ import yaml
 import logging
 import logging.handlers
 
-# Basic logging setup to capture early messages before configuration is loaded
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-
 logger = logging.getLogger(__name__)
+logger.propagate = False  # Verhindert, dass Logs an die Root-Logger propagiert werden
 from enum import Enum
+
+_configured_loggers: set[str] = set()
 
 # ---------------------------------------------------------------------------
 # Logging Enums & Classes
@@ -271,11 +267,20 @@ class LoggingConfig:
     def setup_logger(self, name: str = "cvd_tracker") -> logging.Logger:
         """RotatingFileHandler-Logger einrichten"""
         logger = logging.getLogger(name)
-        logger.setLevel(getattr(logging, self.level.upper()))
+
+        if name in _configured_loggers:
+            return logger
+        # Prevent duplicate setup - check if already configured
+        if logger.handlers and any(isinstance(h, logging.handlers.RotatingFileHandler) for h in logger.handlers):
+            _configured_loggers.add(name)
+            return logger
         
-        # Vorherige Handler entfernen
+        logger.setLevel(getattr(logging, self.level.upper()))
+
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
+        
+        logger.propagate = False  # Verhindert, dass Logs an die Root-Logger propagiert werden
         
         # Log-Verzeichnis erstellen
         log_path = Path(self.file)
@@ -298,12 +303,14 @@ class LoggingConfig:
         # Formatter für alle Handler
         formatter = logging.Formatter(
             fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+            datefmt='%d.%m.%Y %H:%M:%S'
         )
         
         for handler in handlers:
             handler.setFormatter(formatter)
             logger.addHandler(handler)
+        
+        _configured_loggers.add(name)  # Logger als konfiguriert markieren
 
         logger.info(f"🚀 Logging initialized: {self.file} (max: {self.max_file_size_mb}MB, backups: {self.backup_count})")
         return logger
@@ -359,18 +366,18 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
             data = yaml.safe_load(f)
 
     except FileNotFoundError:
-        logger.error("❌ config file not found: %s", path)
-        logger.info("🔧 Using default config")
+        print(f"❌ Config file not found: {path}")  # Fallback print statt logger
+        print("🔧 Using default config")
         return _create_default_config()
 
     except yaml.YAMLError as e:
-        logger.error("❌ YAML parsing error: %s", e)
-        logger.info("🔧 Using default config")
+        print(f"❌ YAML parsing error: {e}")  # Fallback print statt logger
+        print("🔧 Using default config")
         return _create_default_config()
 
     except Exception as e:
-        logger.error("❌ Unexpected error loading config: %s", e)
-        logger.info("🔧 Using default config")
+        print(f"❌ Unexpected error loading config: {e}")  # Fallback print statt logger
+        print("🔧 Using default config")
         return _create_default_config()
     
     # Defaults für Logging anwenden

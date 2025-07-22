@@ -5,11 +5,11 @@ import asyncio
 from nicegui import ui
 from nicegui.client import Client
 
-from src.config import AppConfig, save_config
+from src.config import AppConfig, save_config, logger
 from src.alert import AlertSystem
 
 
-def create_emailcard(*, config: AppConfig) -> None:
+def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] = None) -> None:
     """
     Karte mit drei Tabs:
     1) Übersicht   – read-only Konfig & Test-Mail
@@ -33,6 +33,13 @@ def create_emailcard(*, config: AppConfig) -> None:
     table: Optional[Any] = None
     email_inp: Optional[Any] = None
     smtp_labels: Dict[str, Any] = {}
+
+    if alert_system is None:
+        try:
+            alert_system = AlertSystem(config.email, config.measurement, config)
+        except Exception as exc:
+            ui.notify(f"Failed to initialize alert system: {exc}", color="negative")
+            alert_system = None
 
     # ------------------------------------------------------------------ #
     # Hilfsfunktionen                                                    #
@@ -68,34 +75,37 @@ def create_emailcard(*, config: AppConfig) -> None:
         return errors
 
     async def send_async_test_email(client: Client) -> None:
-        alert = None
+        """Asynchrone Funktion zum Senden einer Test-E-Mail."""
+        logger.info("Sending test email...")
+        if alert_system is None:
+            with client:
+                logger.error("Alert system not initialized")
+                ui.notify("Alert system not initialized", color="negative", position='bottom-right')
+            return
+        
         try:
             # UI-Updates über client context
             with client:
                 ui.notify("Sending test email...", color="info", position='bottom-right')
             
-            alert = AlertSystem(config.email, config.measurement, config)
-            success = await alert.send_test_email_async()
+            success = await alert_system.send_test_email_async()
             
             with client:
                 if success:
+                    logger.info("Test email sent successfully")
                     ui.notify("Test email sent successfully", color="positive", position='bottom-right')
                 else:
+                    logger.error("Error sending test email")
                     ui.notify("Error sending test email", color="negative", position='bottom-right')
         except Exception as exc:
             with client:
+                logger.error(f"Failed to send test email: {exc}")
                 ui.notify(f"Failed to send test email: {exc}", color="negative", position='bottom-right')
-        finally:
-            if alert is not None:
-                try:
-                    alert.cleanup()
-                except Exception as exc:
-                    with client:
-                        ui.notify(f"Failed to cleanup alert system: {exc}", color="negative", position='bottom-right')
 
     def send_test_email() -> None:
         """Sende Test-E-Mail an alle Empfänger."""
         if not state["recipients"]:
+            logger.warning("No recipients configured for test email")
             ui.notify("Can't send test email: No recipients configured", color="warning", position='bottom-right')
             return
         
