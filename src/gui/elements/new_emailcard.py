@@ -52,6 +52,7 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
             config.email.smtp_port = int(state["smtp"]["port"])
             config.email.sender_email = state["smtp"]["sender"]
             save_config(config)
+            logger.info(f"Configuration saved successfully: {config.email}")
             ui.notify("Config saved successfully", color="positive", position='bottom-right')
             return True
         except Exception as exc:  # noqa: BLE001
@@ -77,6 +78,9 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
     async def send_async_test_email(client: Client) -> None:
         """Asynchrone Funktion zum Senden einer Test-E-Mail."""
         logger.info("Sending test email...")
+        logger.info(f"Alert system: {alert_system}")
+        logger.info(f'Recipients: {state["recipients"]}')
+        logger.info(f'Total recipients: {len(state["recipients"])}')
         if alert_system is None:
             with client:
                 logger.error("Alert system not initialized")
@@ -86,14 +90,18 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
         try:
             # UI-Updates über client context
             with client:
-                ui.notify("Sending test email...", color="info", position='bottom-right')
-            
+                ui.notify(f"Sending test email to {', '.join(state['recipients'])}", color="info", position='bottom-right')
+
+            config.email.recipients = list(state["recipients"])
+            for i, recipient in enumerate(config.email.recipients):
+                logger.info(f"Recipient {i+1}/{len(config.email.recipients)}: {recipient}")
+
             success = await alert_system.send_test_email_async()
             
             with client:
                 if success:
-                    logger.info("Test email sent successfully")
-                    ui.notify("Test email sent successfully", color="positive", position='bottom-right')
+                    logger.info(f"Test email sent successfully to all {len(state['recipients'])} recipients")
+                    ui.notify(f"Test email sent successfully to all {len(state['recipients'])} recipients", color="positive", position='bottom-right')
                 else:
                     logger.error("Error sending test email")
                     ui.notify("Error sending test email", color="negative", position='bottom-right')
@@ -108,6 +116,10 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
             logger.warning("No recipients configured for test email")
             ui.notify("Can't send test email: No recipients configured", color="warning", position='bottom-right')
             return
+        
+        logger.info(f"Starting test email to {len(state['recipients'])} recipients")
+        for recipient in state["recipients"]:
+            logger.info(f"Will send to: {recipient}")
         
         client: Client = ui.context.client
         
@@ -152,6 +164,7 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
         if persist_state():
             refresh_table()
             refresh_overview()
+            logger.info(f"Added new recipient: {addr}; total recipients: {len(state['recipients'])}")
 
     def delete_selected() -> None:
         if table is None:
@@ -168,6 +181,7 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
             table.selected = []
             refresh_overview()
             ui.notify(f"{len(selected_addresses)} address(es) deleted", color="positive", position='bottom-right')
+            logger.info(f"Deleted {len(selected_addresses)} recipient(s): {', '.join(selected_addresses)}; new total recipients: {len(state['recipients'])}")
 
     # ------------------------------------------------------------------ #
     # Haupt-Card                                                         #
@@ -188,6 +202,8 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
             with ui.tab_panel(tab_overview):
                 with ui.column().classes("gap-2"):
                     ui.label("Recipients").classes("text-subtitle2 text-grey-7 mt-1")
+                    ui.label().bind_text_from(state, "recipients", backward=lambda x: f"({len(x)})").classes("text-caption text-grey-5")
+
 
                     recipient_list = ui.list().props("dense").classes("pl-2")
                     refresh_recipient_list()

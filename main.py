@@ -7,7 +7,7 @@ import argparse
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from nicegui import ui
+from nicegui import ui, app
 #10from nicegui_toolkit import inject_layout_tool
 from src.config import load_config
 from src.gui.gui_ import create_gui
@@ -35,6 +35,21 @@ def main() -> int:
 
         logger.info("Starting CVD-Tracker application...")
 
+        @app.exception_handler(RuntimeError)
+        async def handle_runtime_error(request, exception):
+            """Spezifischer Fehler-Handler für RuntimeError."""
+            if "deque mutated during iteration" in str(exception):
+                logger.warning("Deque mutation detected - ignoring to prevent crash")
+                return
+            logger.error(f"Runtime error: {exception}")
+            raise exception
+
+        @app.exception_handler(Exception)
+        async def handle_exception(request, exception):
+            """Globaler Fehler-Handler für NiceGUI."""
+            logger.error(f"Unhandled exception: {exception}")
+            return {'error': 'Internal server error'}
+
         create_gui(config_path=args.config)
         
         # NiceGUI starten
@@ -43,7 +58,8 @@ def main() -> int:
             port=8080,
             title='CVD-TRACKER',
             favicon='https://www.tuhh.de/favicon.ico',
-            reload=False
+            reload=False,
+            reconnect_timeout=80.0,
         )
 
         logger.info("Application started")

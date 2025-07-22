@@ -281,10 +281,12 @@ class MeasurementController:
         self.last_alert_check = now
         
         # Motion-Historie analysieren: Gab es kürzlich noch Bewegung?
+        # THREAD-SICHER mit Lock:
         if len(self.motion_history) >= 3:
-            # Wenn in den letzten 3 Motion-Checks noch Bewegung war, warten
             with self.history_lock:
-                recent_motion = any(list(self.motion_history)[-3:])
+                # Sichere Kopie erstellen INNERHALB des Locks
+                history_copy = list(self.motion_history)
+                recent_motion = any(history_copy[-3:]) if len(history_copy) >= 3 else False
             if recent_motion:
                 return
         
@@ -396,6 +398,15 @@ class MeasurementController:
         Returns:
             Dict mit Session-Informationen einschließlich Alert-System-Status
         """
+        # Thread-sichere Motion-Historie-Abfrage
+        with self.history_lock:
+            motion_history_size = len(self.motion_history)
+            recent_motion_detected = (
+                any(list(self.motion_history)[-3:])
+                if motion_history_size >= 3
+                else None
+            )
+            
         return {
             'is_active': self.is_session_active,
             'session_id': self.session_id,
