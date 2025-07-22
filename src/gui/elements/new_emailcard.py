@@ -299,29 +299,28 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
 
             # ---------------------- SMTP ---------------------------------- #
             with ui.tab_panel(tab_smtp):
-                smtp = state["smtp"]
 
                 with ui.row().classes("items-center gap-2"):
                     sender_inp = (
                         ui.input("Sender")
-                        .bind_value(smtp, "sender")
+                        .bind_value(state["smtp"], "sender")
                         .tooltip("Email address of the sender")
                     )
                     server_inp = (
                         ui.input("Server")
-                        .bind_value(smtp, "server")
+                        .bind_value(state["smtp"], "server")
                         .tooltip("SMTP server address")
                     )
                     port_inp = (
                         ui.number("Port", min=1, max=65535)
-                        .bind_value(smtp, "port", forward=int)
+                        .bind_value(state["smtp"], "port", forward=int)
                         .tooltip("Port must be between 1 and 65535.")
                     )
                     with ui.icon("check_circle").props("size=md").classes("ml-auto") as status_icon:
                         status_tt = ui.tooltip("")
 
                 def update_status_icon() -> None:
-                    errors = validate_smtp(smtp)
+                    errors = validate_smtp(state["smtp"])
                     if errors:
                         status_icon.props("name=error_outline color=negative")
                         status_tt.text = "\n".join(errors)
@@ -331,7 +330,7 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
                     status_icon.update()
 
                 def manual_save() -> None:
-                    errors = validate_smtp(smtp)
+                    errors = validate_smtp(state["smtp"])
                     if errors:
                         ui.notify(" ".join(errors), color="negative", position='bottom-right')
                     else:
