@@ -9,6 +9,8 @@ from src.config import AppConfig, save_config, logger
 from src.alert import AlertSystem
 
 
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z0-9]{2,}$")
+
 def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] = None) -> None:
     """
     Karte mit drei Tabs:
@@ -64,7 +66,7 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
             ui.notify(f"Tried to save config but failed: {exc}", color="negative", position='bottom-right')
             return False
 
-    EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z0-9]{2,}$")
+    
 
     def is_valid_email(addr: str) -> bool:
         return bool(EMAIL_RE.match(addr))
@@ -97,15 +99,11 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
             with client:
                 ui.notify(f"Sending test email to {', '.join(state['recipients'])}", color="info", position='bottom-right')
 
-            config.email.recipients = list(state["recipients"])
-            config.email.smtp_server = state["smtp"]["server"]
-            config.email.smtp_port = int(state["smtp"]["port"])
-            config.email.sender_email = state["smtp"]["sender"]
+            persist_state()  # Sicherstellen, dass die Konfiguration aktuell ist
 
             success = False
             try:
-                update_alert_system = AlertSystem(config.email, config.measurement, config)
-                success = await update_alert_system.send_test_email_async()
+                success = await alert_system.send_test_email_async()
             except Exception as e:
                 logger.error(f"Failed to initialize AlertSystem for test email: {e}")
                 with client:

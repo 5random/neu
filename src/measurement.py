@@ -18,7 +18,6 @@ import time
 from datetime import datetime, timedelta
 import math
 from collections import deque
-from itertools import islice
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError

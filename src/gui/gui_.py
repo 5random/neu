@@ -76,7 +76,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
         global_camera = init_camera(config_path)
         if global_camera is None:
             logger.error('Failed to initialize camera')
-            ui.notify('Camera initialization failed, starting GUI without camera', type= 'warning', position='bottom-right')
+            ui.notify('Camera initialization failed, starting GUI without camera', close_button=True, type='warning', position='bottom-right')
 
     if global_alert_system is None:
         try:
@@ -250,7 +250,10 @@ def signal_handler(signum, frame):
     else:
         logger.warning("Cleanup timeout, forcing exit...")
     
-    sys.exit(0)
+    try:
+        app.shutdown()  # NiceGUI sauber beenden
+    except:
+        sys.exit(0)
 
 # Signal-Handler registrieren
 signal.signal(signal.SIGINT, signal_handler)

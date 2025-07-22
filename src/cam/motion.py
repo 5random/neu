@@ -14,11 +14,9 @@ import numpy as np
 import time
 import logging
 from dataclasses import dataclass
-from typing import Optional, Tuple, TYPE_CHECKING
+from typing import Optional, Tuple
 
-if TYPE_CHECKING:
-    from ..config import MotionDetectionConfig, ROI, logger
-
+from ..config import MotionDetectionConfig, ROI
 
 @dataclass
 class MotionResult:
@@ -180,7 +178,7 @@ class MotionDetector:
             self.logger.warning("Invalid frame")
             return MotionResult(False, 0.0, timestamp, False)
         
-        if len(frame.shape) <2 or frame.shape[0] < 10 or frame.shape[1] < 10:
+        if len(frame.shape) < 2 or frame.shape[0] < 10 or frame.shape[1] < 10:
             self.logger.warning("received Frame too small for processing")
             return MotionResult(False, 0.0, timestamp, False)
         

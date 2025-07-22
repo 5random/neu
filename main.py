@@ -2,7 +2,6 @@ import sys
 import logging
 from pathlib import Path
 import argparse
-from typing import Dict, Any
 
 # Projekt-Root zum Python-Pfad hinzufügen
 project_root = Path(__file__).parent
@@ -44,7 +43,7 @@ def setup_exception_handlers(logger: logging.Logger) -> None:
                 }
             )
         
-        logger.error(f"Runtime error: {exc}", exc_info=True)
+        logger.error(f"Runtime error: {exc}")
         return JSONResponse(
             status_code=500,
             content={
@@ -122,4 +121,4 @@ def main() -> int:
     return 0
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())

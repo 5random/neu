@@ -7,12 +7,14 @@ import re
 import yaml
 import logging
 import logging.handlers
+import threading
 
 logger = logging.getLogger(__name__)
 logger.propagate = False  # Verhindert, dass Logs an die Root-Logger propagiert werden
 from enum import Enum
 
 _configured_loggers: set[str] = set()
+_configured_loggers_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Logging Enums & Classes
@@ -268,12 +270,13 @@ class LoggingConfig:
         """RotatingFileHandler-Logger einrichten"""
         logger = logging.getLogger(name)
 
-        if name in _configured_loggers:
-            return logger
-        # Prevent duplicate setup - check if already configured
-        if logger.handlers and any(isinstance(h, logging.handlers.RotatingFileHandler) for h in logger.handlers):
-            _configured_loggers.add(name)
-            return logger
+        with _configured_loggers_lock:
+            if name in _configured_loggers:
+                return logger
+            # Prevent duplicate setup - check if already configured
+            if logger.handlers and any(isinstance(h, logging.handlers.RotatingFileHandler) for h in logger.handlers):
+                _configured_loggers.add(name)
+                return logger
         
         logger.setLevel(getattr(logging, self.level.upper()))
 
@@ -310,7 +313,8 @@ class LoggingConfig:
             handler.setFormatter(formatter)
             logger.addHandler(handler)
         
-        _configured_loggers.add(name)  # Logger als konfiguriert markieren
+        with _configured_loggers_lock:
+            _configured_loggers.add(name)  # Logger als konfiguriert markieren
 
         logger.info(f"🚀 Logging initialized: {self.file} (max: {self.max_file_size_mb}MB, backups: {self.backup_count})")
         return logger

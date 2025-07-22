@@ -114,6 +114,8 @@ class AlertSystem:
         self._connection_timeout: int = 30  # Sekunden
 
         self._executor = ThreadPoolExecutor(max_workers=2)
+
+        self.alert_system_cleanup = False  # Flag für sauberen Shutdown
         
         self.logger.info("AlertSystem initialized")
     
@@ -134,6 +136,10 @@ class AlertSystem:
         Returns:
             True wenn E-Mail erfolgreich gesendet
         """
+        if self._alert_system_cleanup:
+            self.logger.error("AlertSystem has been cleaned up, cannot send alert")
+            raise RuntimeError("AlertSystem has been cleaned up")
+    
         current_time = datetime.now()
 
         with self._state_lock:
@@ -574,6 +580,7 @@ class AlertSystem:
                 self.last_alert_time = None
                 self.alerts_sent_count = 0
             
+            self._alert_system_cleanup = True  # Set cleanup flag
             self.logger.info("AlertSystem cleanup completed")
             
         except Exception as exc:
