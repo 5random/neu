@@ -115,7 +115,7 @@ class AlertSystem:
 
         self._executor = ThreadPoolExecutor(max_workers=2)
 
-        self.alert_system_cleanup = False  # Flag für sauberen Shutdown
+        self._alert_system_cleanup = False  # Flag für sauberen Shutdown
         
         self.logger.info("AlertSystem initialized")
     
