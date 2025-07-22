@@ -20,9 +20,8 @@ import math
 from collections import deque
 from itertools import islice
 from threading import Lock
-import asyncio
-import threading
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Optional, Dict, Any, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -50,7 +49,7 @@ class MeasurementController:
         controller.start_session()
         # Motion-Events über register_motion_callback()
         if controller.should_trigger_alert():
-            success = await controller.trigger_alert()
+            success = controller.trigger_alert_sync()    
     """
     
     def __init__(
@@ -333,15 +332,14 @@ class MeasurementController:
             if self.camera:
                 try:
                     # Timeout mit concurrent.futures statt signal (thread-sicher)
-                    from concurrent.futures import TimeoutError as FutureTimeoutError
 
                     future = self._camera_executor.submit(self.camera.take_snapshot)
                     try:
                         camera_frame = future.result(timeout=2.0)  # 2 Sekunden Timeout
                     except FutureTimeoutError:
                         self.logger.error("Camera snapshot timed out after 2 seconds")
-                        
-                except (TimeoutError, Exception) as exc:
+
+                except Exception as exc:
                     self.logger.error(f"Snapshot failed or timed out: {exc}")
                     # Weitermachen ohne Bild - Alert trotzdem senden
 
@@ -419,18 +417,8 @@ class MeasurementController:
             'alert_countdown': self._get_alert_countdown(),
             'alerts_sent_this_session': self.alerts_sent_this_session,
             'max_alerts_per_session': self.max_alerts_per_session,
-            'motion_history_size': len(self.motion_history),
-            'recent_motion_detected': (
-                any(
-                    islice(
-                        self.motion_history,
-                        len(self.motion_history) - 3,
-                        None,
-                    )
-                )
-                if len(self.motion_history) >= 3
-                else None
-            ),
+            'motion_history_size': motion_history_size,
+            'recent_motion_detected': recent_motion_detected,
             'session_timeout_minutes': self.config.session_timeout_minutes,
         }
     

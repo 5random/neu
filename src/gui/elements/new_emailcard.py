@@ -29,10 +29,10 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
         },
     }
 
-    recipient_list: Optional[Any] = None
-    table: Optional[Any] = None
-    email_inp: Optional[Any] = None
-    smtp_labels: Dict[str, Any] = {}
+    recipient_list: Optional[ui.list] = None
+    table: Optional[ui.table] = None
+    email_inp: Optional[ui.input] = None
+    smtp_labels: Dict[str, ui.label] = {}
 
     if alert_system is None:
         try:

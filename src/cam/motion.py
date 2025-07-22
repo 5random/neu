@@ -105,7 +105,6 @@ class MotionDetector:
 
         # Memory-Pool für wiederverwendbare Arrays
         self._frame_pool = {}
-        self._mask_pool = {}
 
         # Tracking für Alert-System
         self.last_motion_time = None
@@ -150,11 +149,19 @@ class MotionDetector:
         return self.last_motion_time
     
     def _get_working_array(self, shape: Tuple[int, int], dtype=np.uint8) -> np.ndarray:
-        """Wiederverwendbare Arrays aus Pool."""
+        """
+        Wiederverwendbare Arrays aus Pool.
+        
+        Returns a zeroed array from the pool to prevent stale data usage.
+        """
         key = (shape, dtype)
         if key not in self._frame_pool:
             self._frame_pool[key] = np.empty(shape, dtype=dtype)
-        return self._frame_pool[key]
+        
+        # Zero out the array to prevent stale data usage
+        array = self._frame_pool[key]
+        array.fill(0)
+        return array
     
     def detect_motion(self, frame: np.ndarray) -> MotionResult:
         """

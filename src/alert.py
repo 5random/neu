@@ -552,10 +552,12 @@ class AlertSystem:
         
         Schließt SMTP-Verbindungen und gibt Ressourcen frei.
         """
-        if hasattr(self, '_executor'):
-            self._executor.shutdown(wait=True)
         try:
             self.logger.info("Starting AlertSystem cleanup...")
+            
+            # ThreadPoolExecutor shutdown
+            if hasattr(self, '_executor'):
+                self._executor.shutdown(wait=True)
             
             # SMTP-Verbindung schließen falls vorhanden
             with self._smtp_lock:

@@ -932,6 +932,14 @@ class Camera:
 
         self.stop_frame_capture()
 
+        # Cancel the auto-save timer if it exists and is active
+        if hasattr(self, '_config_save_timer'):
+            try:
+                self._config_save_timer.cancel()
+                self.logger.debug("Auto-save timer cancelled")
+            except Exception as e:
+                self.logger.error(f"Error cancelling auto-save timer: {e}")
+
         # Wait for thread to finish
         if hasattr(self, 'frame_thread') and self.frame_thread and self.frame_thread.is_alive():
             self.frame_thread.join(timeout=5)
