@@ -11,6 +11,7 @@ import threading
 
 logger = logging.getLogger(__name__)
 logger.propagate = False  # Verhindert, dass Logs an die Root-Logger propagiert werden
+
 from enum import Enum
 
 _configured_loggers: set[str] = set()
@@ -268,6 +269,7 @@ class LoggingConfig:
     
     def setup_logger(self, name: str = "cvd_tracker") -> logging.Logger:
         """RotatingFileHandler-Logger einrichten"""
+        global _initialized_logger
         logger = logging.getLogger(name)
 
         with _configured_loggers_lock:
@@ -277,7 +279,7 @@ class LoggingConfig:
             if logger.handlers and any(isinstance(h, logging.handlers.RotatingFileHandler) for h in logger.handlers):
                 _configured_loggers.add(name)
                 return logger
-        
+              
         logger.setLevel(getattr(logging, self.level.upper()))
 
         for handler in logger.handlers[:]:
@@ -316,7 +318,10 @@ class LoggingConfig:
         with _configured_loggers_lock:
             _configured_loggers.add(name)  # Logger als konfiguriert markieren
 
-        logger.info(f"🚀 Logging initialized: {self.file} (max: {self.max_file_size_mb}MB, backups: {self.backup_count})")
+        logger.info(
+            f"🚀 Logging initialized: {self.file} (max: {self.max_file_size_mb}MB, backups: {self.backup_count})"
+        )
+        _initialized_logger = True
         return logger
 
 # ---------------------------------------------------------------------------

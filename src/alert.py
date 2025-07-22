@@ -108,7 +108,7 @@ class AlertSystem:
 
         self._state_lock = threading.RLock()
         self._smtp_lock = threading.Lock()
-        
+
         # SMTP-Verbindung Cache
         self._smtp_connection: Optional[smtplib.SMTP] = None
         self._connection_timeout: int = 30  # Sekunden
@@ -116,8 +116,39 @@ class AlertSystem:
         self._executor = ThreadPoolExecutor(max_workers=2)
 
         self._alert_system_cleanup = False  # Flag für sauberen Shutdown
-        
+
         self.logger.info("AlertSystem initialized")
+
+    # ------------------------------------------------------------------
+    # SMTP connection helpers
+    # ------------------------------------------------------------------
+    def _ensure_smtp_connection(self) -> smtplib.SMTP:
+        """Create SMTP connection if not already open."""
+        if self._smtp_connection is None:
+            self._smtp_connection = smtplib.SMTP(
+                self.email_config.smtp_server,
+                self.email_config.smtp_port,
+                timeout=self._connection_timeout,
+            )
+        return self._smtp_connection
+
+    def _close_smtp_connection(self) -> None:
+        """Close current SMTP connection if open."""
+        if self._smtp_connection is not None:
+            try:
+                self._smtp_connection.quit()
+            except Exception as exc:
+                self.logger.warning(f"Error closing SMTP connection: {exc}")
+            finally:
+                self._smtp_connection = None
+
+    def close(self) -> None:
+        """Public method to close resources."""
+        with self._smtp_lock:
+            self._close_smtp_connection()
+
+    def __del__(self) -> None:
+        self.close()
     
     def send_motion_alert(
         self,
@@ -193,9 +224,10 @@ class AlertSystem:
                 img_buffer = None
                 filename: str | None = None
                 ok = False
-
+                
                 if camera_frame is not None:
                     ok, img_buffer, filename = self._encode_frame(camera_frame, ts=timestamp)
+
                     if ok and img_buffer is not None and filename is not None and self.measurement_config.save_alert_images:
                         self._save_alert_image(img_buffer, filename)
 
@@ -245,6 +277,7 @@ class AlertSystem:
 
     def _send_emails_batch(self, message: MIMEMultipart, recipients: List[str], max_retries: int = 3) -> int:
         """Send a single message to multiple recipients"""
+
         success_count = 0
 
         for attempt in range(max_retries):
@@ -261,19 +294,27 @@ class AlertSystem:
                             message.as_string(),
                         )
                         success_count = len(recipients) - len(failed)
+
                 if success_count > 0:
                     break
 
             except (smtplib.SMTPException, ConnectionError, OSError) as exc:
-                if attempt == max_retries - 1:
-                    self.logger.error(f"SMTP-connection failed after {max_retries} attempts: {exc}")
+                self.logger.warning(f"SMTP attempt {attempt + 1} failed: {exc}")
+                with self._smtp_lock:
+                    self._close_smtp_connection()
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
                 else:
-                    self.logger.warning(f"SMTP-connection attempt {attempt + 1} failed, retry in {2 ** attempt}s: {exc}")
-                    time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                    self.logger.error(
+                        f"SMTP-connection failed after {max_retries} attempts: {exc}"
+                    )
             except Exception as exc:
                 self.logger.error(f"Critical SMTP-error (no retry): {exc}")
+                with self._smtp_lock:
+                    self._close_smtp_connection()
                 break
-        
+
         return success_count
 
     def _should_send_alert_unsafe(self) -> bool:
@@ -432,7 +473,11 @@ class AlertSystem:
             save_path: Path to the image save location
         """
         try:
-            image_files = list(save_path.glob("alert_*.jpg")) + list(save_path.glob("alert_*.png"))
+            image_files = (
+                list(save_path.glob("alert_*.jpg")) +
+                list(save_path.glob("alert_*.jpeg")) +
+                list(save_path.glob("alert_*.png"))
+            )
             if len(image_files) > max_files:
                 # Sort by modification time, delete oldest
                 image_files.sort(key=lambda x: x.stat().st_mtime)
