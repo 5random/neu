@@ -84,46 +84,68 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
 
     async def send_async_test_email(client: Client) -> None:
         """Asynchrone Funktion zum Senden einer Test-E-Mail."""
+        # Alle Variablen außerhalb der try-Blöcke deklarieren
+        success = False
+        error_msg = ""
+        
+        # Logging am Anfang
         logger.info("Sending test email...")
         logger.info(f"Alert system: {alert_system}")
         logger.info(f'Recipients: {state["recipients"]}')
         logger.info(f'Total recipients: {len(state["recipients"])}')
+        
         if alert_system is None:
+            logger.error("Alert system not initialized")
             with client:
-                logger.error("Alert system not initialized")
                 ui.notify("Alert system not initialized", color="negative", position='bottom-right')
             return
         
+        # UI-Updates
+        with client:
+            ui.notify(f"Sending test email to {', '.join(state['recipients'])}", color="info", position='bottom-right')
+
+        # Konfiguration speichern - OHNE try-except um UI-Konflikt zu vermeiden
+        config.email.recipients = list(state["recipients"])
+        config.email.smtp_server = state["smtp"]["server"]
+        config.email.smtp_port = int(state["smtp"]["port"])
+        config.email.sender_email = state["smtp"]["sender"]
+        
         try:
-            # UI-Updates über client context
-            with client:
-                ui.notify(f"Sending test email to {', '.join(state['recipients'])}", color="info", position='bottom-right')
-
-            persist_state()  # Sicherstellen, dass die Konfiguration aktuell ist
-
-            success = False
-            try:
-                success = await alert_system.send_test_email_async()
-            except Exception as e:
-                logger.error(f"Failed to initialize AlertSystem for test email: {e}")
-                with client:
-                    ui.notify(f"Failed to initialize AlertSystem for test email: {e}", color="negative", position='bottom-right')
-                return
-
-            for i, recipient in enumerate(config.email.recipients):
-                logger.info(f"Recipient {i+1}/{len(config.email.recipients)}: {recipient}")
-
-            with client:
-                if success:
-                    logger.info(f"Test email sent successfully to all {len(state['recipients'])} recipients")
-                    ui.notify(f"Test email sent successfully to all {len(state['recipients'])} recipients", color="positive", position='bottom-right')
-                else:
-                    logger.error("Error sending test email")
-                    ui.notify("Error sending test email", color="negative", position='bottom-right')
+            save_config(config)
+            logger.info(f"Configuration saved successfully: {config.email}")
         except Exception as exc:
+            error_msg = f"Failed to save config: {exc}"
+            logger.error(error_msg)
             with client:
-                logger.error(f"Failed to send test email: {exc}")
-                ui.notify(f"Failed to send test email: {exc}", color="negative", position='bottom-right')
+                ui.notify(error_msg, color="negative", position='bottom-right')
+            return
+
+        # E-Mail senden
+        try:
+            success = await alert_system.send_test_email_async()
+        except Exception as e:
+            error_msg = f"Failed to send test email: {e}"
+            logger.error(error_msg)
+            with client:
+                ui.notify(error_msg, color="negative", position='bottom-right')
+            return
+
+        # Logging der Empfänger
+        for i, recipient in enumerate(config.email.recipients):
+            logger.info(f"Recipient {i+1}/{len(config.email.recipients)}: {recipient}")
+
+        # Finale UI-Updates
+        with client:
+            if success:
+                ui.notify(f"Test email sent successfully to all {len(state['recipients'])} recipients", color="positive", position='bottom-right')
+            else:
+                ui.notify("Error sending test email", color="negative", position='bottom-right')
+        
+        # Finales Logging
+        if success:
+            logger.info(f"Test email sent successfully to all {len(state['recipients'])} recipients")
+        else:
+            logger.error("Error sending test email")
 
     def send_test_email() -> None:
         """Sende Test-E-Mail an alle Empfänger."""
