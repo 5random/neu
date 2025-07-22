@@ -491,7 +491,7 @@ def _create_default_config() -> AppConfig:
             smtp_server="smtp.example.com",
             smtp_port=25,
             sender_email="sender@example.com",
-            templates={"alert": {"subject": "CVD-Alert: no motion detected - {timestamp}", "body": 
+            templates={"alert": {"subject": "CVD-TRACKER-Alert: no motion detected - {timestamp}", "body": 
                                  "Movement has not been detected since {timestamp}!"
                                  "\nPlease check the issue via the web application at: {website_url}."
                                  "\n\nDetails:"
@@ -499,7 +499,7 @@ def _create_default_config() -> AppConfig:
                                  "\nLast motion at: {last_motion_time}"
                                  "\nCamera: Index {camera_index}"
                                  "\nSensitivity: {sensitivity}"
-                                 "\nROI active: {roi_enabled}"
+                                 "\nROI enabled: {roi_enabled}"
                                  "\n\nAttached is the current webcam image."
                                  }}
                                  

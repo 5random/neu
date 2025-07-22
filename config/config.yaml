@@ -6,28 +6,28 @@ email:
   smtp_server: mail.tuhh.de
   templates:
     alert:
-      body: 'Bewegung wird seit {timestamp} nicht erkannt!
+      body: 'Movement has not been detected since {timestamp}!
 
-        Bitte überprüfen Sie den Fehler über die Webanwendung unter: {website_url}.
+        Please check the issue via the web application at: {website_url}.
 
 
         Details:
 
         Session-ID: {session_id}
 
-        Letzte Bewegung um {last_motion_time}
+        Last motion at: {last_motion_time}
 
-        Kamera: Index {camera_index}
+        Camera: Index {camera_index}
 
-        Sensitivität: {sensitivity}
+        Sensitivity: {sensitivity}
 
-        ROI aktiv: {roi_enabled}
+        ROI enabled: {roi_enabled}
 
 
-        Im Anhang finden Sie das aktuelle Webcam-Bild.
+        Attached is the current webcam image.
 
         '
-      subject: 'CVD-Tracker: Bewegungsalarm - {timestamp}'
+      subject: 'CVD-TRACKER-Alert: no motion detected - {timestamp}'
   website_url: http://134.28.91.48:8080
 gui:
   auto_open_browser: false
