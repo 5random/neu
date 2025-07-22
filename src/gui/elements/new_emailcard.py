@@ -36,6 +36,11 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
 
     if alert_system is None:
         try:
+            config.email.recipients = list(state["recipients"])
+            config.email.smtp_server = state["smtp"]["server"]
+            config.email.smtp_port = int(state["smtp"]["port"])
+            config.email.sender_email = state["smtp"]["sender"]
+
             alert_system = AlertSystem(config.email, config.measurement, config)
         except Exception as exc:
             ui.notify(f"Failed to initialize alert system: {exc}", color="negative")
@@ -93,11 +98,23 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
                 ui.notify(f"Sending test email to {', '.join(state['recipients'])}", color="info", position='bottom-right')
 
             config.email.recipients = list(state["recipients"])
+            config.email.smtp_server = state["smtp"]["server"]
+            config.email.smtp_port = int(state["smtp"]["port"])
+            config.email.sender_email = state["smtp"]["sender"]
+
+            success = False
+            try:
+                update_alert_system = AlertSystem(config.email, config.measurement, config)
+                success = await update_alert_system.send_test_email_async()
+            except Exception as e:
+                logger.error(f"Failed to initialize AlertSystem for test email: {e}")
+                with client:
+                    ui.notify(f"Failed to initialize AlertSystem for test email: {e}", color="negative", position='bottom-right')
+                return
+
             for i, recipient in enumerate(config.email.recipients):
                 logger.info(f"Recipient {i+1}/{len(config.email.recipients)}: {recipient}")
 
-            success = await alert_system.send_test_email_async()
-            
             with client:
                 if success:
                     logger.info(f"Test email sent successfully to all {len(state['recipients'])} recipients")

@@ -9,12 +9,17 @@ from src.cam.camera import Camera
 def create_measurement_card(
     measurement_controller: MeasurementController | None = None,
     camera: Camera | None = None,
+    alert_system: AlertSystem | None = None,
     *,
     config: AppConfig,
 ) -> None:
     if measurement_controller is None:
-        alert_system = AlertSystem(config.email, config.measurement, config)
-        measurement_controller = MeasurementController(config.measurement, alert_system)
+        if alert_system is None:
+            alert_system = AlertSystem(config.email, config.measurement, config)
+        measurement_controller = MeasurementController(config.measurement, alert_system, camera)
+    else:
+        if alert_system is not None and measurement_controller.alert_system != alert_system:
+            measurement_controller.alert_system = alert_system
 
     if camera and hasattr(camera, 'enable_motion_detection'):
         camera.enable_motion_detection(lambda frame, motion_result: measurement_controller.on_motion_detected(motion_result))

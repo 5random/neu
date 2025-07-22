@@ -144,7 +144,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 with ui.column().classes("h-full"):
                     create_motion_status_element(global_camera, global_measurement_controller)
                 with ui.column().classes("h-full"):
-                    create_measurement_card(global_measurement_controller, config=config)
+                    create_measurement_card(global_measurement_controller, alert_system=global_alert_system, config=config)
 
         with ui.column().classes("gap-4"):
             create_uvc_content(camera=global_camera)
