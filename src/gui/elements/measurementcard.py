@@ -200,7 +200,7 @@ def create_measurement_card(
         with ui.row().classes('w-full items-center q-gutter-sm').style("flex-wrap:wrap; gap:8px; align-self:flex-start; flex-direction:row; justify-content:start;"):
             motion_label = ui.label('No motion detected').classes('text-caption text-grey q-mb-xs').style('width: 140px;')
             alert_label = ui.label('').classes('text-caption q-mb-xs').style('width: 160px;')
-            last_label = ui.label('Last measurement: –').classes('text-caption text-grey')
+            last_label = ui.label('Last measurement: -').classes('text-caption text-grey')
 
 
     # ----------------------- Event-Logik ------------------------

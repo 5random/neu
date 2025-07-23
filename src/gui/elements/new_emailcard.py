@@ -14,9 +14,9 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z0-9]{2,}$")
 def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] = None) -> None:
     """
     Karte mit drei Tabs:
-    1) Übersicht   – read-only Konfig & Test-Mail
-    2) Recipients  – Empfänger verwalten
-    3) SMTP        – SMTP-Settings inkl. Live-Validierung
+    1) Übersicht   - read-only Konfig & Test-Mail
+    2) Recipients  - Empfänger verwalten
+    3) SMTP        - SMTP-Settings inkl. Live-Validierung
     """
 
     # ------------------------------------------------------------------ #
@@ -201,6 +201,8 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
         if persist_state():
             refresh_table()
             refresh_overview()
+            if alert_system:
+                alert_system.refresh_config()
             logger.info(f"Added new recipient: {addr}; total recipients: {len(state['recipients'])}")
 
     def delete_selected() -> None:
@@ -217,6 +219,8 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
             refresh_table()
             table.selected = []
             refresh_overview()
+            if alert_system:
+                alert_system.refresh_config()
             ui.notify(f"{len(selected_addresses)} address(es) deleted", color="positive", position='bottom-right')
             logger.info(f"Deleted {len(selected_addresses)} recipient(s): {', '.join(selected_addresses)}; new total recipients: {len(state['recipients'])}")
 
@@ -337,6 +341,8 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
                         if persist_state():
                             update_status_icon()
                             refresh_overview()
+                            if alert_system:
+                                alert_system.refresh_config()
 
                 for inp in (sender_inp, server_inp, port_inp):
                     inp.on("update:model-value", lambda _: update_status_icon())

@@ -12,7 +12,6 @@ Fokus auf einfache, robuste Implementation.
 """
 
 from __future__ import annotations
-
 import smtplib
 import logging
 import time
@@ -60,20 +59,15 @@ class AlertSystem:
     ):
         """
         Initialisiert das AlertSystem.
-        
-        Args:
-            email_config: E-Mail-Konfiguration mit SMTP-Einstellungen
-            measurement_config: Optional für Bild-Speicherung
-            logger: Optional Logger für Alert-Tracking
         """
         
         self.logger = logger or logging.getLogger(__name__)
 
         if app_cfg is None:
             raise ValueError("AppConfig is needed")
-        # app_cfg.webcam ist eine WebcamConfig-Instanz
+        
+        self.app_cfg = app_cfg
         self.webcam_cfg = app_cfg.webcam
-        # app_cfg.motion_detection ist eine MotionDetectionConfig-Instanz
         self.motion_cfg = app_cfg.motion_detection
 
         if not email_config:
@@ -96,8 +90,6 @@ class AlertSystem:
         self.email_config = email_config
         self.measurement_config = measurement_config
 
-        
-        
         # Alert-State-Management
         self.last_alert_time: Optional[datetime] = None
         self.alerts_sent_count: int = 0
@@ -108,14 +100,10 @@ class AlertSystem:
 
         self._state_lock = threading.RLock()
         self._smtp_lock = threading.Lock()
-
-        # SMTP-Verbindung Cache
         self._smtp_connection: Optional[smtplib.SMTP] = None
-        self._connection_timeout: int = 30  # Sekunden
-
+        self._connection_timeout: int = 30
         self._executor = ThreadPoolExecutor(max_workers=2)
-
-        self._alert_system_cleanup = False  # Flag für sauberen Shutdown
+        self._alert_system_cleanup = False
 
         self.logger.info("AlertSystem initialized")
 
@@ -124,10 +112,11 @@ class AlertSystem:
     # ------------------------------------------------------------------
     def _ensure_smtp_connection(self) -> smtplib.SMTP:
         """Create SMTP connection if not already open."""
+        current_email_config = self._get_current_email_config()
         if self._smtp_connection is None:
             self._smtp_connection = smtplib.SMTP(
-                self.email_config.smtp_server,
-                self.email_config.smtp_port,
+                current_email_config.smtp_server,
+                current_email_config.smtp_port,
                 timeout=self._connection_timeout,
             )
         return self._smtp_connection
@@ -149,6 +138,36 @@ class AlertSystem:
 
     def __del__(self) -> None:
         self.close()
+    
+    def refresh_config(self) -> None:
+        """
+        Aktualisiert die Konfigurationsreferenzen.
+        Sollte nach Konfigurationsänderungen aufgerufen werden.
+        """
+        with self._state_lock:
+            # Referenzen aktualisieren
+            self.email_config = self.app_cfg.email
+            self.measurement_config = self.app_cfg.measurement
+            self.webcam_cfg = self.app_cfg.webcam
+            self.motion_cfg = self.app_cfg.motion_detection
+            
+            # Cooldown neu berechnen
+            self.cooldown_minutes = max(
+                5,
+                math.ceil(self.measurement_config.alert_delay_seconds / 60),
+            )
+            
+            self.logger.info("Alert-Configuration refreshed")
+    
+    def _get_current_email_config(self) -> 'EmailConfig':
+        """
+        Gibt die aktuelle E-Mail-Konfiguration zurück.
+        
+        Returns:
+            Aktuelle EmailConfig-Instanz
+        """
+        with self._state_lock:
+            return self.app_cfg.email
     
     def send_motion_alert(
         self,
@@ -172,6 +191,7 @@ class AlertSystem:
             raise RuntimeError("AlertSystem has been cleaned up")
     
         current_time = datetime.now()
+        current_email_config = self._get_current_email_config()
 
         with self._state_lock:
             if not self._should_send_alert_unsafe():
@@ -185,14 +205,14 @@ class AlertSystem:
 
             # E-Mail-Template rendern
             try:
-                template = self.email_config.alert_template()
+                template = current_email_config.alert_template()
                 timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
 
                 template_params = {
                     'timestamp': timestamp,
                     'session_id': session_id or "unknown",
                     'last_motion_time': last_motion_time.strftime("%H:%M:%S") if last_motion_time else "unknown",
-                    'website_url': self.email_config.website_url or "unknown",
+                    'website_url': current_email_config.website_url or "unknown",
                     'camera_index': self.webcam_cfg.camera_index if self.webcam_cfg else "unknown",
                     'sensitivity': self.motion_cfg.sensitivity if self.motion_cfg else "unknown",
                     'roi_enabled': self.motion_cfg.get_roi().enabled if self.motion_cfg else "unknown"
@@ -208,7 +228,7 @@ class AlertSystem:
                 subject = f"CVD-Alert: No motion detected - {timestamp}"
                 body = (
                     f"Motion has not been detected since {timestamp}!\n"
-                    f"Please check the website at: {self.email_config.website_url}\n\n"
+                    f"Please check the website at: {current_email_config.website_url}\n\n"
                     f"Details:\n"
                     f"Session-ID: {session_id or 'unknown'}\n"
                     f"Camera: Index currently not available\n"
@@ -231,7 +251,7 @@ class AlertSystem:
                     if ok and img_buffer is not None and filename is not None and self.measurement_config.save_alert_images:
                         self._save_alert_image(img_buffer, filename)
 
-                msg = self._create_email_message(subject, body, self.email_config.recipients)
+                msg = self._create_email_message(subject, body, current_email_config.recipients)
 
                 # Bild-Anhang hinzufügen wenn verfügbar
                 if img_buffer is not None and filename is not None:
@@ -240,14 +260,14 @@ class AlertSystem:
                     msg.attach(img_attach)
 
                 # E-Mail versenden
-                success_count = self._send_emails_batch(msg, self.email_config.recipients)
+                success_count = self._send_emails_batch(msg, current_email_config.recipients)
 
                 # Erfolg wenn mindestens eine E-Mail gesendet wurde
                 if success_count > 0:
                     with self._state_lock:
                         self.alerts_sent_count = temp_count
                     self.logger.info(
-                        f"Alert #{temp_count} sent ({success_count}/{len(self.email_config.recipients)} successful)"
+                        f"Alert #{temp_count} sent ({success_count}/{len(current_email_config.recipients)} successful)"
                     )
                     return True
                 else:
@@ -279,30 +299,47 @@ class AlertSystem:
         """Send a single message to multiple recipients"""
 
         success_count = 0
+        current_email_config = self._get_current_email_config()
+
+        self.logger.info(f"Preparing to send email with SMTP settings:")
+        self.logger.info(f"  SMTP Server: {current_email_config.smtp_server}")
+        self.logger.info(f"  SMTP Port: {current_email_config.smtp_port}")
+        self.logger.info(f"  Sender Email: {current_email_config.sender_email}")
+        self.logger.info(f"  Recipients: {recipients} ({len(recipients)} total)")
+        self.logger.info(f"  Max Retries: {max_retries}")
+        self.logger.info(f"  Connection Timeout: {self._connection_timeout}s")
 
         for attempt in range(max_retries):
             try:
                 with self._smtp_lock:
                     with smtplib.SMTP(
-                        self.email_config.smtp_server,
-                        self.email_config.smtp_port,
+                        current_email_config.smtp_server,
+                        current_email_config.smtp_port,
                         timeout=self._connection_timeout,
                     ) as smtp:
                         failed = smtp.sendmail(
-                            self.email_config.sender_email,
+                            current_email_config.sender_email,
                             recipients,
                             message.as_string(),
                         )
                         success_count = len(recipients) - len(failed)
+
+                        if failed:
+                            self.logger.warning(f"Failed to send email to: {failed}")
 
                 if success_count > 0:
                     break
 
             except (smtplib.SMTPException, ConnectionError, OSError) as exc:
                 self.logger.warning(f"SMTP attempt {attempt + 1} failed: {exc}")
+                self.logger.debug(f"  Server: {current_email_config.smtp_server}:{current_email_config.smtp_port}")
+                self.logger.debug(f"  Sender: {current_email_config.sender_email}")
+
                 with self._smtp_lock:
                     self._close_smtp_connection()
                 if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    self.logger.info(f"Retrying in {wait_time} seconds...")
                     time.sleep(2 ** attempt)
                     continue
                 else:
@@ -311,9 +348,17 @@ class AlertSystem:
                     )
             except Exception as exc:
                 self.logger.error(f"Critical SMTP-error (no retry): {exc}")
+                self.logger.error(f"  Server: {current_email_config.smtp_server}:{current_email_config.smtp_port}")
+                self.logger.error(f"  Sender: {current_email_config.sender_email}")
+
                 with self._smtp_lock:
                     self._close_smtp_connection()
                 break
+        
+        if success_count > 0:
+            self.logger.info(f"✅ Email batch completed successfully: {success_count}/{len(recipients)} emails sent")
+        else:
+            self.logger.error(f"❌ Email batch failed: 0/{len(recipients)} emails sent")
 
         return success_count
 
@@ -352,8 +397,10 @@ class AlertSystem:
         Returns:
             MIME-Multipart-Nachricht
         """
+        current_email_config = self._get_current_email_config()
+
         msg = MIMEMultipart()
-        msg['From'] = self.email_config.sender_email
+        msg['From'] = current_email_config.sender_email
         msg['To'] = ", ".join(recipients)
         msg['Subject'] = subject
         msg['Date'] = datetime.now().strftime("%a, %d %b %Y %H:%M:%S %z")
@@ -377,9 +424,9 @@ class AlertSystem:
 
         Returns:
             (ok, buffer, filename)
-            ok        – True wenn Encoding erfolgreich
-            buffer    – kodiertes Bild als np.ndarray oder None
-            filename  – empfohlener Dateiname (str) oder None
+            ok        - True wenn Encoding erfolgreich
+            buffer    - kodiertes Bild als np.ndarray oder None
+            filename  - empfohlener Dateiname (str) oder None
         """
         if frame is None or frame.size == 0:
             return False, None, None
@@ -423,7 +470,7 @@ class AlertSystem:
         # --- Bild kodieren ---------------------------------------------------
         ok, buf, filename = self._encode_frame(frame, ts=ts)
         if not ok or buf is None or filename is None:
-            self.logger.warning("Image encoding failed – no attachment added")
+            self.logger.warning("Image encoding failed - no attachment added")
             return
         # --------------------------------------------------------------------
 
@@ -496,14 +543,15 @@ class AlertSystem:
         Returns:
             Dict with alert information
         """
+        current_email_config = self._get_current_email_config()
         with self._state_lock:
             return {
                 'last_alert_time': self.last_alert_time,
                 'alerts_sent_count': self.alerts_sent_count,
                 'cooldown_remaining': self._get_cooldown_remaining_unsafe(),
                 'can_send_alert': self._should_send_alert_unsafe(),
-                'configured_recipients': len(self.email_config.recipients),
-                'smtp_server': self.email_config.smtp_server
+                'configured_recipients': len(current_email_config.recipients),
+                'smtp_server': current_email_config.smtp_server
             }
 
     def _get_cooldown_remaining_unsafe(self) -> Optional[float]:
@@ -536,14 +584,21 @@ class AlertSystem:
         Returns:
             True wenn Verbindung erfolgreich
         """
+        current_email_config = self._get_current_email_config()
+
+        self.logger.info(f"Server: {current_email_config.smtp_server}")
+        self.logger.info(f"Port: {current_email_config.smtp_port}")
+        self.logger.info(f"Timeout: {self._connection_timeout}s")
+
         with self._smtp_lock:
             try:
-                with smtplib.SMTP(self.email_config.smtp_server, self.email_config.smtp_port, timeout=self._connection_timeout) as smtp:
+                with smtplib.SMTP(current_email_config.smtp_server, current_email_config.smtp_port, timeout=self._connection_timeout) as smtp:
                     smtp.noop()  # Simple test command
                     self.logger.info("SMTP connection test successful")
                     return True
             except Exception as exc:
                 self.logger.error(f"SMTP connection test failed: {exc}")
+                self.logger.error(f"   Server: {current_email_config.smtp_server}:{current_email_config.smtp_port}")
                 return False
     
     def send_test_email(self) -> bool:
@@ -554,12 +609,20 @@ class AlertSystem:
             True wenn mindestens eine E-Mail erfolgreich gesendet
         """
         try:
+            current_email_config = self._get_current_email_config()
+
+            self.logger.info(f"SMTP Server: {current_email_config.smtp_server}")
+            self.logger.info(f"SMTP Port: {current_email_config.smtp_port}")
+            self.logger.info(f"Sender: {current_email_config.sender_email}")
+            self.logger.info(f"Recipients: {current_email_config.recipients}")
+            self.logger.info(f"Website URL: {current_email_config.website_url}")
+
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             subject = f"Test email - {timestamp}"
             # Beispielinhalt der Test-E-Mail erzeugen
             test_message =(
                     f"Motion has not been detected since {timestamp}!\n"
-                    f"Please check the website at: {self.email_config.website_url}\n\n"
+                    f"Please check the website at: {current_email_config.website_url}\n\n"
                     f"Details:\n"
                     f"Session-ID: Test\n"
                     f"Camera: Test\n"
@@ -582,11 +645,11 @@ class AlertSystem:
                 self.logger.warning(f"Error retrieving test image: {exc}")
                 frame = None
 
-            msg = self._create_email_message(subject, test_message, self.email_config.recipients)
+            msg = self._create_email_message(subject, test_message, current_email_config.recipients)
             if frame is not None:
                 self._attach_camera_image(msg, frame, timestamp)
 
-            success_count = self._send_emails_batch(msg, self.email_config.recipients)
+            success_count = self._send_emails_batch(msg, current_email_config.recipients)
             return success_count > 0
             
         except Exception as exc:
@@ -685,12 +748,13 @@ class AlertSystem:
     
     def get_metrics(self) -> Dict[str, Any]:
         """Exports metrics for monitoring"""
+        current_email_config = self._get_current_email_config()
         with self._state_lock:
             return {
                 'alerts_sent_total': self.alerts_sent_count,
                 'last_alert_timestamp': self.last_alert_time.timestamp() if self.last_alert_time else None,
                 'cooldown_remaining_seconds': self._get_cooldown_remaining_unsafe(),
-                'recipients_configured': len(self.email_config.recipients),
+                'recipients_configured': len(current_email_config.recipients),
                 'cooldown_minutes_configured': self.cooldown_minutes
             }
 

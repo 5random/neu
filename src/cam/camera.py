@@ -86,7 +86,7 @@ class Camera:
         # -- Backend je nach Plattform explizit wählen --
         system = platform.system()
         if system == "Windows":
-            self.backend = cv2.CAP_DSHOW  # DirectShow – garantiert alle Regler
+            self.backend = cv2.CAP_DSHOW  # DirectShow - garantiert alle Regler
         elif system == "Linux":
             self.backend = cv2.CAP_V4L2   # Video4Linux2
         else:
@@ -288,7 +288,7 @@ class Camera:
             return False
         
         try:
-            setattr(self.uvc_config, name, value)  # nur RAM – Persistenz separat
+            setattr(self.uvc_config, name, value)  # nur RAM - Persistenz separat
             self._config_dirty = True
             self._invalidate_uvc_cache()
 
