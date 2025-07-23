@@ -1,7 +1,8 @@
 email:
   recipients:
   - willem.dittloff@tuhh.de
-  sender_email: willem.dittloff@tuhh.de
+  - jan.dittloff@tuhh.de
+  sender_email: il.dittloff@tuhh.de
   smtp_port: 25
   smtp_server: mail.tuhh.de
   templates:

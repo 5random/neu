@@ -17,11 +17,13 @@ alerts/
 *.jpeg
 *.gif
 *.bmp
-*.tiff
+.tiff
 *.svg
 *.webp
 *.yaml
+*.YAML
 *.yml
+*.YML
 *.json
 *.xml
 *.pdf

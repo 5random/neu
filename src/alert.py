@@ -653,7 +653,12 @@ class AlertSystem:
             return success_count > 0
             
         except Exception as exc:
+            current_email_config = self._get_current_email_config()
             self.logger.error(f"Error sending test email: {exc}")
+            self.logger.info(f"SMTP Server: {current_email_config.smtp_server}")
+            self.logger.info(f"SMTP Port: {current_email_config.smtp_port}")
+            self.logger.info(f"Sender: {current_email_config.sender_email}")
+            self.logger.info(f"Recipients: {current_email_config.recipients}")
             return False
     
     async def send_test_email_async(self) -> bool:
