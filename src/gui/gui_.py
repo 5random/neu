@@ -115,6 +115,14 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
         logger.warning("Motion detection not available - missing camera or measurement controller")
 
     logger.info('creating GUI')
+
+    @ui.page('/shutdown')
+    def shutdown_page() -> None:
+        with ui.column().classes('absolute-center items-center gap-6'):
+            ui.icon('power_settings_new').classes('text-6xl text-negative')
+            ui.label('Server shutdown').classes('text-h4 font-medium')
+            ui.label('You can close this window now.')
+
     with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
         # --- Linke Seite -------------------------------------------
         with ui.row().classes('items-center gap-3'):
@@ -134,6 +142,30 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 icon='light_mode' if dark.value else 'dark_mode',
                 on_click=toggle_dark,
             ).props('flat round dense').classes('text-xl'))
+        
+            shutdown_dialog = ui.dialog().classes('items-center justify-center')
+
+            with shutdown_dialog:
+                with ui.card().classes('items-center justify-center'):
+                    ui.label('Shutdown the server?').classes('text-h6')
+                    
+                    async def do_shutdown() -> None:
+                        ui.navigate.to('/shutdown', new_tab=False)
+                        await asyncio.sleep(2)
+                        app.shutdown()
+
+                    with ui.row().classes('gap-2 items-center justify-center'):
+                        ui.button('Yes', on_click=do_shutdown).props('color=negative')
+                        ui.button('No', on_click=shutdown_dialog.close).props('color=positive')
+
+            def show_shutdown_dialog() -> None:
+                shutdown_dialog.open()
+
+            with ui.row().classes('items-center gap-4'):
+                ui.button(
+                    icon='power_settings_new',
+                    on_click=show_shutdown_dialog
+                ).props('flat round dense').classes('text-xl')
             #ui.button( icon='download', on_click=lambda: ui.download.from_url('/logs/cvd_tracker.log')).props('flat round dense').classes('text-xl')
 
 
