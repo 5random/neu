@@ -797,6 +797,28 @@ class Camera:
             param_range = ranges[param_name]
             return param_range["min"] <= value <= param_range["max"]
         return True
+    
+    def is_camera_available(self) -> bool:
+        """
+        Prüft ob Kamera verfügbar und aktiv ist.
+        
+        Returns:
+            True wenn Kamera verfügbar und läuft
+        """
+        
+        try:
+            video_capture_ref = self.video_capture
+            is_connected = video_capture_ref is not None and video_capture_ref.isOpened()
+            # Prüfe die relevanten Status-Flags
+            is_running = self.is_running
+            error_status = self._reconnect_attempts >= self.max_reconnect_attempts
+            
+            # Kamera ist verfügbar wenn sie verbunden, läuft und kein Error
+            return is_connected and is_running and not error_status
+            
+        except Exception as exc:
+            # Bei Fehlern Kamera als nicht verfügbar betrachten
+            return False
 
     # ----------------- Frame‑Zugriff und Utils ------------------------ #
 

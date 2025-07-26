@@ -21,8 +21,6 @@ def create_measurement_card(
         if alert_system is not None and measurement_controller.alert_system != alert_system:
             measurement_controller.alert_system = alert_system
 
-    if camera and hasattr(camera, 'enable_motion_detection'):
-        camera.enable_motion_detection(lambda frame, motion_result: measurement_controller.on_motion_detected(motion_result))
     # ------------------------- Zustände -------------------------
 
     last_measurement: datetime | None = None
@@ -33,8 +31,8 @@ def create_measurement_card(
         background_tasks.create_lazy(_refresh(), name='refresh_view')
 
     measurement_controller.register_motion_callback(on_motion)
-    
-    # --------------------- Hilfsfunktionen ----------------------
+
+    # ------------------- Hilfsfunktionen ----------------------
     def fmt(td: timedelta) -> str:
         secs = int(td.total_seconds())
         h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
@@ -64,22 +62,32 @@ def create_measurement_card(
             timer_label.text = '-'
             progress_row.visible = False
         
-        # Motion-Status anzeigen
-        motion = status.get('recent_motion_detected', False)
-        motion_label.text = 'motion detected' if motion else 'no motion detected'
+        camera_status = camera.is_camera_available() if camera else False
+
+        if camera_status:
+            # Motion-Status anzeigen
+            motion = status.get('recent_motion_detected', False)
+            motion_label.text = 'motion detected' if motion else 'no motion detected'
+            motion_label.classes(remove='text-negative text-warning', add='text-grey')
+        else:
+            motion_label.text = 'camera not available'
+            motion_label.classes(remove='text-grey', add='text-warning')
 
         # Alert-Info anzeigen
-        if status.get('recent_motion_detected'):
+        if camera_status and status.get('recent_motion_detected'):
             alert_label.text = 'No alarm necessary'
             alert_label.classes(remove='text-negative text-grey', add='text-positive')
         else:
             countdown = status.get('alert_countdown')
-            if countdown is not None:
-                alert_label.text = f'Alarm triggerd in {fmt(timedelta(seconds=countdown))}'
+            if countdown is not None and countdown > 0:
+                alert_label.text = f'Alarm triggered in {fmt(timedelta(seconds=countdown))}'
                 alert_label.classes(remove='text-positive text-grey', add='text-negative')
+            elif not camera_status:
+                alert_label.text = 'Camera not available'
+                alert_label.classes(remove='text-negative text-positive text-grey', add='text-warning')
             else:
                 alert_label.text = ''
-                alert_label.classes(remove='text-negative text-positive', add='text-grey')
+                alert_label.classes(remove='text-negative text-positive text-warning', add='text-grey')
 
         # --- letzte Messung ------------
         last_label.text = (

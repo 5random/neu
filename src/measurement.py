@@ -282,7 +282,7 @@ class MeasurementController:
         
         # Motion-Historie analysieren: Gab es kürzlich noch Bewegung?
         # THREAD-SICHER mit Lock:
-        if len(self.motion_history) >= 3 and camera_active:
+        if camera_active and len(self.motion_history) >= 3:
             with self.history_lock:
                 # Sichere Kopie erstellen INNERHALB des Locks
                 history_copy = list(self.motion_history)
