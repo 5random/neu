@@ -18,9 +18,10 @@ from src.gui.elements import (
 
 from src.measurement import create_measurement_controller_from_config, MeasurementController
 from src.alert import create_alert_system_from_config, AlertSystem
-from src.config import logger, load_config
+from src.config import logger, load_config, AppConfig
 
 from src.cam.camera import Camera
+from nicegui import ui, app
 
 # Globales Kamerahandle, wird erst in ``main`` erzeugt
 global_camera: Camera | None = None
@@ -33,8 +34,7 @@ _cleanup_completed = threading.Event()
 
 dark = ui.dark_mode(value=False)
 
-
-def init_camera(config_path: str = "config/config.yaml") -> Camera | None:
+def init_camera(config: AppConfig) -> Camera | None:
     """Initialisiere Kamera und starte die Bilderfassung.
 
     Args:
@@ -44,7 +44,7 @@ def init_camera(config_path: str = "config/config.yaml") -> Camera | None:
     logger.info("Initializing camera ...")
 
     try:
-        cam = Camera(config_path)
+        cam = Camera(config)
         cam.initialize_routes()
         cam.start_frame_capture()
         logger.info("Camera initialized successfully")
@@ -73,7 +73,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     
     if global_camera is None:
         logger.info('Initializing Camera...')
-        global_camera = init_camera(config_path)
+        global_camera = init_camera(config)
         if global_camera is None:
             logger.error('Failed to initialize camera')
             ui.notify('Camera initialization failed, starting GUI without camera', close_button=True, type='warning', position='bottom-right')
@@ -81,7 +81,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     if global_alert_system is None:
         try:
             logger.info('Initializing alert system...')
-            global_alert_system = create_alert_system_from_config(config_path)
+            global_alert_system = create_alert_system_from_config(config)
             logger.info('Alert system initialized successfully')
         except Exception as exc:
             logger.error(f"AlertSystem-Init failed: {exc}")
@@ -91,7 +91,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     if global_measurement_controller is None:
         try:
             global_measurement_controller = create_measurement_controller_from_config(
-                config_path=config_path,
+                config=config,
                 alert_system=global_alert_system,
                 camera=global_camera,
             )
@@ -127,22 +127,6 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
         # --- Linke Seite -------------------------------------------
         with ui.row().classes('items-center gap-3'):
             # Favicon per URL
-            ui.image('https://www.tuhh.de/favicon.ico').classes('w-8 h-8')
-            ui.label('CVD-TRACKER').classes(
-                'text-xl font-semibold tracking-wider text-gray-100')
-
-        # --- Rechte Seite ------------------------------------------
-        def toggle_dark():
-                dark.toggle()
-                new_icon = 'light_mode' if dark.value else 'dark_mode'
-                btn.props(f'icon={new_icon}')
-
-        with ui.row().classes('items-center gap-4'):
-            btn= (ui.button(
-                icon='light_mode' if dark.value else 'dark_mode',
-                on_click=toggle_dark,
-            ).props('flat round dense').classes('text-xl'))
-        
             shutdown_dialog = ui.dialog().classes('items-center justify-center')
 
             with shutdown_dialog:
@@ -161,13 +145,26 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
             def show_shutdown_dialog() -> None:
                 shutdown_dialog.open()
 
-            with ui.row().classes('items-center gap-4'):
-                ui.button(
-                    icon='power_settings_new',
-                    on_click=show_shutdown_dialog
-                ).props('flat round dense').classes('text-xl')
-            #ui.button( icon='download', on_click=lambda: ui.download.from_url('/logs/cvd_tracker.log')).props('flat round dense').classes('text-xl')
+            app.add_static_files('/pics', 'pics')
 
+            ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_shutdown_dialog).props('flat').style('max-height:72px; width:auto')
+
+            ui.label('CVD-TRACKER').classes(
+                'text-xl font-semibold tracking-wider text-gray-100')
+
+        # --- Rechte Seite ------------------------------------------
+        def toggle_dark():
+                dark.toggle()
+                new_icon = 'light_mode' if dark.value else 'dark_mode'
+                btn.props(f'icon={new_icon}')
+
+        with ui.row().classes('items-center gap-4'):
+            btn= (ui.button(
+                icon='light_mode' if dark.value else 'dark_mode',
+                on_click=toggle_dark,
+            ).props('flat round dense').classes('text-xl'))
+        
+            #ui.button( icon='download', on_click=lambda: ui.download.from_url('/logs/cvd_tracker.log')).props('flat round dense').classes('text-xl')
 
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
         with ui.column().classes("gap-4"):

@@ -7,14 +7,15 @@ import argparse
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from nicegui import ui, app
-from fastapi import Request, HTTPException
-from fastapi.responses import JSONResponse
 #from nicegui_toolkit import inject_layout_tool
+#inject_layout_tool()
+
+from nicegui import ui, app
+from fastapi import Request
+from fastapi.responses import JSONResponse
 from src.config import load_config
 from src.gui.gui_ import create_gui
 
-#inject_layout_tool()
 
 def parse_args() -> argparse.Namespace:
     """Kommandozeilenargumente parsen."""

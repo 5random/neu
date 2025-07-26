@@ -21,13 +21,13 @@ from collections import deque
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from typing import Optional, Dict, Any, Callable, TYPE_CHECKING
+from typing import Optional, Dict, Any, Callable
 
-if TYPE_CHECKING:
-    from .config import MeasurementConfig
-    from .alert import AlertSystem
-    from .cam.motion import MotionResult
-    from .cam.camera import Camera
+from .config import MeasurementConfig, AppConfig, logger, load_config, save_config
+from .alert import AlertSystem
+from .cam.motion import MotionResult
+from .cam.camera import Camera
+
 
 
 class MeasurementController:
@@ -535,7 +535,7 @@ class MeasurementController:
 # === Factory-Funktionen ===
 
 def create_measurement_controller_from_config(
-    config_path: Optional[str] = None,
+    config: Optional[AppConfig] = None,
     alert_system: Optional['AlertSystem'] = None,
     camera: Optional['Camera'] = None
 ) -> MeasurementController:
@@ -550,10 +550,7 @@ def create_measurement_controller_from_config(
     Returns:
         Konfigurierter MeasurementController
     """
-    from .config import load_config, logger
-    
-    path = config_path if config_path is not None else "config/config.yaml"
-    config = load_config(path)
+    if config is None:
+        config = load_config()
     measurement_config = config.measurement
-    
     return MeasurementController(measurement_config, alert_system, camera, logger)

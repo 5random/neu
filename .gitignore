@@ -18,7 +18,6 @@ alerts/
 *.gif
 *.bmp
 .tiff
-*.svg
 *.webp
 *.yaml
 *.YAML

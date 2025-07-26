@@ -37,16 +37,7 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
     smtp_labels: Dict[str, ui.label] = {}
 
     if alert_system is None:
-        try:
-            config.email.recipients = list(state["recipients"])
-            config.email.smtp_server = state["smtp"]["server"]
-            config.email.smtp_port = int(state["smtp"]["port"])
-            config.email.sender_email = state["smtp"]["sender"]
-
-            alert_system = AlertSystem(config.email, config.measurement, config)
-        except Exception as exc:
-            ui.notify(f"Failed to initialize alert system: {exc}", color="negative")
-            alert_system = None
+        logger.error("Alert system is not initialized, email functionality will be disabled.")
 
     # ------------------------------------------------------------------ #
     # Hilfsfunktionen                                                    #
@@ -59,6 +50,10 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
             config.email.smtp_port = int(state["smtp"]["port"])
             config.email.sender_email = state["smtp"]["sender"]
             save_config(config)
+            if alert_system:
+                alert_system.refresh_config()
+                logger.info("Alert system configuration refreshed")
+                
             logger.info(f"Configuration saved successfully: {config.email}")
             ui.notify("Config saved successfully", color="positive", position='bottom-right')
             return True

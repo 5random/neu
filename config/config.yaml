@@ -1,9 +1,9 @@
 email:
   recipients:
-  - willem.dittloff@tuhh.de
-  - jan.dittloff@tuhh.de
-  sender_email: il.dittloff@tuhh.de
-  smtp_port: 25
+  - deine.mutter-lel@jgrgurng.com
+  - dfsfd.sdfdfs@dfdf.csdc
+  sender_email: sd.asdds@tuhh.de
+  smtp_port: 23
   smtp_server: mail.tuhh.de
   templates:
     alert:

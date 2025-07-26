@@ -30,8 +30,7 @@ from email.mime.image import MIMEImage
 from pathlib import Path
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from .config import EmailConfig, MeasurementConfig, AppConfig, logger
+from .config import EmailConfig, MeasurementConfig, AppConfig, logger, load_config
 
 
 class AlertSystem:
@@ -301,13 +300,17 @@ class AlertSystem:
         success_count = 0
         current_email_config = self._get_current_email_config()
 
-        self.logger.info(f"Preparing to send email with SMTP settings:")
-        self.logger.info(f"  SMTP Server: {current_email_config.smtp_server}")
-        self.logger.info(f"  SMTP Port: {current_email_config.smtp_port}")
-        self.logger.info(f"  Sender Email: {current_email_config.sender_email}")
-        self.logger.info(f"  Recipients: {recipients} ({len(recipients)} total)")
-        self.logger.info(f"  Max Retries: {max_retries}")
-        self.logger.info(f"  Connection Timeout: {self._connection_timeout}s")
+        self.logger.info("=" * 50)
+        self.logger.info("📧 STARTING EMAIL BATCH SEND!")
+        self.logger.info("=" * 50)
+        self.logger.info(f"📊 EMAIL CONFIGURATION:")
+        self.logger.info(f"   SMTP Server: {current_email_config.smtp_server}")
+        self.logger.info(f"   SMTP Port: {current_email_config.smtp_port}")
+        self.logger.info(f"   Sender Email: {current_email_config.sender_email}")
+        self.logger.info(f"   Recipients: {recipients} ({len(recipients)} total)")
+        self.logger.info(f"   Max Retries: {max_retries}")
+        self.logger.info(f"   Connection Timeout: {self._connection_timeout}s")
+        self.logger.info("=" * 50)
 
         for attempt in range(max_retries):
             try:
@@ -331,9 +334,14 @@ class AlertSystem:
                     break
 
             except (smtplib.SMTPException, ConnectionError, OSError) as exc:
-                self.logger.warning(f"SMTP attempt {attempt + 1} failed: {exc}")
-                self.logger.debug(f"  Server: {current_email_config.smtp_server}:{current_email_config.smtp_port}")
-                self.logger.debug(f"  Sender: {current_email_config.sender_email}")
+                self.logger.error(f"❌ SMTP ATTEMPT {attempt + 1} FAILED: {type(exc).__name__}")
+                self.logger.error(f"   Error: {exc}")
+                self.logger.error(f"   📡 CONNECTION DETAILS:")
+                self.logger.error(f"      Server: {current_email_config.smtp_server}")
+                self.logger.error(f"      Port: {current_email_config.smtp_port}")
+                self.logger.error(f"      Sender: {current_email_config.sender_email}")
+                self.logger.error(f"      Timeout: {self._connection_timeout}s")
+                self.logger.error(f"      Recipients: {recipients}")
 
                 with self._smtp_lock:
                     self._close_smtp_connection()
@@ -347,19 +355,33 @@ class AlertSystem:
                         f"SMTP-connection failed after {max_retries} attempts: {exc}"
                     )
             except Exception as exc:
-                self.logger.error(f"Critical SMTP-error (no retry): {exc}")
-                self.logger.error(f"  Server: {current_email_config.smtp_server}:{current_email_config.smtp_port}")
-                self.logger.error(f"  Sender: {current_email_config.sender_email}")
+                self.logger.error(f"❌ CRITICAL ERROR: {type(exc).__name__}")
+                self.logger.error(f"   Error: {exc}")
+                self.logger.error(f"   📡 CONNECTION DETAILS:")
+                self.logger.error(f"      Server: {current_email_config.smtp_server}")
+                self.logger.error(f"      Port: {current_email_config.smtp_port}")
+                self.logger.error(f"      Sender: {current_email_config.sender_email}")
+                self.logger.error(f"      Timeout: {self._connection_timeout}s")
+                self.logger.error(f"      Recipients: {recipients}")
 
                 with self._smtp_lock:
                     self._close_smtp_connection()
                 break
         
+        self.logger.info("=" * 50)
         if success_count > 0:
-            self.logger.info(f"✅ Email batch completed successfully: {success_count}/{len(recipients)} emails sent")
+            self.logger.info(f"✅ EMAIL BATCH COMPLETED SUCCESSFULLY")
+            self.logger.info(f"   📊 Results: {success_count}/{len(recipients)} emails sent")
+            self.logger.info(f"   📡 Used config: Server: {current_email_config.smtp_server}; Port: {current_email_config.smtp_port}")
+            self.logger.info(f"   📤 Sender: {current_email_config.sender_email}")
         else:
-            self.logger.error(f"❌ Email batch failed: 0/{len(recipients)} emails sent")
-
+            self.logger.error(f"❌ EMAIL BATCH FAILED COMPLETELY")
+            self.logger.error(f"   📊 Results: 0/{len(recipients)} emails sent")
+            self.logger.error(f"   📡 Failed config: Server: {current_email_config.smtp_server}; Port: {current_email_config.smtp_port}")
+            self.logger.error(f"   📤 Failed sender: {current_email_config.sender_email}")
+            self.logger.error(f"   🎯 Target recipients: {recipients}")
+        
+        self.logger.info("=" * 50)
         return success_count
 
     def _should_send_alert_unsafe(self) -> bool:
@@ -611,11 +633,16 @@ class AlertSystem:
         try:
             current_email_config = self._get_current_email_config()
 
-            self.logger.info(f"SMTP Server: {current_email_config.smtp_server}")
-            self.logger.info(f"SMTP Port: {current_email_config.smtp_port}")
-            self.logger.info(f"Sender: {current_email_config.sender_email}")
-            self.logger.info(f"Recipients: {current_email_config.recipients}")
-            self.logger.info(f"Website URL: {current_email_config.website_url}")
+            self.logger.info("=" * 50)
+            self.logger.info("🧪 SENDING TEST EMAIL")
+            self.logger.info("=" * 50)
+            self.logger.info(f"📡 SMTP CONFIGURATION:")
+            self.logger.info(f"   Server: {current_email_config.smtp_server}")
+            self.logger.info(f"   Port: {current_email_config.smtp_port}")
+            self.logger.info(f"   Sender: {current_email_config.sender_email}")
+            self.logger.info(f"   Recipients: {current_email_config.recipients}")
+            self.logger.info(f"   Website URL: {current_email_config.website_url}")
+            self.logger.info("=" * 50)
 
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             subject = f"Test email - {timestamp}"
@@ -654,11 +681,16 @@ class AlertSystem:
             
         except Exception as exc:
             current_email_config = self._get_current_email_config()
-            self.logger.error(f"Error sending test email: {exc}")
-            self.logger.info(f"SMTP Server: {current_email_config.smtp_server}")
-            self.logger.info(f"SMTP Port: {current_email_config.smtp_port}")
-            self.logger.info(f"Sender: {current_email_config.sender_email}")
-            self.logger.info(f"Recipients: {current_email_config.recipients}")
+            self.logger.error("=" * 50)
+            self.logger.error(f"💥 TEST EMAIL FAILED: {type(exc).__name__}")
+            self.logger.error("0" * 50)
+            self.logger.error(f"   Error: {exc}")
+            self.logger.error(f"   📡 CONFIG USED:")
+            self.logger.error(f"      Server: {current_email_config.smtp_server}")
+            self.logger.error(f"      Port: {current_email_config.smtp_port}")
+            self.logger.error(f"      Sender: {current_email_config.sender_email}")
+            self.logger.error(f"      Recipients: {current_email_config.recipients}")
+            self.logger.error("=" * 50)
             return False
     
     async def send_test_email_async(self) -> bool:
@@ -767,7 +799,7 @@ class AlertSystem:
 # === Factory-Funktionen ===
 
 def create_alert_system_from_config(
-    config_path: Optional[str] = None
+    config: Optional[AppConfig] = None
 ) -> AlertSystem:
     """
     Erstellt AlertSystem aus Konfiguration.
@@ -780,8 +812,8 @@ def create_alert_system_from_config(
     """
     from .config import load_config
     
-    path = config_path if config_path is not None else "config/config.yaml"
-    config = load_config(path)
+    if config is None:
+        config = load_config("config/config.yaml")
     
     logger = logging.getLogger("alert")
     

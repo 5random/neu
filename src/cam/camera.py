@@ -26,10 +26,9 @@ class Camera:
 
     # ------------------------- Initialisierung ------------------------- #
 
-    def __init__(self, config_path: str = "config/config.yaml") -> None:
+    def __init__(self, config: AppConfig) -> None:
         # -- Config & Logger --
-        self.config_path = config_path
-        self.app_config: AppConfig = load_config(config_path)
+        self.app_config: AppConfig = config
         self.webcam_config: WebcamConfig = self.app_config.webcam
         self.uvc_config: UVCConfig = self.app_config.uvc_controls
         self.logger = self.app_config.logging.setup_logger("camera")
@@ -210,16 +209,15 @@ class Camera:
     
     def save_uvc_config(self, path: Optional[str] = None) -> bool:
             """Speichert die aktuellen UVC-Einstellungen zurück in die Config-Datei."""
-            cfg_path = path or self.config_path
 
             if not getattr(self, '_config_dirty', True):
                 self.logger.debug("UVC configuration not changed, skipping save")
                 return True
 
             try:
-                save_config(self.app_config, cfg_path)
+                save_config(self.app_config)
                 self._config_dirty = False
-                self.logger.info(f"UVC-Configuration saved: {cfg_path}")
+                self.logger.info(f"UVC-Configuration saved!")
                 return True
             except Exception as exc:
                 self.logger.error(f"Error saving UVC configuration: {exc}")
