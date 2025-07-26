@@ -277,15 +277,22 @@ class MeasurementController:
             return
         
         self.last_alert_check = now
+
+        camera_active = self._is_camera_active()
         
         # Motion-Historie analysieren: Gab es kürzlich noch Bewegung?
         # THREAD-SICHER mit Lock:
-        if len(self.motion_history) >= 3:
+        if len(self.motion_history) >= 3 and camera_active:
             with self.history_lock:
                 # Sichere Kopie erstellen INNERHALB des Locks
                 history_copy = list(self.motion_history)
                 recent_motion = any(history_copy[-3:]) if len(history_copy) >= 3 else False
             if recent_motion:
+                return
+        else:
+            # Nicht genug Historie oder Kamera nicht aktiv - Alert-Delay prüfen
+            if not camera_active:
+                self.logger.warning("Camera not active - skipping alert check")
                 return
         
         # Standard Alert-Delay-Check
@@ -385,6 +392,31 @@ class MeasurementController:
         alert_delay = timedelta(seconds=self.config.alert_delay_seconds)
         
         return time_since_motion >= alert_delay
+    
+    def _is_camera_active(self) -> bool:
+        """
+        Prüft ob die Kamera aktiv und verfügbar ist.
+        
+        Returns:
+            True wenn Kamera läuft und Motion-Detection funktioniert
+        """
+        if not self.camera:
+            return False
+        
+        try:
+            # Nutze die bereits vorhandenen Camera-Status-Methoden
+            return (
+                getattr(self.camera, 'is_running', False) and
+                getattr(self.camera, 'motion_enabled', False) and
+                hasattr(self.camera, 'video_capture') and
+                self.camera.video_capture is not None and
+                self.camera.video_capture.isOpened() and
+                self.camera._reconnect_attempts < self.camera.max_reconnect_attempts
+            )
+            
+        except Exception as exc:
+            self.logger.error(f"Error checking camera status: {exc}")
+            return False
 
     # === Status-Export für GUI ===
     

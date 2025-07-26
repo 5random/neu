@@ -49,7 +49,7 @@ measurement:
   image_quality: 85
   image_save_path: ./alerts/
   save_alert_images: true
-  session_timeout_minutes: 5
+  session_timeout_minutes: 0
 motion_detection:
   background_learning_rate: 0.005
   min_contour_area: 252
@@ -59,7 +59,7 @@ motion_detection:
     width: 412
     x: 79
     y: 125
-  sensitivity: 0.29
+  sensitivity: 0.28
 uvc_controls:
   backlight_compensation: 48
   brightness: 0

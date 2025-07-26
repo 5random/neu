@@ -233,6 +233,9 @@ def create_measurement_card(
     def tick():
         """Sekündlicher Takt: Auto-Stopp & Live-Update."""
         measurement_controller.check_session_timeout()
+        if measurement_controller.is_session_active:
+            # NEU: Alert-Trigger-Prüfung bei jedem Tick
+            measurement_controller._check_alert_trigger()
         status = measurement_controller.get_session_status()
         update_view.refresh()
         style_start_button()

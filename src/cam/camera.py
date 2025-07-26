@@ -121,18 +121,18 @@ class Camera:
             video_capture = cv2.VideoCapture(
                 self.webcam_config.camera_index, self.backend
             )
+            if video_capture:
+                if not video_capture.isOpened():
+                    video_capture.release()
+                    self.video_capture = None
+                    raise RuntimeError(f"Camera {self.webcam_config.camera_index} could not be opened")
 
-            if not video_capture.isOpened():
-                video_capture.release()
-                self.video_capture = None
-                raise RuntimeError(f"Camera {self.webcam_config.camera_index} could not be opened")
+                self._set_camera_properties(video_capture)
 
-            self._set_camera_properties(video_capture)
-
-            # Test‑Frame zum Validieren
-            ret, _ = video_capture.read()
-            if not ret:
-                raise RuntimeError("No frame received from camera during initialization")
+                # Test‑Frame zum Validieren
+                ret, _ = video_capture.read()
+                if not ret:
+                    raise RuntimeError("No frame received from camera during initialization")
 
             with self.frame_lock:
                 self.video_capture = video_capture
@@ -465,12 +465,13 @@ class Camera:
             consecutive_failures = 0
             self._reconnect_attempts = 0
 
+            frame_copy = frame.copy()
             with self.frame_lock:
-                self.current_frame = frame.copy()
+                self.current_frame = frame_copy
                 self.frame_count += 1
 
             # Motion Detection ausführen falls aktiviert
-            self._process_motion_detection(frame, self.current_frame)
+            self._process_motion_detection(frame, frame_copy)
 
         # Loop beendet → Loggen
         self.logger.info("Frame capture stopped")
@@ -504,6 +505,28 @@ class Camera:
     def _handle_cam_disconnect(self):
         """Handle camera disconnection gracefully."""
         self.logger.warning("Camera disconnected, trying to reconnect...")
+
+        if self.motion_callback:
+            try:
+                # Dummy-Frame für Callback
+                dummy_frame = self.get_current_frame()
+                if dummy_frame is None:
+                    res = self.webcam_config.get_default_resolution()
+                    dummy_frame = np.zeros((res.height, res.width, 3), dtype=np.uint8)
+                
+                # Disconnect-MotionResult erstellen
+                disconnect_result = MotionResult(
+                    motion_detected=False,
+                    contour_area=0.0,
+                    timestamp=time.time(),
+                    roi_used=False,
+                )
+                
+                # Callback aufrufen um GUI/MeasurementController zu benachrichtigen
+                self.motion_callback(dummy_frame, disconnect_result)
+                self.logger.debug("Motion callback notified about disconnect")
+            except Exception as exc:
+                self.logger.error(f"Error notifying motion callback about disconnect: {exc}")
 
         with self.frame_lock:
             if self.video_capture and self.video_capture.isOpened():
