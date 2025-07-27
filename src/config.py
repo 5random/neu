@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import re
 import yaml
 import logging
@@ -518,6 +518,32 @@ def _create_default_config() -> AppConfig:
             max_file_size_mb=10, backup_count=5, console_output=True
         )
     )
+
+_global_config: Optional[AppConfig] = None
+_config_path: str = "config/config.yaml"
+
+def set_global_config(config: AppConfig, path: str = "config/config.yaml") -> None:
+    """Setzt die globale Config-Instanz"""
+    global _global_config, _config_path
+    _global_config = config
+    _config_path = path
+
+def get_global_config() -> Optional[AppConfig]:
+    """Holt die globale Config-Instanz"""
+    return _global_config
+
+def save_global_config() -> bool:
+    """Speichert die globale Config"""
+    global _global_config, _config_path
+    if _global_config:
+        try:
+            save_config(_global_config, _config_path)
+            logger.info(f"Global config saved to {_config_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save global config: {e}")
+            return False
+    return False
 
 def save_config(cfg: AppConfig, path: str = "config/config.yaml") -> None:
     """Konfiguration als YAML speichern"""

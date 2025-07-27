@@ -1,9 +1,8 @@
 email:
   recipients:
-  - deine.mutter-lel@jgrgurng.com
-  - dfsfd.sdfdfs@dfdf.csdc
-  sender_email: sd.asdds@tuhh.de
-  smtp_port: 23
+  - CHANGE_ME@example.com
+  sender_email: CHANGE_ME@tuhh.de
+  smtp_port: 25
   smtp_server: mail.tuhh.de
   templates:
     alert:
@@ -55,26 +54,26 @@ motion_detection:
   min_contour_area: 252
   region_of_interest:
     enabled: true
-    height: 199
-    width: 412
-    x: 79
-    y: 125
-  sensitivity: 0.28
+    height: 273
+    width: 427
+    x: 106
+    y: 117
+  sensitivity: 0.2
 uvc_controls:
-  backlight_compensation: 48
+  backlight_compensation: 42
   brightness: 0
-  contrast: 32
+  contrast: 16
   exposure:
     auto: true
-    value: 100
-  gain: 6
-  gamma: 144
+    value: -6
+  gain: 10
+  gamma: 164
   hue: 0
-  saturation: 32
-  sharpness: 3
+  saturation: 64
+  sharpness: 2
   white_balance:
     auto: true
-    value: 4000
+    value: 3320
 webcam:
   camera_index: 0
   default_resolution:

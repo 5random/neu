@@ -19,10 +19,6 @@ alerts/
 *.bmp
 .tiff
 *.webp
-*.yaml
-*.YAML
-*.yml
-*.YML
 *.json
 *.xml
 *.pdf

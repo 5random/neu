@@ -106,7 +106,7 @@ def main() -> int:
             reconnect_timeout=80.0,
         )
 
-        logger.info("Application started")
+        #logger.info("Application started")
 
     except ImportError as e:
         logger = logging.getLogger(__name__)

@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Optional, Dict, Any, Callable
 
-from .config import MeasurementConfig, AppConfig, logger, load_config, save_config
+from .config import MeasurementConfig, AppConfig, load_config, save_config
 from .alert import AlertSystem
 from .cam.motion import MotionResult
 from .cam.camera import Camera
@@ -70,7 +70,7 @@ class MeasurementController:
         self.config = config
         self.alert_system = alert_system
         self.camera = camera
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or logging.getLogger('cvd_tracker.measurement')
         
         # Session-Status-Management
         self.is_session_active: bool = False
@@ -537,7 +537,8 @@ class MeasurementController:
 def create_measurement_controller_from_config(
     config: Optional[AppConfig] = None,
     alert_system: Optional['AlertSystem'] = None,
-    camera: Optional['Camera'] = None
+    camera: Optional['Camera'] = None,
+    logger: Optional[logging.Logger] = None
 ) -> MeasurementController:
     """
     Erstellt MeasurementController aus Konfiguration.
@@ -553,4 +554,5 @@ def create_measurement_controller_from_config(
     if config is None:
         config = load_config()
     measurement_config = config.measurement
+    logger = logging.getLogger('cvd_tracker.measurement')
     return MeasurementController(measurement_config, alert_system, camera, logger)

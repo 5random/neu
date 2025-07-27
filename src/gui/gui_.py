@@ -18,7 +18,7 @@ from src.gui.elements import (
 
 from src.measurement import create_measurement_controller_from_config, MeasurementController
 from src.alert import create_alert_system_from_config, AlertSystem
-from src.config import logger, load_config, AppConfig
+from src.config import logger, load_config, set_global_config, get_global_config, save_global_config, AppConfig
 
 from src.cam.camera import Camera
 from nicegui import ui, app
@@ -27,6 +27,7 @@ from nicegui import ui, app
 global_camera: Camera | None = None
 global_measurement_controller: MeasurementController | None = None
 global_alert_system: AlertSystem | None = None
+global_config: AppConfig | None = None
 
 # Shutdown-Flag für thread-sichere Cleanup-Koordination
 _shutdown_requested = threading.Event()
@@ -61,10 +62,11 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
         config_path: Pfad zur zu ladenden Konfigurationsdatei
     """
 
-    global global_camera, global_measurement_controller, global_alert_system
+    global global_camera, global_measurement_controller, global_alert_system, global_config
     try:
-        config = load_config(config_path)
-        if config:
+        global_config = load_config(config_path)
+        set_global_config(global_config, config_path)
+        if global_config:
             logger.info('Configuration loaded successfully')
     except Exception as e:
         logger.error(f"Failed to load config: {e}")
@@ -73,7 +75,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     
     if global_camera is None:
         logger.info('Initializing Camera...')
-        global_camera = init_camera(config)
+        global_camera = init_camera(global_config)
         if global_camera is None:
             logger.error('Failed to initialize camera')
             ui.notify('Camera initialization failed, starting GUI without camera', close_button=True, type='warning', position='bottom-right')
@@ -81,7 +83,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     if global_alert_system is None:
         try:
             logger.info('Initializing alert system...')
-            global_alert_system = create_alert_system_from_config(config)
+            global_alert_system = create_alert_system_from_config(global_config)
             logger.info('Alert system initialized successfully')
         except Exception as exc:
             logger.error(f"AlertSystem-Init failed: {exc}")
@@ -91,9 +93,10 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     if global_measurement_controller is None:
         try:
             global_measurement_controller = create_measurement_controller_from_config(
-                config=config,
+                config=global_config,
                 alert_system=global_alert_system,
                 camera=global_camera,
+                logger=logger,
             )
         except Exception as exc:
             logger.error(f"MeasurementController-Init failed: {exc}")
@@ -139,15 +142,15 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                         app.shutdown()
 
                     with ui.row().classes('gap-2 items-center justify-center'):
-                        ui.button('Yes', on_click=do_shutdown).props('color=negative')
-                        ui.button('No', on_click=shutdown_dialog.close).props('color=positive')
+                        ui.button('Yes', on_click=do_shutdown).props('color=negative').tooltip('Shutdown the server and close the application')
+                        ui.button('No', on_click=shutdown_dialog.close).props('color=positive').tooltip('Cancel shutdown')
 
             def show_shutdown_dialog() -> None:
                 shutdown_dialog.open()
 
             app.add_static_files('/pics', 'pics')
 
-            ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_shutdown_dialog).props('flat').style('max-height:72px; width:auto')
+            ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_shutdown_dialog).props('flat').style('max-height:72px; width:auto').tooltip('Shutdown the server and close the application')
 
             ui.label('CVD-TRACKER').classes(
                 'text-xl font-semibold tracking-wider text-gray-100')
@@ -162,9 +165,10 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
             btn= (ui.button(
                 icon='light_mode' if dark.value else 'dark_mode',
                 on_click=toggle_dark,
-            ).props('flat round dense').classes('text-xl'))
-        
-            #ui.button( icon='download', on_click=lambda: ui.download.from_url('/logs/cvd_tracker.log')).props('flat round dense').classes('text-xl')
+            ).props('flat round dense').classes('text-xl')).tooltip('Toggle dark mode')
+
+            app.add_static_files('/logs', 'logs')
+            ui.button(icon='download', on_click=lambda: ui.download.from_url('/logs/cvd_tracker.log')).props('flat round dense').classes('text-xl').tooltip('Download log file')
 
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
         with ui.column().classes("gap-4"):
@@ -173,12 +177,17 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 with ui.column().classes("h-full"):
                     create_motion_status_element(global_camera, global_measurement_controller)
                 with ui.column().classes("h-full"):
-                    create_measurement_card(global_measurement_controller, global_camera, alert_system=global_alert_system, config=config)
+                    create_measurement_card(global_measurement_controller, global_camera, alert_system=global_alert_system)
 
         with ui.column().classes("gap-4"):
             create_uvc_content(camera=global_camera)
             create_motiondetection_card(camera=global_camera)
-            create_emailcard(config=config, alert_system=global_alert_system)
+            create_emailcard(alert_system=global_alert_system)
+    
+    with ui.footer(fixed=False).classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
+        with ui.row().classes('items-center justify-between px-4 py-2'):
+            ui.label('CVD-TRACKER').classes('text-white text-sm')
+            ui.label('© 2025 TUHH KVWEB').classes('text-white text-sm')
 
 async def cleanup_camera_async():
     """Asynchrone Kamera-Cleanup-Routine."""

@@ -14,12 +14,14 @@ from nicegui.elements.interactive_image import InteractiveImage
 from nicegui.elements.knob import Knob
 
 from src.cam.camera import Camera, MotionDetector
+from src.config import get_global_config, save_global_config, logger
 
 # ─────────────────────────────────────────────────────────────────────────────
 def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
     """Card mit Slider, ROI-Editor und Live-Koordinaten-Anzeige."""
     IMG_SRC = 'https://picsum.photos/id/325/720/405'
     IMG_W, IMG_H = 720, 405
+    config = get_global_config()
 
 
     if camera is None:
@@ -41,13 +43,47 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
     image: Optional[InteractiveImage] = None
     tl_label: Optional[Label] = None
     br_label: Optional[Label] = None
+    roi_enabled_checkbox: Optional[ui.checkbox] = None
     label_roi: Optional[Label] = None
     coords_label: Optional[Label] = None
     roi_editor_container: Optional[Element] = None
-    button_roi_edit: Optional[Element] = None  # Referenz auf Öffnen-Button
+    button_roi_edit: Optional[Element] = None
     sensitivity_knob: Knob | None = None
 
     debounce_task = None
+
+    # ---------- ROI Enable/Disenable ----------------------------------------
+
+    def update_roi_enabled(enabled: bool) -> None:
+        """Aktiviert/Deaktiviert ROI zur Laufzeit"""
+        if camera is None or camera.motion_detector is None:
+            return
+            
+        cam = cast(Camera, camera)
+        md = cast(MotionDetector, cam.motion_detector)
+        
+        # ROI-Status setzen
+        md.roi.enabled = enabled
+        
+        # Config aktualisieren
+        if config:
+            config.motion_detection.region_of_interest['enabled'] = enabled
+            save_global_config()
+            
+        # Camera config aktualisieren
+        if cam.app_config:
+            cam.app_config.motion_detection.region_of_interest['enabled'] = enabled
+            cam.save_uvc_config()
+            
+        # Background Model zurücksetzen für sofortige Wirkung
+        md.reset_background_model()
+        
+        # UI aktualisieren
+        refresh_ui()
+        
+        status = "enabled" if enabled else "disabled"
+        ui.notify(f'ROI {status}', type='positive', position='bottom-right')
+        logger.info(f'ROI {status}')
 
     # ---------- SVG-Hilfsfunktionen -----------------------------------------
     def svg_cross(x: int, y: int, s: int = 14, col: str = 'deepskyblue') -> str:
@@ -140,6 +176,9 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         cam = cast(Camera, camera)
         md = cast(MotionDetector, cam.motion_detector)
         roi = md.roi
+        
+        if roi_enabled_checkbox is not None:
+            roi_enabled_checkbox.set_value(getattr(roi, 'enabled', False))
 
         if roi and getattr(roi, 'enabled', False):
             x0, y0 = roi.x, roi.y
@@ -164,10 +203,12 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         md.update_sensitivity(sens_value)
         async def save_config_delayed():
             await asyncio.sleep(0.5)
-            if cam.motion_detector:
+            if cam.motion_detector and config:
+                config.motion_detection.sensitivity = sens_value
                 cam.app_config.motion_detection.sensitivity = sens_value
-                if hasattr(cam, 'save_uvc_config'):
-                    cam.save_uvc_config()  # Speichert die Konfiguration
+                cam.save_uvc_config()
+                save_global_config()
+                logger.info(f'Saved sensitivity: {sens_value}')
 
         ui.notify(f'Sensitivity saved', type='info',
                 position='bottom-right')
@@ -204,7 +245,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         if coords_label:
             if e.type == 'mouseleave':
                 coords_label.text = '(-, -)'
-            else:  # 'move' oder 'click'
+            else:
                 coords_label.text = f'({int(e.image_x)}, {int(e.image_y)})'
 
         if e.type == 'click':
@@ -213,7 +254,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
     def save_roi() -> None:
         if (b := roi_bounds()):
             x0, y0, x1, y1 = b
-            roi_enabled = True
+            roi_enabled = roi_enabled_checkbox.value if roi_enabled_checkbox else True
             roi_width = x1 - x0
             roi_height = y1 - y0
 
@@ -236,10 +277,10 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                 roi.width = roi_width
                 roi.height = roi_height
                 roi.enabled = roi_enabled
-                md.reset_background_model()  # Reset background model after ROI change
+                md.reset_background_model()
 
             
-                cam.app_config.motion_detection.region_of_interest = {
+                roi_data = {
                     'enabled': roi_enabled,
                     'x': x0,
                     'y': y0,
@@ -247,11 +288,38 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                     'height': roi_height
                 }
 
-            if hasattr(cam, 'save_uvc_config'):
-                cam.save_uvc_config()  # Speichert die Konfiguration
+                try:
+                    if config:
+                        config.motion_detection.region_of_interest = roi_data
+                        save_global_config()
+                        logger.info('ROI config saved to config')
+                    else:
+                        ui.notify('ROI config could not be saved to config!', type='warning',
+                                  position='bottom-right')
+                        logger.warning('ROI config not be saved to config!')
+                except Exception as e:
+                    ui.notify(f'Error saving config: {e}', type='warning',
+                              position='bottom-right')
+                    logger.error(f'Error saving config: {e}')
+                    
+                try:
+                    if cam:
+                        cam.app_config.motion_detection.region_of_interest = roi_data
+                        cam.save_uvc_config()
+                        logger.info('Camera ROI config saved and applied')
+                    else:
+                        ui.notify('Camera ROI config could not be saved!', type='warning',
+                                  position='bottom-right')
+                        logger.warning('Camera ROI config could not be saved!')
+                except Exception as e:
+                    ui.notify(f'Error saving camera config: {e}', type='warning',
+                              position='bottom-right')
+                    logger.error(f'Error saving camera config: {e}')
+                    return
 
-            ui.notify('ROI saved', type='positive',
-                      position='bottom-right')
+                ui.notify(f'ROI saved and applied: {roi_data}', type='positive',
+                        position='bottom-right')
+                logger.info(f'ROI saved: {roi_data}')
         else:
             ui.notify('Please select both corners first!',
                       type='warning', position='bottom-right')
@@ -268,12 +336,12 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                 if success:
                     src = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode()}"
                     h, w = (frame.shape[:2] if frame is not None else (IMG_H, IMG_W))
-                    IMG_H, IMG_W = h, w  # Update global dimensions
+                    IMG_H, IMG_W = h, w
                     ratio_style = (
                         f"aspect-ratio:{w}/{h};"
                         "width:100%;height:auto;")
-                    image.set_source(src)          # <-- Bild austauschen
-                    image.style(ratio_style)       # <-- Style anpassen
+                    image.set_source(src)
+                    image.style(ratio_style)
         except Exception as e:
             ui.notify(f"Snapshot error: {e}", type="warning")
 
@@ -281,13 +349,13 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         """Öffnet/Schließt ROI-Editor und blendet zugehörige Elemente um."""
         if roi_editor_container is None or button_roi_edit is None or label_roi is None:
             return
-        vis_editor = not roi_editor_container.visible            # neuer Zustand
-        roi_editor_container.set_visibility(vis_editor)          # Editor an/aus
-        button_roi_edit.set_visibility(not vis_editor)           # Button umgekehrt
-        label_roi.set_visibility(not vis_editor)                 # ROI-Text umgekehrt
+        vis_editor = not roi_editor_container.visible
+        roi_editor_container.set_visibility(vis_editor)
+        button_roi_edit.set_visibility(not vis_editor)
+        label_roi.set_visibility(not vis_editor)
         if vis_editor:
             initialize_from_config()
-            refresh_snapshot()  # Aktualisiert das Snapshot-Bild
+            refresh_snapshot()
             refresh_ui()
 
     # ---------- UI-Aufbau ----------------------------------------------------
@@ -310,7 +378,10 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                 with ui.column().classes('w-full gap-2'):
                     ui.label('Region of Interest (ROI)').classes('font-semibold mb-2 self-start')
                     # Kopfzeile mit Titel und Edit-Button
+                    roi_enabled_checkbox = ui.checkbox('ROI enabled', value=True, on_change=lambda e: update_roi_enabled(e.value)).tooltip('Enable/disable Region of Interest')
+                    ui.separator()
                     with ui.row().classes('items-center gap-2 justify-center'):
+                        
                         button_roi_edit = ui.button(
                             icon='crop',
                             color='primary',
@@ -322,6 +393,9 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                             .style("align-self:stretch; display:flex; justify-content:center;"
                                 "align-items:center;")\
                             .classes('text-sm font-mono mb-2')
+                        
+                    button_roi_edit.bind_enabled_from(roi_enabled_checkbox, 'value')
+                    label_roi.bind_visibility_from(roi_enabled_checkbox, 'value')
 
                     # ── ROI-Editor (initial versteckt) ────────────────────
                     roi_editor_container = ui.column().classes('gap-4')

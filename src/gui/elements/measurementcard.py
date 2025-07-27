@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from nicegui import ui, background_tasks
 
 from src.alert import AlertSystem
-from src.config import AppConfig, save_config
+from src.config import get_global_config, save_global_config
 from src.measurement import MeasurementController
 from src.cam.camera import Camera
 
@@ -10,9 +10,15 @@ def create_measurement_card(
     measurement_controller: MeasurementController | None = None,
     camera: Camera | None = None,
     alert_system: AlertSystem | None = None,
-    *,
-    config: AppConfig,
 ) -> None:
+    
+
+    config = get_global_config()
+
+    if not config:
+        ui.label('⚠️ Configuration not available').classes('text-red')
+        return
+    
     if measurement_controller is None:
         if alert_system is None:
             alert_system = AlertSystem(config.email, config.measurement, config)
@@ -42,6 +48,7 @@ def create_measurement_card(
     def update_view() -> None:
         """Aktualisiert Laufzeit, Fortschritt, Labels."""
         status = measurement_controller.get_session_status()
+        config = get_global_config()
 
         elapsed = status['duration']
         session_active = status['is_active']
@@ -127,13 +134,14 @@ def create_measurement_card(
 
     def persist_settings() -> None:
         """Persist measurement duration settings to the config."""
-        if duration_input.value is None:
+        config = get_global_config()
+        if not config or duration_input.value is None:
             return
         
         if not enable_limit.value:
             # Limit deaktiviert ⇒ 0 Minuten speichern
             config.measurement.session_timeout_minutes = 0
-            save_config(config)
+            save_global_config()
             measurement_controller.config = config.measurement
             return
 
@@ -146,7 +154,7 @@ def create_measurement_card(
 
         cfg = config.measurement
         cfg.session_timeout_minutes = max(5, seconds // 60)  # Minimum 5 Minuten
-        save_config(config)
+        save_global_config()
         measurement_controller.config = cfg
 
 

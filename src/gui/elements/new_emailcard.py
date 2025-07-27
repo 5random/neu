@@ -5,19 +5,24 @@ import asyncio
 from nicegui import ui
 from nicegui.client import Client
 
-from src.config import AppConfig, save_config, logger
+from src.config import get_global_config, save_global_config, logger
 from src.alert import AlertSystem
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z0-9]{2,}$")
 
-def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] = None) -> None:
+def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
     """
     Karte mit drei Tabs:
     1) Übersicht   - read-only Konfig & Test-Mail
     2) Recipients  - Empfänger verwalten
     3) SMTP        - SMTP-Settings inkl. Live-Validierung
     """
+    config = get_global_config()
+
+    if not config:
+        ui.label('⚠️ Configuration not available').classes('text-red')
+        return
 
     # ------------------------------------------------------------------ #
     # interner Zustand                                                   #
@@ -44,21 +49,27 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
     # ------------------------------------------------------------------ #
     def persist_state() -> bool:
         """Speichert Konfiguration, meldet Fehler im UI."""
+        config = get_global_config()
+        if not config:
+            logger.error("Global config not available for saving email settings")
+            return False
+        
         try:
             config.email.recipients = list(state["recipients"])
             config.email.smtp_server = state["smtp"]["server"]
             config.email.smtp_port = int(state["smtp"]["port"])
             config.email.sender_email = state["smtp"]["sender"]
-            save_config(config)
-            if alert_system:
-                alert_system.refresh_config()
-                logger.info("Alert system configuration refreshed")
-                
-            logger.info(f"Configuration saved successfully: {config.email}")
-            ui.notify("Config saved successfully", color="positive", position='bottom-right')
-            return True
+            if save_global_config():
+                if alert_system:
+                    alert_system.refresh_config()
+                    logger.info("Alert system configuration refreshed")
+                logger.info(f"Configuration saved successfully: {config.email}")
+                return True
+            else:
+                logger.error("Failed to save configuration")
+                return False
         except Exception as exc:  # noqa: BLE001
-            ui.notify(f"Tried to save config but failed: {exc}", color="negative", position='bottom-right')
+            logger.error(f"Failed to save configuration: {exc}", exc_info=True)
             return False
 
     
@@ -99,22 +110,12 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
         with client:
             ui.notify(f"Sending test email to {', '.join(state['recipients'])}", color="info", position='bottom-right')
 
-        # Konfiguration speichern - OHNE try-except um UI-Konflikt zu vermeiden
-        config.email.recipients = list(state["recipients"])
-        config.email.smtp_server = state["smtp"]["server"]
-        config.email.smtp_port = int(state["smtp"]["port"])
-        config.email.sender_email = state["smtp"]["sender"]
-        
-        try:
-            save_config(config)
-            logger.info(f"Configuration saved successfully: {config.email}")
-        except Exception as exc:
-            error_msg = f"Failed to save config: {exc}"
-            logger.error(error_msg)
+        if not persist_state():
+            logger.error("Failed to persist state before sending email")
             with client:
-                ui.notify(error_msg, color="negative", position='bottom-right')
+                ui.notify("Failed to persist state before sending email", color="negative", position='bottom-right')
             return
-
+        
         # E-Mail senden
         try:
             success = await alert_system.send_test_email_async()
@@ -164,6 +165,7 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
         if table is not None:
             table.rows = [{"address": addr} for addr in state["recipients"]]
             table.update()
+            update_status_icon()
 
     def refresh_recipient_list() -> None:
         if recipient_list is None:
@@ -237,9 +239,9 @@ def create_emailcard(*, config: AppConfig, alert_system: Optional[AlertSystem] =
             # ---------------------- Übersicht --------------------------- #
             with ui.tab_panel(tab_overview):
                 with ui.column().classes("gap-2"):
-                    ui.label("Recipients").classes("text-subtitle2 text-grey-7 mt-1")
-                    ui.label().bind_text_from(state, "recipients", backward=lambda x: f"({len(x)})").classes("text-caption text-grey-5")
-
+                    with ui.row().style("align-self:flex-start; flex-direction:row; justify-content:center; align-items:center; flex-wrap:wrap;"):
+                        ui.label("Recipients").classes("text-subtitle2 text-grey-7 mt-1")
+                        ui.label().bind_text_from(state, "recipients", backward=lambda x: f"({len(x)})").classes("text-caption text-grey-5")
 
                     recipient_list = ui.list().props("dense").classes("pl-2")
                     refresh_recipient_list()
