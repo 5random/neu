@@ -30,7 +30,7 @@ from email.mime.image import MIMEImage
 from pathlib import Path
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
-from .config import EmailConfig, MeasurementConfig, AppConfig, logger, load_config
+from .config import EmailConfig, MeasurementConfig, AppConfig
 
 
 class AlertSystem:
@@ -242,6 +242,7 @@ class AlertSystem:
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 img_buffer = None
                 filename: str | None = None
+                saved_frame_path: Optional[Path] = None
                 ok = False
                 
                 if camera_frame is not None:
@@ -268,9 +269,18 @@ class AlertSystem:
                     self.logger.info(
                         f"Alert #{temp_count} sent ({success_count}/{len(current_email_config.recipients)} successful)"
                     )
+                    if saved_frame_path:
+                        try:
+                            saved_frame_path.unlink()
+                            self.logger.info(f"Alert image file {saved_frame_path} deleted")
+                        except Exception as e:
+                            self.logger.error(f"Error deleting alert image file {saved_frame_path}: {e}")
                     return True
                 else:
                     # Rollback bei Fehlschlag
+                    if saved_frame_path:
+                        self.logger.warning(f"Alert image file {saved_frame_path} not sent, keeping it")
+
                     with self._state_lock:
                         self.last_alert_time = previous_alert_time
                         self.alerts_sent_count = previous_count
@@ -508,7 +518,7 @@ class AlertSystem:
             "Image attachment added: %s (%d bytes)", filename, buf.size
         )
 
-    def _save_alert_image(self, image_buffer: np.ndarray, filename: str) -> None:
+    def _save_alert_image(self, image_buffer: np.ndarray, filename: str) -> Optional[Path]:
         """
         Saves alert image locally.
 
@@ -531,8 +541,11 @@ class AlertSystem:
                 
                 self._cleanup_image(save_path)
                 self.logger.info(f"Alert image saved: {file_path}")
+                return file_path
         except Exception as exc:
             self.logger.error(f"Error saving alert image: {exc}")
+            
+        return None
 
     def _cleanup_image(self, save_path: Path, max_files: int = 100) -> None:
         """
@@ -799,7 +812,8 @@ class AlertSystem:
 # === Factory-Funktionen ===
 
 def create_alert_system_from_config(
-    config: Optional[AppConfig] = None
+    config: Optional[AppConfig] = None,
+    logger: Optional[logging.Logger] = None,
 ) -> AlertSystem:
     """
     Erstellt AlertSystem aus Konfiguration.

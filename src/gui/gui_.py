@@ -83,7 +83,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     if global_alert_system is None:
         try:
             logger.info('Initializing alert system...')
-            global_alert_system = create_alert_system_from_config(global_config)
+            global_alert_system = create_alert_system_from_config(global_config, logger=logger)
             logger.info('Alert system initialized successfully')
         except Exception as exc:
             logger.error(f"AlertSystem-Init failed: {exc}")
