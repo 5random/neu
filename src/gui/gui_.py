@@ -18,7 +18,7 @@ from src.gui.elements import (
 
 from src.measurement import create_measurement_controller_from_config, MeasurementController
 from src.alert import create_alert_system_from_config, AlertSystem
-from src.config import logger, load_config, set_global_config, get_global_config, save_global_config, AppConfig
+from src.config import load_config, set_global_config, get_global_config, save_global_config, AppConfig, get_logger
 
 from src.cam.camera import Camera
 from nicegui import ui, app
@@ -35,6 +35,8 @@ _cleanup_completed = threading.Event()
 
 dark = ui.dark_mode(value=False)
 
+logger = get_logger("gui")
+
 def init_camera(config: AppConfig) -> Camera | None:
     """Initialisiere Kamera und starte die Bilderfassung.
 
@@ -42,10 +44,10 @@ def init_camera(config: AppConfig) -> Camera | None:
         config_path: Pfad zur zu ladenden Konfiguration
     """
 
-    logger.info("Initializing camera ...")
+    logger.info("Starting camera initialization")
 
     try:
-        cam = Camera(config)
+        cam = Camera(config, logger=get_logger('camera'))
         cam.initialize_routes()
         cam.start_frame_capture()
         logger.info("Camera initialized successfully")
@@ -168,7 +170,55 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
             ).props('flat round dense').classes('text-xl')).tooltip('Toggle dark mode')
 
             app.add_static_files('/logs', 'logs')
-            ui.button(icon='download', on_click=lambda: ui.download.from_url('/logs/cvd_tracker.log')).props('flat round dense').classes('text-xl').tooltip('Download log file')
+
+            def download_logs_as_zip():
+                """Erstellt ZIP-Archiv aller Log-Dateien und lädt es herunter."""
+                import zipfile
+                import tempfile
+                from pathlib import Path
+                import os
+                
+                logs_dir = Path('logs')
+                if not logs_dir.exists():
+                    ui.notify('No log directory found', type='warning', position='bottom-right')
+                    return
+                
+                # Temporäre ZIP-Datei erstellen
+                with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_file:
+                    zip_path = tmp_file.name
+                
+                try:
+                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                        log_files_found = 0
+                        
+                        # Alle Log-Dateien hinzufügen
+                        for log_file in logs_dir.glob('cvd_tracker.log*'):
+                            if log_file.is_file():
+                                zipf.write(log_file, log_file.name)
+                                log_files_found += 1
+                                logger.debug(f'Added {log_file.name} to ZIP archive')
+                    
+                    if log_files_found > 0:
+                        # ZIP-Datei über temporären statischen Pfad verfügbar machen
+                        import shutil
+                        final_zip_path = logs_dir / 'cvd_tracker_logs.zip'
+                        shutil.move(zip_path, final_zip_path)
+                        
+                        ui.download.from_url('/logs/cvd_tracker_logs.zip')
+                        ui.notify(f'{log_files_found} log files packaged and downloaded', type='positive', position='bottom-right')
+                        logger.info(f'Created ZIP archive with {log_files_found} log files')
+                    else:
+                        ui.notify('No log files found', type='warning', position='bottom-right')
+                        
+                except Exception as e:
+                    logger.error(f'Error creating log ZIP archive: {e}')
+                    ui.notify('Error creating log archive', type='negative', position='bottom-right')
+                finally:
+                    # Temporäre Datei bereinigen falls noch vorhanden
+                    if os.path.exists(zip_path):
+                        os.unlink(zip_path)
+
+            ui.button(icon='download', on_click=lambda: download_logs_as_zip()).props('flat round dense').classes('text-xl').tooltip('Download log file')
 
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
         with ui.column().classes("gap-4"):

@@ -4,9 +4,13 @@ from datetime import datetime
 
 from src.measurement import MeasurementController
 from src.cam.camera import Camera
+from src.config import get_logger
+
+logger = get_logger('gui.motion_status')
 
 def create_motion_status_element(camera: Camera | None, measurement_controller: MeasurementController | None = None):
     if camera is None:
+        logger.warning("Camera not available - motion detection disabled")
         # Fallback-UI ohne Kamera-Integration
         with ui.card().classes('w-full h-full shadow-2 q-pa-md').style('align-self:stretch;'):
             ui.label('Motion Detection Status').classes('text-h6 font-semibold mb-2')
@@ -14,6 +18,7 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
         return
     
     # ---------- interne Statusvariablen ----------
+    logger.info("Creating motion status element")
     motion_detected: bool = False           # Start: keine Bewegung
     last_changed: datetime = datetime.now() # Zeitstempel der letzten Änderung
 
@@ -51,6 +56,7 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
             measurement_controller.on_motion_detected(result)
 
     camera.enable_motion_detection(_motion_callback)
+    logger.info("Motion detection callback registered")
     # ---------- REST-Endpunkt für Dein Analyse-Skript -------------------
     @ui.page('/update')
     async def update(request: Request):

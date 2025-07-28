@@ -1,19 +1,25 @@
 from nicegui import ui
 from nicegui.events import GenericEventArguments
 from typing import Optional, Any, Callable, TypeVar
+import asyncio
 
 T = TypeVar('T')
 
-
 from src.cam.camera import Camera
-from src.config import logger, get_global_config, save_global_config
+from src.config import get_logger, get_global_config, save_global_config
+
+logger = get_logger('gui.uvc_knobs')
 
 def create_uvc_content(camera: Optional[Camera] = None) -> None:
     if camera is None:
+        logger.warning("Camera not available - UVC controls disabled")
         ui.label('⚠️ No Camera connected').classes('text-red')
         return
     
+    logger.info("Creating UVC Card")
+
     knob_refs = {}
+    debounce_tasks = {}
     
     def make_handler(camera_setter, config_field: str, default_value):
         def handler(event):
@@ -31,15 +37,77 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
 
             camera_setter(value)
 
-            config = get_global_config()
-            if config:
-                obj = config
-                fields = config_field.split('.')
-                for field in fields[:-1]:
-                    obj = getattr(obj, field)
-                setattr(obj, fields[-1], value)
+             # Verzögerte Config-Speicherung
+            async def save_config_delayed():
+                await asyncio.sleep(0.5)  # 500ms Verzögerung
+                try:
+                    config = get_global_config()
+                    if config:
+                        obj = config
+                        fields = config_field.split('.')
+                        for field in fields[:-1]:
+                            obj = getattr(obj, field)
+                        setattr(obj, fields[-1], value)
 
-                save_global_config()
+                        save_global_config()
+                        logger.info(f'Saved {config_field}: {value}')
+                        
+                        # Camera config auch speichern
+                        if camera and hasattr(camera, 'save_uvc_config'):
+                            camera.save_uvc_config()
+                            
+                except Exception as e:
+                    logger.error(f'Error saving config for {config_field}: {e}')
+                    ui.notify(f'Error saving {config_field}: {e}', type='warning',
+                              position='bottom-right')
+
+            # Vorherige Task für dieses Feld abbrechen
+            if config_field in debounce_tasks and not debounce_tasks[config_field].done():
+                debounce_tasks[config_field].cancel()
+            
+            # Neue Task starten
+            debounce_tasks[config_field] = asyncio.create_task(save_config_delayed())
+        
+        return handler
+    
+    def make_instant_handler(camera_setter, config_field: str, default_value):
+        """Für Checkboxes - sofortige Speicherung ohne Debounce"""
+        def handler(event):
+            if hasattr(event, 'args'):
+                if isinstance(event.args, dict):
+                    value = event.args.get('value', default_value)
+                elif isinstance(event.args, (int, float, bool)):
+                    value = event.args
+                else:
+                    value = default_value
+            elif hasattr(event, 'value'):
+                value = event.value
+            else:
+                value = event if isinstance(event, (int, float, bool)) else default_value
+
+            camera_setter(value)
+
+            # Sofort speichern (für Checkboxes)
+            try:
+                config = get_global_config()
+                if config:
+                    obj = config
+                    fields = config_field.split('.')
+                    for field in fields[:-1]:
+                        obj = getattr(obj, field)
+                    setattr(obj, fields[-1], value)
+
+                    save_global_config()
+                    
+                    if camera and hasattr(camera, 'save_uvc_config'):
+                        camera.save_uvc_config()
+                        
+                    logger.info(f'Saved {config_field}: {value}')
+                    
+            except Exception as e:
+                logger.error(f'Error saving config for {config_field}: {e}')
+                ui.notify(f'Error saving {config_field}: {e}', type='warning',
+                          position='bottom-right')
         
         return handler
 
@@ -47,31 +115,50 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
     current = camera.get_uvc_current_values() if camera else {}
 
     def reset_uvc():
-        if camera.reset_uvc_to_defaults():
-            # Neue Werte von der Kamera abrufen
-            updated_current = camera.get_uvc_current_values()
-            updated_ranges = camera.get_uvc_ranges()
-            
-            # Alle Knobs aktualisieren
-            updates = {
-                'brightness': updated_current.get('brightness', updated_ranges.get('brightness', {}).get('default', 0)),
-                'contrast': updated_current.get('contrast', updated_ranges.get('contrast', {}).get('default', 16)),
-                'saturation': updated_current.get('saturation', updated_ranges.get('saturation', {}).get('default', 64)),
-                'sharpness': updated_current.get('sharpness', updated_ranges.get('sharpness', {}).get('default', 2)),
-                'gamma': updated_current.get('gamma', updated_ranges.get('gamma', {}).get('default', 164)),
-                'gain': updated_current.get('gain', updated_ranges.get('gain', {}).get('default', 10)),
-                'backlight_compensation': updated_current.get('backlight_compensation', updated_ranges.get('backlight_compensation', {}).get('default', 42)),
-                'hue': updated_current.get('hue', updated_ranges.get('hue', {}).get('default', 0)),
-                'white_balance_auto': updated_current.get('white_balance_auto', 1) == 1,
-                'white_balance_manual': updated_current.get('white_balance_manual', updated_ranges.get('white_balance_manual', {}).get('default', 4600)),
-                'exposure_auto': updated_current.get('exposure_auto', 1) == 1,
-                'exposure_manual': updated_current.get('exposure_manual', updated_ranges.get('exposure_manual', {}).get('default', -6))
-            }
-            
-            # Knob-Werte setzen
-            for name, value in updates.items():
-                if name in knob_refs:
-                    knob_refs[name].set_value(value)
+        try:
+            if camera.reset_uvc_to_defaults():
+                for task in debounce_tasks.values():
+                    if not task.done():
+                        task.cancel()
+                debounce_tasks.clear()
+                # Neue Werte von der Kamera abrufen
+                updated_current = camera.get_uvc_current_values()
+                updated_ranges = camera.get_uvc_ranges()
+                
+                # Alle Knobs aktualisieren
+                updates = {
+                    'brightness': int(updated_current.get('brightness', updated_ranges.get('brightness', {}).get('default', 0))),
+                    'contrast': int(updated_current.get('contrast', updated_ranges.get('contrast', {}).get('default', 16))),
+                    'saturation': int(updated_current.get('saturation', updated_ranges.get('saturation', {}).get('default', 64))),
+                    'sharpness': int(updated_current.get('sharpness', updated_ranges.get('sharpness', {}).get('default', 2))),
+                    'gamma': int(updated_current.get('gamma', updated_ranges.get('gamma', {}).get('default', 164))),
+                    'gain': int(updated_current.get('gain', updated_ranges.get('gain', {}).get('default', 10))),
+                    'backlight_compensation': int(updated_current.get('backlight_compensation', updated_ranges.get('backlight_compensation', {}).get('default', 42))),
+                    'hue': int(updated_current.get('hue', updated_ranges.get('hue', {}).get('default', 0))),
+                    'white_balance_auto': bool(updated_current.get('white_balance_auto', 1)),
+                    'white_balance_manual': int(updated_current.get('white_balance_manual', updated_ranges.get('white_balance_manual', {}).get('default', 4600))),
+                    'exposure_auto': bool(updated_current.get('exposure_auto', 1)),
+                    'exposure_manual': int(updated_current.get('exposure_manual', updated_ranges.get('exposure_manual', {}).get('default', -6)))
+                }
+                
+                # Knob-Werte setzen
+                for name, value in updates.items():
+                    if name in knob_refs and knob_refs[name] is not None:
+                        try:
+                            knob_refs[name].set_value(value)
+                        except Exception as e:
+                            logger.error(f'Error setting {name} knob value: {e}')
+                            return False
+                    else:
+                        logger.warning(f'Knob reference for {name} is None, skipping update.')
+
+                ui.notify('UVC settings reset to defaults!', type='positive', position='bottom-right')        
+                return True
+        
+        except Exception as e:
+            logger.error(f'Error resetting UVC settings: {e}')
+            ui.notify(f'Error resetting UVC settings: {e}', type='warning', position='bottom-right')
+        return False
             
     with ui.card().style(
         "align-self:stretch; justify-content:center; align-items:start;"
@@ -197,7 +284,6 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
             ui.separator()
 
             # ── Gruppe: Belichtung & Weißabgleich ───────────────────────────
-            ui.label('White Balance & Exposure')
                 
             # Zwei Cards nebeneinander (Weißabgleich | Belichtung)
             with ui.grid(columns=2).classes('gap-4 w-full'):
@@ -223,7 +309,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                         )
                     
                     if camera:
-                        wb_auto.on('update:model-value', make_handler(camera.set_auto_white_balance, 'uvc_controls.white_balance_auto', True))
+                        wb_auto.on('update:model-value', make_instant_handler(camera.set_auto_white_balance, 'uvc_controls.white_balance_auto', True))
                         wb_manual.on('update:model-value', make_handler(camera.set_manual_white_balance, 'uvc_controls.white_balance_manual', 4600))
                         knob_refs['white_balance_auto'] = wb_auto
                         knob_refs['white_balance_manual'] = wb_manual
@@ -249,7 +335,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                         )
                     
                     if camera:
-                        exp_auto.on('update:model-value', make_handler(camera.set_auto_exposure, 'uvc_controls.exposure_auto', True))
+                        exp_auto.on('update:model-value', make_instant_handler(camera.set_auto_exposure, 'uvc_controls.exposure_auto', True))
                         exp_manual.on('update:model-value', make_handler(camera.set_manual_exposure, 'uvc_controls.exposure_manual', -6))
                         knob_refs['exposure_auto'] = exp_auto
                         knob_refs['exposure_manual'] = exp_manual

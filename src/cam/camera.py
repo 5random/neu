@@ -16,8 +16,9 @@ import cv2
 import numpy as np
 from fastapi import Response
 from nicegui import Client, app, core, run, ui
+import logging
 
-from src.config import AppConfig, WebcamConfig, UVCConfig, load_config, save_config
+from src.config import AppConfig, WebcamConfig, UVCConfig, load_config, save_config, get_logger
 from .motion import MotionResult, MotionDetector
 
 
@@ -26,12 +27,13 @@ class Camera:
 
     # ------------------------- Initialisierung ------------------------- #
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, logger: Optional[logging.Logger] = None) -> None:
         # -- Config & Logger --
         self.app_config: AppConfig = config
         self.webcam_config: WebcamConfig = self.app_config.webcam
         self.uvc_config: UVCConfig = self.app_config.uvc_controls
-        self.logger = self.app_config.logging.setup_logger("camera")
+        self.logger = logger or get_logger('camera')
+        self.logger.info("Initializing Camera")
 
         # Measurement config for alerts
         self.measurement_config = self.app_config.measurement
@@ -85,8 +87,10 @@ class Camera:
         # -- Backend je nach Plattform explizit wählen --
         system = platform.system()
         if system == "Windows":
+            self.logger.info("Using DirectShow backend for Windows")
             self.backend = cv2.CAP_DSHOW  # DirectShow - garantiert alle Regler
         elif system == "Linux":
+            self.logger.info("Using Video4Linux2 backend for Linux")
             self.backend = cv2.CAP_V4L2   # Video4Linux2
         else:
             # macOS oder unbekannt → OpenCV entscheidet selbst
@@ -426,53 +430,55 @@ class Camera:
             self.frame_thread.join(timeout=2)
 
     def _capture_loop(self) -> None:
+        """Vereinfachte Capture-Loop ohne Retry-Logik"""
         consecutive_failures = 0
         max_consecutive_failures = 5
-
+        
         while self.is_running:
             with self.frame_lock:
                 video_capture_ref = self.video_capture
             if not video_capture_ref:
                 time.sleep(0.04)
                 continue
-
+                
+            # Frame lesen
             try:
                 ret, frame = video_capture_ref.read() if video_capture_ref else (False, None)
             except cv2.error as e:
                 self.logger.error(f"OpenCV error reading frame: {e}")
                 ret, frame = False, None
             except Exception as e:
-                self.logger.error(f"Unexpected error reading frame: {e}")
+                self.logger.error(f"Frame read error: {e}")
                 ret, frame = False, None
-
+                
             if not ret or frame is None:
                 consecutive_failures += 1
                 if consecutive_failures >= max_consecutive_failures:
-                    self.logger.debug(f'Framegrab failed {consecutive_failures} times, trying to reconnect...')
+                    self.logger.debug(f'Framegrab failed {consecutive_failures} times in a row')
                     rec = self._handle_cam_disconnect()
                     if rec:
+                        self.logger.info("Reconnection successful, resuming frame capture")
                         consecutive_failures = 0
-                        self.logger.info("Camera reconnected successfully")
                         continue
                     else:
-                        self.logger.error("Camera reconnection failed")
+                        self.logger.error("Reconnection failed")
                         break
                 continue
-
-            # erfolgreicher Frame-Grab → Zähler zurücksetzen
+                
+            # Erfolgreicher Frame
             consecutive_failures = 0
             self._reconnect_attempts = 0
 
             frame_copy = frame.copy()
+            
             with self.frame_lock:
                 self.current_frame = frame_copy
                 self.frame_count += 1
-
-            # Motion Detection ausführen falls aktiviert
+                
+            # Motion Detection
             self._process_motion_detection(frame, frame_copy)
-
-        # Loop beendet → Loggen
-        self.logger.info("Frame capture stopped")
+            
+        self.logger.info("Frame capture loop stopped")
     
     def _process_motion_detection(self, original_frame: np.ndarray, frame_copy: np.ndarray) -> None:
         if self.motion_detector and self.motion_enabled:
@@ -503,7 +509,7 @@ class Camera:
     def _handle_cam_disconnect(self):
         """Handle camera disconnection gracefully."""
         self.logger.warning("Camera disconnected, trying to reconnect...")
-
+        
         if self.motion_callback:
             try:
                 # Dummy-Frame für Callback

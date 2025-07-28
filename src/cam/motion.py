@@ -16,7 +16,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from ..config import MotionDetectionConfig, ROI
+from ..config import MotionDetectionConfig, ROI, get_logger
 
 @dataclass
 class MotionResult:
@@ -61,7 +61,7 @@ class MotionDetector:
             logger: Optional Logger für Debug-Output
         """
         self.config = config
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger or get_logger('motion')
 
         # Validate configuration
         if not hasattr(config, 'sensitivity') or not 0.1 <= config.sensitivity <= 1.0:
@@ -281,40 +281,9 @@ class MotionDetector:
         y2 = max(y1 + 1, min(self.roi.y + self.roi.height, h))
         
         # Validate ROI dimensions
-        if x2 <= x1 or y2 <= y1:
+        if x2 <= x1 or y2 <= y1 or x1 < 0 or y1 < 0 or x2 > w or y2 > h or x1 >= w or y1 >= h:
             self.logger.warning(f"Invalid ROI bounds: ({x1}, {y1}) to ({x2}, {y2})")
             return gray_frame
-        
-        roi_width = x2 - x1
-        roi_height = y2 - y1
-        
-        # Check minimum size and if needed, adjust ROI to ensure minimum size
-        if roi_width < 20 or roi_height < 20:
-            self.logger.warning(f"ROI too small: {roi_width}x{roi_height}, expanding for stability")
-            
-            # Minimale sinnvolle Größe für OpenCV-Operationen
-            min_size = 30
-            
-            # Zentrum der aktuellen ROI beibehalten
-            center_x = (x1 + x2) // 2
-            center_y = (y1 + y2) // 2
-            
-            # Neue ROI um Zentrum berechnen
-            new_x1 = max(0, center_x - min_size // 2)
-            new_y1 = max(0, center_y - min_size // 2)
-            new_x2 = min(w, new_x1 + min_size)
-            new_y2 = min(h, new_y1 + min_size)
-            
-            # Falls an Bildrand: ROI entsprechend verschieben
-            if new_x2 - new_x1 < min_size and new_x1 > 0:
-                new_x1 = max(0, new_x2 - min_size)
-            if new_y2 - new_y1 < min_size and new_y1 > 0:
-                new_y1 = max(0, new_y2 - min_size)
-            
-            x1, y1, x2, y2 = new_x1, new_y1, new_x2, new_y2
-            self.logger.info(f"ROI expanded to: ({x1}, {y1}) - ({x2}, {y2})")
-            roi_frame = gray_frame[y1:y2, x1:x2]
-            return roi_frame
         
         return gray_frame[y1:y2, x1:x2]
     
@@ -340,6 +309,6 @@ def create_motion_detector_from_config(config_path: Optional[str] = None) -> Mot
     config = load_config(path)
     motion_config = config.motion_detection
     
-    logger = logging.getLogger("motion_detection")
+    logger = get_logger("motion_detection")
     
     return MotionDetector(motion_config, logger)

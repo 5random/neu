@@ -5,9 +5,10 @@ import asyncio
 from nicegui import ui
 from nicegui.client import Client
 
-from src.config import get_global_config, save_global_config, logger
+from src.config import get_global_config, save_global_config, get_logger
 from src.alert import AlertSystem
 
+logger = get_logger('gui.email')
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z0-9]{2,}$")
 
@@ -224,6 +225,7 @@ def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
     # ------------------------------------------------------------------ #
     # Haupt-Card                                                         #
     # ------------------------------------------------------------------ #
+    logger.info("Creating email card")
     with ui.card().classes("w-full flex-shrink-0"):
         ui.label("Email Settings").classes("text-h6 font-semibold mb-2")
 

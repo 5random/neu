@@ -14,7 +14,9 @@ from nicegui.elements.interactive_image import InteractiveImage
 from nicegui.elements.knob import Knob
 
 from src.cam.camera import Camera, MotionDetector
-from src.config import get_global_config, save_global_config, logger
+from src.config import get_global_config, save_global_config, get_logger
+
+logger = get_logger('gui.motion')
 
 # ─────────────────────────────────────────────────────────────────────────────
 def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
@@ -119,6 +121,14 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         return None
 
     def roi_text() -> str:
+        if roi_enabled_checkbox is not None:
+            enabled = roi_enabled_checkbox.value
+        elif camera and camera.motion_detector:
+            enabled = getattr(camera.motion_detector.roi, 'enabled', False)
+
+            if not enabled:
+                return 'ROI: not active (disabled)'
+            
         b = roi_bounds()
         if b:
             x0, y0, x1, y1 = b
@@ -126,7 +136,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         elif state['p1']:
             x, y = state['p1']
             return f'ROI: ({x}, {y}) - (…)'
-        return 'ROI: not active'
+        return 'ROI: enabled, no Area selected'
 
     # ---------- UI-Updates ---------------------------------------------------
     def update_overlay() -> None:
@@ -185,6 +195,10 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             x1, y1 = roi.x + roi.width, roi.y + roi.height
             state['p1'] = (x0, y0)
             state['p2'] = (x1, y1)
+            logger.debug(f"ROI initialized from config: {state['p1']} - {state['p2']}")
+        else:
+            state['p1'] = state['p2'] = None
+            logger.debug("No ROI found")
         
         if sensitivity_knob is not None and hasattr(cam.motion_detector, 'sensitivity'):
             sens_value = int(md.sensitivity * 100)
@@ -255,6 +269,11 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         if (b := roi_bounds()):
             x0, y0, x1, y1 = b
             roi_enabled = roi_enabled_checkbox.value if roi_enabled_checkbox else True
+            # Ensure ROI is within image bounds
+            x0 = max(0, min(x0, IMG_W - 1))
+            y0 = max(0, min(y0, IMG_H - 1))
+            x1 = max(x0 + 1, min(x1, IMG_W))
+            y1 = max(y0 + 1, min(y1, IMG_H))
             roi_width = x1 - x0
             roi_height = y1 - y0
 
@@ -262,12 +281,37 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                 ui.notify('Camera not available!', type='warning',
                           position='bottom-right')
                 return
-            else:
-                if x0 < 0 or y0 < 0 or x1 >= int(IMG_W) or y1 >= int(IMG_H):
-                    ui.notify('Invalid ROI position!', type='warning',
-                          position='bottom-right')
-                    return
             
+            # Check minimum size and if needed, adjust ROI to ensure minimum size
+            min_size = 30
+            if roi_width < min_size or roi_height < min_size:
+                logger.warning(f"ROI too small: {roi_width}x{roi_height}, expanding for stability")
+
+                # Zentrum der aktuellen ROI beibehalten
+                center_x = (x0 + x1) // 2
+                center_y = (y0 + y1) // 2
+                
+                # Neue ROI um Zentrum berechnen
+                new_x0 = max(0, center_x - min_size // 2)
+                new_y0 = max(0, center_y - min_size // 2)
+                new_x1 = min(IMG_W, new_x0 + min_size)
+                new_y1 = min(IMG_H, new_y0 + min_size)
+
+                # Falls an Bildrand: ROI entsprechend verschieben
+                if new_x1 - new_x0 < min_size and new_x0 > 0:
+                    new_x0 = max(0, new_x1 - min_size)
+                if new_y1 - new_y0 < min_size and new_y0 > 0:
+                    new_y0 = max(0, new_y1 - min_size)
+
+                x0, y0, x1, y1 = new_x0, new_y0, new_x1, new_y1
+                roi_width = x1 - x0
+                roi_height = y1 - y0
+                logger.info(f"ROI expanded to: ({x0}, {y0}) - ({x1}, {y1})")
+                ui.notify(
+                    f'ROI expanded to minimum size: ({x0}, {y0}) - ({x1}, {y1})',
+                    type='warning', position='bottom-right'
+                )
+                
             cam = cast(Camera, camera)
             if cam is not None and cam.motion_detector is not None:
                 md = cast(MotionDetector, cam.motion_detector)
@@ -316,7 +360,10 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                               position='bottom-right')
                     logger.error(f'Error saving camera config: {e}')
                     return
-
+                
+                state['p1'] = (x0, y0)
+                state['p2'] = (x1, y1)
+                refresh_ui()
                 ui.notify(f'ROI saved and applied: {roi_data}', type='positive',
                         position='bottom-right')
                 logger.info(f'ROI saved: {roi_data}')
@@ -359,6 +406,8 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             refresh_ui()
 
     # ---------- UI-Aufbau ----------------------------------------------------
+    logger.info("Creating motion detection card")
+
     with ui.card().style("align-self:stretch; flex-direction:column; justify-content:center; align-items:start; display:flex;"):
         ui.label('Motion Detection Settings').classes('text-h6 font-semibold mb-2')
         with ui.column().style("align-self:stretch;").classes('gap-4'):
@@ -395,7 +444,6 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                             .classes('text-sm font-mono mb-2')
                         
                     button_roi_edit.bind_enabled_from(roi_enabled_checkbox, 'value')
-                    label_roi.bind_visibility_from(roi_enabled_checkbox, 'value')
 
                     # ── ROI-Editor (initial versteckt) ────────────────────
                     roi_editor_container = ui.column().classes('gap-4')
@@ -456,3 +504,6 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
 
                     # Editor initial versteckt
                     roi_editor_container.set_visibility(False)
+
+    initialize_from_config()
+    refresh_ui()

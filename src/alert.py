@@ -30,7 +30,7 @@ from email.mime.image import MIMEImage
 from pathlib import Path
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
-from .config import EmailConfig, MeasurementConfig, AppConfig
+from .config import EmailConfig, MeasurementConfig, AppConfig, get_logger
 
 
 class AlertSystem:
@@ -59,8 +59,8 @@ class AlertSystem:
         """
         Initialisiert das AlertSystem.
         """
-        
-        self.logger = logger or logging.getLogger(__name__)
+
+        self.logger = logger or get_logger('alert')
 
         if app_cfg is None:
             raise ValueError("AppConfig is needed")
@@ -829,7 +829,7 @@ def create_alert_system_from_config(
     if config is None:
         config = load_config("config/config.yaml")
     
-    logger = logging.getLogger("alert")
+    logger = get_logger("alert")
     
     return AlertSystem(config.email, config.measurement, config, logger)
 

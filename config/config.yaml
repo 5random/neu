@@ -54,10 +54,10 @@ motion_detection:
   min_contour_area: 252
   region_of_interest:
     enabled: true
-    height: 273
-    width: 427
-    x: 106
-    y: 117
+    height: 269
+    width: 382
+    x: 117
+    y: 125
   sensitivity: 0.2
 uvc_controls:
   backlight_compensation: 42
@@ -73,7 +73,7 @@ uvc_controls:
   sharpness: 2
   white_balance:
     auto: true
-    value: 3320
+    value: 4660
 webcam:
   camera_index: 0
   default_resolution:

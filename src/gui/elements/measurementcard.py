@@ -2,9 +2,11 @@ from datetime import datetime, timedelta
 from nicegui import ui, background_tasks
 
 from src.alert import AlertSystem
-from src.config import get_global_config, save_global_config
+from src.config import get_global_config, save_global_config, get_logger
 from src.measurement import MeasurementController
 from src.cam.camera import Camera
+
+logger = get_logger('gui.measurement')
 
 def create_measurement_card(
     measurement_controller: MeasurementController | None = None,
@@ -17,7 +19,10 @@ def create_measurement_card(
 
     if not config:
         ui.label('⚠️ Configuration not available').classes('text-red')
+        logger.error('Configuration not available - cannot create measurement card')
         return
+    
+    logger.info("Creating measurement card")
     
     if measurement_controller is None:
         if alert_system is None:

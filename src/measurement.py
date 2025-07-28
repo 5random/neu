@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Optional, Dict, Any, Callable
 
-from .config import MeasurementConfig, AppConfig, load_config, save_config
+from .config import MeasurementConfig, AppConfig, load_config, save_config, get_logger
 from .alert import AlertSystem
 from .cam.motion import MotionResult
 from .cam.camera import Camera
@@ -70,7 +70,7 @@ class MeasurementController:
         self.config = config
         self.alert_system = alert_system
         self.camera = camera
-        self.logger = logger or logging.getLogger('cvd_tracker.measurement')
+        self.logger = logger or get_logger('measurement')
         
         # Session-Status-Management
         self.is_session_active: bool = False
@@ -272,14 +272,12 @@ class MeasurementController:
         now = datetime.now()
         
         # Prüfe ob genug Zeit seit letztem Check vergangen ist
-        if (self.last_alert_check and 
-            (now - self.last_alert_check).total_seconds() < self.alert_check_interval):
+        if (self.last_alert_check and (now - self.last_alert_check).total_seconds() < self.alert_check_interval):
             return
         
         self.last_alert_check = now
-
         camera_active = self._is_camera_active()
-        
+
         # Motion-Historie analysieren: Gab es kürzlich noch Bewegung?
         # THREAD-SICHER mit Lock:
         if camera_active and len(self.motion_history) >= 3:
@@ -395,16 +393,15 @@ class MeasurementController:
     
     def _is_camera_active(self) -> bool:
         """
-        Prüft ob die Kamera aktiv und verfügbar ist.
+        Prüft ob die Kamera aktiv ist.
         
         Returns:
-            True wenn Kamera läuft und Motion-Detection funktioniert
+            True wenn Kamera aktiv und bereit
         """
         if not self.camera:
             return False
         
         try:
-            # Nutze die bereits vorhandenen Camera-Status-Methoden
             return (
                 getattr(self.camera, 'is_running', False) and
                 getattr(self.camera, 'motion_enabled', False) and
@@ -413,11 +410,10 @@ class MeasurementController:
                 self.camera.video_capture.isOpened() and
                 self.camera._reconnect_attempts < self.camera.max_reconnect_attempts
             )
-            
         except Exception as exc:
             self.logger.error(f"Error checking camera status: {exc}")
             return False
-
+    
     # === Status-Export für GUI ===
     
     def get_session_status(self) -> Dict[str, Any]:
@@ -554,5 +550,5 @@ def create_measurement_controller_from_config(
     if config is None:
         config = load_config()
     measurement_config = config.measurement
-    logger = logging.getLogger('cvd_tracker.measurement')
+    logger = get_logger('measurement')
     return MeasurementController(measurement_config, alert_system, camera, logger)

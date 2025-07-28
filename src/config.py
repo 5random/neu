@@ -554,6 +554,29 @@ def save_config(cfg: AppConfig, path: str = "config/config.yaml") -> None:
     except Exception as e:
         logger.error("❌ Error saving config: %s", e)
 
+def get_logger(name: str = "cvd_tracker") -> logging.Logger:
+    """
+    Hilfsfunktion um Logger konsistent zu bekommen.
+    
+    Args:
+        name: Logger-Name oder Sub-Component (z.B. "camera", "gui", "motion")
+        
+    Returns:
+        Konfigurierter Logger
+    """
+    global _global_config
+    
+    if _global_config is None:
+        # Fallback falls Config noch nicht geladen
+        _global_config = load_config()
+    
+    main_logger = _global_config.logging.setup_logger("cvd_tracker")
+    
+    if name == "cvd_tracker":
+        return main_logger
+    else:
+        return main_logger.getChild(name)
+
 # ---------------------------------------------------------------------------
 # Testing
 # ---------------------------------------------------------------------------

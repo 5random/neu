@@ -13,9 +13,15 @@ sys.path.insert(0, str(project_root))
 from nicegui import ui, app
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from src.config import load_config
+from src.config import load_config, get_logger
 from src.gui.gui_ import create_gui
 
+def handle_asyncio_connection_lost(loop, context):
+    """Ignoriere ConnectionResetError in ProactorBasePipeTransport."""
+    exc = context.get("exception")
+    if isinstance(exc, ConnectionResetError):
+        return
+    loop.default_exception_handler(context)
 
 def parse_args() -> argparse.Namespace:
     """Kommandozeilenargumente parsen."""
@@ -80,6 +86,24 @@ def setup_exception_handlers(logger: logging.Logger) -> None:
             }
         )
 
+def create_fallback_logger() -> logging.Logger:
+    """Erstellt einen einfachen Fallback-Logger für den Fall, dass die Config nicht verfügbar ist."""
+    logger = logging.getLogger("cvd_tracker.fallback")
+    
+    if not logger.handlers:
+        # Console Handler für Fallback
+        console_handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%d.%m.%Y %H:%M:%S'
+        )
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+    
+    return logger
+
 def main() -> int:
 
     """Haupteinstiegspunkt der Anwendung"""
@@ -87,9 +111,10 @@ def main() -> int:
     try:
         # Konfiguration laden und Logger einrichten
         cfg = load_config(args.config)
-        logger = cfg.logging.setup_logger("cvd_tracker.main")
+        logger = get_logger("main")
 
         logger.info("Starting CVD-Tracker application...")
+        logger.info(f"Configuration loaded from {args.config}")
 
         # Configure exception handlers
         setup_exception_handlers(logger)
@@ -109,13 +134,13 @@ def main() -> int:
         #logger.info("Application started")
 
     except ImportError as e:
-        logger = logging.getLogger(__name__)
+        logger = create_fallback_logger()
         logger.error(f"Import error: {e}")
         logger.error("Install required dependencies: pip install -r requirements.txt")
         return 1
         
     except Exception as e:
-        logger = logging.getLogger("cvd_tracker.main")
+        logger = create_fallback_logger()
         logger.error(f"Error occurred at startup: {e}", exc_info=True)
         return 1
     

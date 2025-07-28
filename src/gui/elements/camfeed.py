@@ -8,11 +8,13 @@ from pathlib import Path
 #sys.path.insert(0, str(project_root))
 
 from src.cam.camera import Camera
+from src.config import get_logger
 
+logger = get_logger('gui.camfeed')
 
 def create_camfeed_content():
     # Kamera initialisieren
-    
+    logger.info("Creating camera feed")
     with ui.card().style("align-self:stretch; justify-content:center; align-items:start;"):
         ui.label('Camera Feed').classes('text-h6 font-semibold mb-2')
         videoimage = ui.interactive_image().classes('w-full h-full rounded-lg')
