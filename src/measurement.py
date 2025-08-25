@@ -290,8 +290,7 @@ class MeasurementController:
         else:
             # Nicht genug Historie oder Kamera nicht aktiv - Alert-Delay prüfen
             if not camera_active:
-                self.logger.warning("Camera not active - skipping alert check")
-                return
+                self.logger.warning("Camera not active")
         
         # Standard Alert-Delay-Check
         if self.should_trigger_alert():
