@@ -1,0 +1,19 @@
+name: cvd-tracker
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - wheel
+  - setuptools
+  - numpy
+  - pillow
+  - pyyaml
+  - python-dateutil
+  - opencv
+  - fastapi
+  - uvicorn
+  - requests
+  - pytest
+  - pip:
+      - nicegui
