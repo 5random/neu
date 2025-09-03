@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Pfad des Skripts / Repo-Root (Standard-Installationsort)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # -----------------------------------------------------------------------------
 # Konfiguration (kann via ENV überschrieben werden)
 # -----------------------------------------------------------------------------
 ENV_NAME="${ENV_NAME:-cvd-tracker}"
 CONDA_CHANNEL="${CONDA_CHANNEL:-conda-forge}"
-CLONE_URL="${CLONE_URL:-https://github.com/5random/neu.git}"
-CLONE_DIR_DEFAULT="${HOME}/cvd_tracker"          # wird nach detect_user ggf. auf USER_HOME angepasst
+CLONE_URL="${CLONE_URL:-https://github.com/5random/neu.git}"  # zum Vergleich der Origin-URL
+CLONE_DIR_DEFAULT="${SCRIPT_DIR}"                              # Repo ist schon geklont: default = Ort des Skripts
 CLONE_DIR="${CLONE_DIR:-$CLONE_DIR_DEFAULT}"
-PORT="${PORT:-8080}"                              # App nutzt aktuell fest 8080 in main.py
+PORT="${PORT:-8080}"                                           # App nutzt aktuell fest 8080 in main.py
 SERVICE_NAME="${SERVICE_NAME:-cvd_tracker}"
 
 # micromamba Binärpfad – wird nach detect_user auf USER_HOME angepasst, falls nicht explizit gesetzt
@@ -21,6 +24,9 @@ MAMBA_ROOT_PREFIX="${MAMBA_ROOT_PREFIX:-}"
 
 # Wird dynamisch gesucht (enviroment.yaml / environment.yml / environment.yaml)
 ENV_FILE=""
+
+# Repo automatisch fast-forward aktualisieren (1=yes, 0=no)
+AUTO_UPDATE="${AUTO_UPDATE:-1}"
 
 # -----------------------------------------------------------------------------
 # Utils
@@ -38,11 +44,6 @@ detect_user() {
     : # ok
   else
     USER_HOME="$HOME"
-  fi
-
-  # Defaults an RUN_USER anpassen, wenn nicht explizit gesetzt
-  if [[ "${CLONE_DIR}" == "${CLONE_DIR_DEFAULT}" ]]; then
-    CLONE_DIR="${USER_HOME}/cvd_tracker"
   fi
 
   # Binärpfad und Root Prefix auf RUN_USER ausrichten, falls nicht explizit gesetzt
@@ -75,7 +76,6 @@ require_64bit_arm() {
 
 show_mac_addresses() {
   msg "Netzwerk-MAC-Adressen:"
-  # Liste aller Interfaces außer lo, inklusive Status
   ip -o link show | awk -F': ' '$2 != "lo" {print $2}' | while read -r ifc; do
     mac="$(cat "/sys/class/net/$ifc/address" 2>/dev/null || true)"
     state="$(cat "/sys/class/net/$ifc/operstate" 2>/dev/null || true)"
@@ -104,9 +104,7 @@ install_micromamba() {
   fi
 
   msg "Installiere micromamba für Benutzer '${RUN_USER}'..."
-  # Installationsskript als Zielbenutzer ausführen, damit unter USER_HOME installiert wird
   sudo -u "$RUN_USER" bash -lc "curl -Ls https://micro.mamba.pm/install.sh | bash"
-  # Nach Installation sollte der Binärpfad existieren
   if [[ ! -x "$MICROMAMBA_BIN" ]]; then
     echo "micromamba nicht gefunden unter $MICROMAMBA_BIN" >&2
     exit 1
@@ -114,7 +112,6 @@ install_micromamba() {
 }
 
 find_env_file() {
-  # Bevorzugte Reihenfolge, inkl. Schreibweise 'enviroment.yaml' (wie im Repo)
   local candidates=(
     "${CLONE_DIR}/enviroment.yaml"
     "${CLONE_DIR}/environment.yml"
@@ -147,7 +144,6 @@ create_mamba_env() {
       "$MICROMAMBA_BIN" --root-prefix "$MAMBA_ROOT_PREFIX" env create -n "$ENV_NAME" -f "$ENV_FILE"
     fi
   else
-    # Fallback ohne Umgebungsdatei
     if "$MICROMAMBA_BIN" --root-prefix "$MAMBA_ROOT_PREFIX" env list | grep -qE "^[[:space:]]*$ENV_NAME[[:space:]]"; then
       msg "Umgebung '$ENV_NAME' existiert bereits. Überspringe Erstellung."
     else
@@ -159,15 +155,59 @@ create_mamba_env() {
   fi
 }
 
-clone_or_update_repo() {
-  msg "Klon/Update Repository in $CLONE_DIR"
-  if [[ -d "$CLONE_DIR/.git" ]]; then
-    sudo -u "$RUN_USER" git -C "$CLONE_DIR" fetch --all --prune
-    sudo -u "$RUN_USER" git -C "$CLONE_DIR" pull --ff-only
-  else
-    sudo -u "$RUN_USER" mkdir -p "$(dirname "$CLONE_DIR")"
-    sudo -u "$RUN_USER" git clone "$CLONE_URL" "$CLONE_DIR"
+verify_repo() {
+  msg "Prüfe Repository in ${CLONE_DIR}"
+
+  if [[ ! -d "${CLONE_DIR}/.git" ]]; then
+    echo "Fehler: ${CLONE_DIR} ist kein Git-Repository. Bitte Repo vorab klonen/kopieren." >&2
+    exit 1
   fi
+
+  local origin_url branch dirty ahead behind
+  origin_url="$(git -C "$CLONE_DIR" remote get-url origin 2>/dev/null || echo "")"
+  branch="$(git -C "$CLONE_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
+  dirty="$(git -C "$CLONE_DIR" status --porcelain)"
+
+  if [[ -n "$CLONE_URL" && -n "$origin_url" && "$origin_url" != "$CLONE_URL" ]]; then
+    msg "Hinweis: Origin-URL ($origin_url) unterscheidet sich von erwarteter ($CLONE_URL)"
+  fi
+
+  # Upstream sicherstellen (falls fehlt)
+  if ! git -C "$CLONE_DIR" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+    if git -C "$CLONE_DIR" ls-remote --heads origin "$branch" >/dev/null 2>&1; then
+      git -C "$CLONE_DIR" branch --set-upstream-to="origin/${branch}" "$branch" || true
+    fi
+  fi
+
+  # Fetch und Vergleich
+  sudo -u "$RUN_USER" git -C "$CLONE_DIR" fetch --all --prune || true
+
+  read -r ahead behind <<<"$(git -C "$CLONE_DIR" rev-list --left-right --count HEAD...@{u} 2>/dev/null || echo "0 0")"
+
+  msg "Branch: ${branch}; Ahead: ${ahead:-0}; Behind: ${behind:-0}; Dirty: $([[ -n "$dirty" ]] && echo yes || echo no)"
+
+  if [[ -n "$dirty" ]]; then
+    msg "Lokale Änderungen vorhanden – automatische Aktualisierung wird übersprungen."
+    return 0
+  fi
+
+  if [[ "${behind:-0}" -gt 0 ]]; then
+    if [[ "${AUTO_UPDATE}" == "1" ]]; then
+      msg "Remote ist neuer; führe fast-forward Pull aus..."
+      sudo -u "$RUN_USER" git -C "$CLONE_DIR" pull --ff-only || {
+        msg "Fast-forward Pull fehlgeschlagen. Bitte manuell prüfen."
+        return 1
+      }
+    else
+      msg "Remote ist neuer, AUTO_UPDATE=0 – überspringe Pull."
+    fi
+  else
+    msg "Repository ist auf dem neuesten Stand."
+  fi
+
+  local commit_short
+  commit_short="$(git -C "$CLONE_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+  msg "Aktueller Commit: ${commit_short}"
 }
 
 install_python_requirements() {
@@ -179,7 +219,6 @@ install_python_requirements() {
 
   "$MICROMAMBA_BIN" --root-prefix "$MAMBA_ROOT_PREFIX" run -n "$ENV_NAME" python -m pip install -U pip setuptools wheel
 
-  # Vermeide Konflikte: opencv kommt aus conda; filtere Duplikate aus requirements.txt
   local FILTER_PKGS="opencv-python|numpy|pillow|pyyaml|python-dateutil|fastapi|uvicorn|requests|pytest"
   if [[ -n "${ENV_FILE:-}" ]] && grep -qiE '(^|\s|-)nicegui' "$ENV_FILE"; then
     FILTER_PKGS="${FILTER_PKGS}|nicegui"
@@ -203,7 +242,6 @@ install_python_requirements() {
 
 setup_firewall() {
   msg "Konfiguriere UFW (SSH und Port $PORT/tcp erlauben)..."
-  # SSH zuerst freischalten, um Lockout zu vermeiden
   sudo ufw allow OpenSSH || sudo ufw allow 22/tcp || true
   sudo ufw limit ssh || true
   sudo ufw allow "$PORT"/tcp || true
@@ -214,40 +252,31 @@ setup_firewall() {
 setup_ssh_password_login() {
   msg "Konfiguriere SSH-Server (Passwort-Login aktivieren)..."
   local FILE="/etc/ssh/sshd_config"
-
-  # Paket und Dienst sicherstellen
   sudo apt update
   sudo apt install -y --no-install-recommends openssh-server
   sudo systemctl enable ssh
 
-  # Backup einmalig anlegen
   if [[ -f "$FILE" && ! -f "$FILE.bak" ]]; then
     sudo cp "$FILE" "$FILE.bak"
   fi
 
-  # Sichere Defaults setzen (idempotent)
-  # - Passwort-Login erlauben
   sudo sed -ri 's/^\s*#?\s*PasswordAuthentication\s+.*/PasswordAuthentication yes/' "$FILE" || true
   grep -Eq '^\s*PasswordAuthentication\s+yes' "$FILE" || echo 'PasswordAuthentication yes' | sudo tee -a "$FILE" >/dev/null
 
-  # - Root-Login verbieten
   sudo sed -ri 's/^\s*#?\s*PermitRootLogin\s+.*/PermitRootLogin no/' "$FILE" || true
   grep -Eq '^\s*PermitRootLogin\s+no' "$FILE" || echo 'PermitRootLogin no' | sudo tee -a "$FILE" >/dev/null
 
-  # - PAM benutzen und leere Passwörter verbieten
   sudo sed -ri 's/^\s*#?\s*UsePAM\s+.*/UsePAM yes/' "$FILE" || true
   grep -Eq '^\s*UsePAM\s+yes' "$FILE" || echo 'UsePAM yes' | sudo tee -a "$FILE" >/dev/null
 
   sudo sed -ri 's/^\s*#?\s*PermitEmptyPasswords\s+.*/PermitEmptyPasswords no/' "$FILE" || true
   grep -Eq '^\s*PermitEmptyPasswords\s+no' "$FILE" || echo 'PermitEmptyPasswords no' | sudo tee -a "$FILE" >/dev/null
 
-  # Optional: X11 aus
   sudo sed -ri 's/^\s*#?\s*X11Forwarding\s+.*/X11Forwarding no/' "$FILE" || true
   grep -Eq '^\s*X11Forwarding\s+no' "$FILE" || echo 'X11Forwarding no' | sudo tee -a "$FILE" >/dev/null
 
   sudo systemctl restart ssh || true
-
-  msg "Hinweis: Setze bei Bedarf ein Passwort für ${RUN_USER} mit: sudo passwd ${RUN_USER}"
+  msg "Hinweis: Passwort für ${RUN_USER} setzen mit: sudo passwd ${RUN_USER}"
 }
 
 ensure_user_video_group() {
@@ -271,6 +300,10 @@ User=${RUN_USER}
 WorkingDirectory=${CLONE_DIR}
 Environment=MAMBA_ROOT_PREFIX=${MAMBA_ROOT_PREFIX}
 Environment=PYTHONUNBUFFERED=1
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Environment=NUMEXPR_NUM_THREADS=1
 ExecStart=${MICROMAMBA_BIN} --root-prefix ${MAMBA_ROOT_PREFIX} run -n ${ENV_NAME} python ${CLONE_DIR}/main.py --config ${CLONE_DIR}/config/config.yaml
 Restart=on-failure
 RestartSec=5
@@ -285,7 +318,8 @@ EOF
 
 print_hints() {
   echo -e "\nFertig. Nützliche Befehle:"
-  echo "  MACs anzeigen: ./setup.sh (Menü) -> MAC-Adressen anzeigen"
+  echo "  MACs anzeigen: ./setup.sh -> MAC-Adressen anzeigen"
+  echo "  Repo prüfen/aktualisieren: ./setup.sh -> Repository prüfen/aktualisieren"
   echo "  sudo systemctl start ${SERVICE_NAME}"
   echo "  sudo systemctl status ${SERVICE_NAME}"
   echo "  sudo journalctl -u ${SERVICE_NAME} -f"
@@ -304,7 +338,7 @@ full_setup() {
   install_system_packages
   setup_ssh_password_login
   install_micromamba
-  clone_or_update_repo
+  verify_repo
   create_mamba_env
   install_python_requirements
   ensure_user_video_group
@@ -318,11 +352,11 @@ PS3="Operation wählen: "
 OPTIONS=(
   "Full Setup"
   "MAC-Adressen anzeigen"
+  "Repository prüfen/aktualisieren"
   "Systempakete installieren"
   "SSH konfigurieren (Passwortlogin)"
   "micromamba installieren"
   "mamba-Umgebung erstellen/aktualisieren"
-  "Repository klonen/aktualisieren"
   "Python-Requirements in Env installieren"
   "Firewall konfigurieren"
   "systemd-Service einrichten"
@@ -336,11 +370,11 @@ select opt in "${OPTIONS[@]}"; do
   case "$REPLY" in
     1) full_setup ;;
     2) show_mac_addresses ;;
-    3) install_system_packages ;;
-    4) setup_ssh_password_login ;;
-    5) install_micromamba ;;
-    6) create_mamba_env ;;
-    7) clone_or_update_repo ;;
+    3) verify_repo ;;
+    4) install_system_packages ;;
+    5) setup_ssh_password_login ;;
+    6) install_micromamba ;;
+    7) create_mamba_env ;;
     8) install_python_requirements ;;
     9) setup_firewall ;;
     10) setup_systemd_service ;;
