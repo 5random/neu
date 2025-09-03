@@ -177,9 +177,6 @@ def create_measurement_card(
                 'max. Duration', value=config.measurement.session_timeout_minutes > 0
             ).tooltip('toggle maximum measurement duration')
 
-            min_alert_sec = config.measurement.alert_delay_seconds          # z. B. 300 s
-            min_alert_min = (min_alert_sec + 59) // 60 
-
             duration_input = ui.number(
                 label='Duration',
                 value=(
@@ -189,7 +186,7 @@ def create_measurement_card(
                 ),
                 min=MIN_BASE_SEC,  # Minimum 5 Minuten
                 format='%.0f',
-            ).props('dense outlined').style('min-width:80').tooltip(
+            ).props('dense outlined').style('min-width:80px;').tooltip(
                 'Min. duration of the measurement is 5 minutes (300 seconds).'
             )
 
@@ -207,8 +204,11 @@ def create_measurement_card(
             )
 
             update_duration_ui()
-            duration_unit.on('update:model-value', update_duration_ui)
 
+            if enable_limit.value:
+                duration_unit.enable()
+            else:
+                duration_unit.disable()
 
         timer_label = ui.label('-').classes('text-subtitle1 q-mb-xs')
 
@@ -226,6 +226,50 @@ def create_measurement_card(
 
     # ----------------------- Event-Logik ------------------------
 
+    is_updating = False
+    prev_unit: str = duration_unit.value if duration_unit.value in {'s', 'min', 'h'} else 's'
+
+    def on_duration_input_change(_):
+        if is_updating:
+            return
+        if enable_limit.value:
+            persist_settings()
+
+    def on_duration_unit_change(e):
+        nonlocal is_updating, prev_unit
+
+        # Alte und neue Einheit bestimmen
+        units = {'s': 1, 'min': 60, 'h': 3600}
+        old_unit = prev_unit if prev_unit in units else 's'
+        new_unit = duration_unit.value if duration_unit.value in units else 's'
+
+        # Numerischen Wert in Sekunden umrechnen
+        seconds = 0.0
+        if duration_input.value is not None:
+            try:
+                seconds = float(duration_input.value) * units[old_unit]
+            except Exception:
+                seconds = 0.0
+
+        # Min-Wert der neuen Einheit berechnen (wie in update_duration_ui)
+        min_val = (MIN_BASE_SEC / units[new_unit])
+        if new_unit == 'h':
+            min_val = 1
+
+        # Wert in die neue Einheit konvertieren und Mindestwert beachten
+        new_value = seconds / units[new_unit] if seconds > 0 else min_val
+        if new_value < min_val:
+            new_value = min_val
+
+        # UI aktualisieren ohne doppeltes Persistieren
+        is_updating = True
+        prev_unit = new_unit
+        duration_input.value = new_value
+        update_duration_ui(e)
+        is_updating = False
+
+        if enable_limit.value:
+            persist_settings()
 
     def toggle_duration(_):
         if not measurement_controller.get_session_status()['is_active']:
@@ -255,9 +299,7 @@ def create_measurement_card(
         """Sekündlicher Takt: Auto-Stopp & Live-Update."""
         measurement_controller.check_session_timeout()
         if measurement_controller.is_session_active:
-            # NEU: Alert-Trigger-Prüfung bei jedem Tick
             measurement_controller._check_alert_trigger()
-        status = measurement_controller.get_session_status()
         update_view.refresh()
         style_start_button()
 
@@ -269,6 +311,9 @@ def create_measurement_card(
      
     duration_input.on('blur', lambda e: persist_settings() if enable_limit.value else None)
     duration_input.on('keydown.enter', lambda e: persist_settings() if enable_limit.value else None)
+    duration_unit.on('update:model-value', on_duration_unit_change)
+    duration_input.on('update:model-value', on_duration_input_change)
+
     ui.timer(1.0, tick)
 
     persist_settings()

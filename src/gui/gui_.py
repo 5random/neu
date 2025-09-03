@@ -3,6 +3,7 @@ from nicegui import ui, app
 import signal
 import asyncio
 import threading
+import queue
 from typing import Optional
 import sys
 
@@ -16,12 +17,12 @@ from src.gui.elements import (
     create_motiondetection_card,
 )
 
+from src.cam.camera import Camera
 from src.measurement import create_measurement_controller_from_config, MeasurementController
 from src.alert import create_alert_system_from_config, AlertSystem
 from src.config import load_config, set_global_config, get_global_config, save_global_config, AppConfig, get_logger
+from src.update import check_update, perform_update, get_local_commit_short, restart_self
 
-from src.cam.camera import Camera
-from nicegui import ui, app
 
 # Globales Kamerahandle, wird erst in ``main`` erzeugt
 global_camera: Camera | None = None
@@ -127,6 +128,59 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
             ui.icon('power_settings_new').classes('text-6xl text-negative')
             ui.label('Server shutdown').classes('text-h4 font-medium')
             ui.label('You can close this window now.')
+    
+    @ui.page('/updating')
+    def updating_page() -> None:
+        logger.info('Opening updating page...')
+        with ui.column().classes('absolute-center items-center gap-4'):
+            ui.icon('system_update').classes('text-6xl text-primary')
+            ui.label('Update wird installiert...').classes('text-h5 font-medium')
+            status = ui.label('').classes('text-body2')
+            log = ui.log(max_lines=500).classes('w-[800px] h-[360px] bg-black text-green-400 rounded')
+
+            # Thread-safe progress queue for background thread messages
+            q: queue.Queue[str] = queue.Queue()
+
+            def drain_progress():
+                try:
+                    while True:
+                        msg = q.get_nowait()
+                        log.push(msg)
+                        logger.info(msg)
+                except queue.Empty:
+                    pass
+
+            async def run_update():
+                try:
+                    # 1) Status prüfen
+                    logger.info('Checking update status...')
+                    stat = await asyncio.to_thread(check_update)
+                    status.text = f"Lokaler Commit {stat.get('local')} → Remote {stat.get('remote') or ''} (behind={stat.get('behind', 0)})"
+                    logger.info(f"Update status: behind={stat.get('behind', 0)}, local={stat.get('local')}, remote={stat.get('remote')}")
+
+                    # 2) Update im Hintergrund durchführen
+                    logger.info('Starting update...')
+                    ok = await asyncio.to_thread(perform_update, q.put)
+
+                    if ok:
+                        logger.info('Update completed successfully; restarting...')
+                        ui.notify('Update abgeschlossen. Neustart...', type='positive', position='bottom-right')
+                        # 3) Sauberes Cleanup + Self-Restart (cleanup on event loop thread)
+                        cleanup_application()
+                        await asyncio.sleep(0.3)
+                        await asyncio.to_thread(restart_self)
+                    else:
+                        logger.warning('Update failed or not available.')
+                        ui.notify('Update fehlgeschlagen oder nicht verfügbar.', type='warning', position='bottom-right')
+                        ui.button('Zurück', on_click=lambda: ui.navigate.to('/')).props('flat').classes('q-mt-md')
+                except Exception as e:
+                    logger.exception('Update process failed')
+                    ui.notify(f'Update failed: {e}', type='negative', position='bottom-right')
+                    ui.button('Zurück', on_click=lambda: ui.navigate.to('/')).props('flat').classes('q-mt-md')
+
+            # Drain progress queue on UI thread
+            ui.timer(0.1, drain_progress)
+            ui.timer(0.05, run_update, once=True)
 
     with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
         # --- Linke Seite -------------------------------------------
@@ -219,6 +273,24 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                         os.unlink(zip_path)
 
             ui.button(icon='download', on_click=lambda: download_logs_as_zip()).props('flat round dense').classes('text-xl').tooltip('Download log file')
+
+            async def on_update_click():
+                try:
+                    stat = await asyncio.to_thread(check_update)
+                except Exception as e:
+                    # Log error with stack trace and notify user; skip navigation on failure
+                    logger.exception("Update check failed")
+                    ui.notify(f'Update check failed: {e}', type='negative', position='bottom-right')
+                    return
+                if stat.get('behind', 0) <= 0:
+                    logger.info('Already up to date.')
+                    ui.notify('Bereits auf dem neuesten Stand.', type='positive', position='bottom-right')
+                    return
+                logger.info('Updates available; navigating to /updating')
+                ui.navigate.to('/updating', new_tab=False)
+
+            ui.button(icon='system_update', on_click=on_update_click)\
+              .props('flat round dense').classes('text-xl').tooltip('Update prüfen und installieren')
 
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
         with ui.column().classes("gap-4"):
