@@ -661,7 +661,7 @@ def save_config(cfg: AppConfig, path: str = "config/config.yaml") -> None:
         sections = [
             ("Webcam", "webcam"),
             ("UVC Controls", "uvc_controls"),
-            ("Motiondetection", "motion_detection"),
+            ("Motion Detection", "motion_detection"),
             ("Measurement", "measurement"),
             ("E‑Mail", "email"),
             ("GUI", "gui"),
