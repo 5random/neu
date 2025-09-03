@@ -8,6 +8,7 @@ import yaml
 import logging
 import logging.handlers
 import threading
+from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 logger.propagate = False  # Verhindert, dass Logs an die Root-Logger propagiert werden
@@ -545,15 +546,6 @@ def save_global_config() -> bool:
             return False
     return False
 
-def save_config(cfg: AppConfig, path: str = "config/config.yaml") -> None:
-    """Konfiguration als YAML speichern"""
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(asdict(cfg), f, indent=2, allow_unicode=True)
-        logger.info("✅ Config saved → %s", path)
-    except Exception as e:
-        logger.error("❌ Error saving config: %s", e)
-
 def get_logger(name: str = "cvd_tracker") -> logging.Logger:
     """
     Hilfsfunktion um Logger konsistent zu bekommen.
@@ -576,6 +568,131 @@ def get_logger(name: str = "cvd_tracker") -> logging.Logger:
         return main_logger
     else:
         return main_logger.getChild(name)
+    
+class ReadableDumper(yaml.SafeDumper):
+    # Keine YAML‑Anker (&id001) bei wiederverwendeten Werten
+    def ignore_aliases(self, data):
+        return True
+
+    # Sorgt dafür, dass Listenelemente eingerückt unter dem Schlüssel stehen
+    def increase_indent(self, flow=False, indentless=False):
+        return super().increase_indent(flow, False)
+
+def _repr_str_literal(dumper: yaml.SafeDumper, data: str):
+    # Mehrzeilige Strings im Literal-Block-Stil '|'
+    style = '|' if '\n' in data else None
+    return dumper.represent_scalar('tag:yaml.org,2002:str', data, style=style)
+
+ReadableDumper.add_representer(str, _repr_str_literal)
+
+def _repr_ordered_dict(dumper: yaml.SafeDumper, data: OrderedDict):
+    return dumper.represent_mapping('tag:yaml.org,2002:map', list(data.items()))
+
+ReadableDumper.add_representer(OrderedDict, _repr_ordered_dict)
+
+def _order_map(d: dict, key_order: list[str]) -> OrderedDict:
+    ordered = OrderedDict()
+    for k in key_order:
+        if k in d:
+            ordered[k] = d[k]
+    for k, v in d.items():
+        if k not in ordered:
+            ordered[k] = v
+    return ordered
+
+def _prepare_for_yaml(cfg_dict: dict) -> dict:
+    """
+    Optionale Reorganisation für besser lesbare YAML-Ausgabe.
+    """
+    data = dict(cfg_dict)  # flache Kopie
+
+    # webcam: width vor height
+    if "webcam" in data:
+        wc = data["webcam"]
+        if "default_resolution" in wc and isinstance(wc["default_resolution"], dict):
+            wc["default_resolution"] = _order_map(wc["default_resolution"], ["width", "height"])
+        if "resolution" in wc and isinstance(wc["resolution"], list):
+            wc["resolution"] = [
+                _order_map(item, ["width", "height"]) if isinstance(item, dict) else item
+                for item in wc["resolution"]
+            ]
+
+    # motion_detection.region_of_interest: übliche Reihenfolge
+    md = data.get("motion_detection", {})
+    if isinstance(md.get("region_of_interest"), dict):
+        roi = md["region_of_interest"]
+        md["region_of_interest"] = _order_map(roi, ["enabled", "x", "y", "width", "height"])
+
+    # email.templates.alert: subject vor body
+    try:
+        alert = data["email"]["templates"]["alert"]
+        if isinstance(alert, dict):
+            data["email"]["templates"]["alert"] = _order_map(alert, ["subject", "body"])
+    except Exception:
+        pass
+
+    return data
+
+def _dump_section(key: str, value: dict) -> str:
+    """
+    Gibt einen einzelnen Top-Level-Abschnitt als YAML (ohne Dokument-Header) zurück.
+    """
+    return yaml.dump(
+        {key: value},
+        Dumper=ReadableDumper,
+        allow_unicode=True,
+        sort_keys=False,            # Reihenfolge behalten
+        default_flow_style=False,   # Block-Stil
+        indent=2,
+        width=4096                  # kein erzwungenes Zeilenfalten
+    )
+
+def save_config(cfg: AppConfig, path: str = "config/config.yaml") -> None:
+    """Konfiguration als gut lesbare YAML speichern (mit Abschnitts-Kommentaren)."""
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+
+        # Dataclasses -> dict und für Ausgabe aufbereiten
+        raw = asdict(cfg)
+        data = _prepare_for_yaml(raw)
+
+        # Reihenfolge und sichtbare Abschnittstitel festlegen
+        sections = [
+            ("Webcam", "webcam"),
+            ("UVC Controls", "uvc_controls"),
+            ("Motiondetection", "motion_detection"),
+            ("Measurement", "measurement"),
+            ("E‑Mail", "email"),
+            ("GUI", "gui"),
+            ("Logging", "logging"),
+        ]
+
+        header = (
+            "# ---------------------------------------------------------------------------\n"
+            "# CVD-Tracker configuration (generated)\n"
+            "# Edit carefully — indentation defines structure\n"
+            "# ---------------------------------------------------------------------------\n\n"
+        )
+
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(header)
+
+            for title, key in sections:
+                if key not in data:
+                    continue
+                # Abschnitts-Banner
+                f.write("# ---------------------------------------------------------------------------\n")
+                f.write(f"# {title}\n")
+                f.write("# ---------------------------------------------------------------------------\n")
+                # Abschnitt dumpen
+                f.write(_dump_section(key, data[key]))
+                # Leerzeile zwischen Abschnitten
+                f.write("\n")
+
+        logger.info("✅ Config saved → %s", p)
+    except Exception as e:
+        logger.error("❌ Error saving config: %s", e)
 
 # ---------------------------------------------------------------------------
 # Testing

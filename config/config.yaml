@@ -1,101 +1,125 @@
-email:
-  recipients:
-  - CHANGE_ME@example.com
-  sender_email: CHANGE_ME@tuhh.de
-  smtp_port: 25
-  smtp_server: mail.tuhh.de
-  templates:
-    alert:
-      body: 'Movement has not been detected since {timestamp}!
+# ---------------------------------------------------------------------------
+# CVD-Tracker configuration (generated)
+# Edit carefully — indentation defines structure
+# ---------------------------------------------------------------------------
 
-        Please check the issue via the web application at: {website_url}.
-
-
-        Details:
-
-        Session-ID: {session_id}
-
-        Last motion at: {last_motion_time}
-
-        Camera: Index {camera_index}
-
-        Sensitivity: {sensitivity}
-
-        ROI enabled: {roi_enabled}
-
-
-        Attached is the current webcam image.
-
-        '
-      subject: 'CVD-TRACKER-Alert: no motion detected - {timestamp}'
-  website_url: http://134.28.91.48:8080
-gui:
-  auto_open_browser: false
-  host: localhost
-  port: 8080
-  title: CVD-Tracker
-  update_interval_ms: 100
-logging:
-  backup_count: 5
-  console_output: true
-  file: logs/cvd_tracker.log
-  level: INFO
-  max_file_size_mb: 10
-measurement:
-  alert_delay_seconds: 300
-  auto_start: false
-  image_format: jpg
-  image_quality: 85
-  image_save_path: ./alerts/
-  save_alert_images: true
-  session_timeout_minutes: 60
-motion_detection:
-  background_learning_rate: 0.005
-  min_contour_area: 252
-  region_of_interest:
-    enabled: true
-    height: 269
-    width: 382
-    x: 117
-    y: 125
-  sensitivity: 0.2
-uvc_controls:
-  backlight_compensation: 42
-  brightness: 0
-  contrast: 16
-  exposure:
-    auto: true
-    value: -6
-  gain: 10
-  gamma: 164
-  hue: 0
-  saturation: 64
-  sharpness: 2
-  white_balance:
-    auto: true
-    value: 4660
+# ---------------------------------------------------------------------------
+# Webcam
+# ---------------------------------------------------------------------------
 webcam:
   camera_index: 0
   default_resolution:
-    height: 480
     width: 640
+    height: 480
   fps: 30
   resolution:
-  - height: 240
-    width: 320
-  - height: 288
-    width: 352
-  - height: 480
-    width: 640
-  - height: 600
-    width: 800
-  - height: 768
-    width: 1024
-  - height: 720
-    width: 1280
-  - height: 960
-    width: 1280
-  - height: 1024
-    width: 1280
-  - height: 1080
-    width: 1920
+    - width: 320
+      height: 240
+    - width: 352
+      height: 288
+    - width: 640
+      height: 480
+    - width: 800
+      height: 600
+    - width: 1024
+      height: 768
+    - width: 1280
+      height: 720
+    - width: 1280
+      height: 960
+    - width: 1280
+      height: 1024
+    - width: 1920
+      height: 1080
+
+# ---------------------------------------------------------------------------
+# UVC Controls
+# ---------------------------------------------------------------------------
+uvc_controls:
+  brightness: 0
+  hue: 0
+  contrast: 16
+  saturation: 64
+  sharpness: 2
+  gamma: 164
+  white_balance:
+    auto: true
+    value: 4660
+  gain: 10
+  backlight_compensation: 42
+  exposure:
+    auto: true
+    value: -6
+
+# ---------------------------------------------------------------------------
+# Motiondetection
+# ---------------------------------------------------------------------------
+motion_detection:
+  region_of_interest:
+    enabled: true
+    x: 117
+    y: 125
+    width: 382
+    height: 269
+  sensitivity: 0.2
+  background_learning_rate: 0.005
+  min_contour_area: 252
+
+# ---------------------------------------------------------------------------
+# Measurement
+# ---------------------------------------------------------------------------
+measurement:
+  auto_start: false
+  session_timeout_minutes: 60
+  save_alert_images: true
+  image_save_path: ./alerts/
+  image_format: jpg
+  image_quality: 85
+  alert_delay_seconds: 300
+
+# ---------------------------------------------------------------------------
+# E‑Mail
+# ---------------------------------------------------------------------------
+email:
+  website_url: http://134.28.91.48:8080
+  recipients:
+    - CHANGE_ME@example.com
+  smtp_server: mail.tuhh.de
+  smtp_port: 25
+  sender_email: CHANGE_ME@tuhh.de
+  templates:
+    alert:
+      subject: 'CVD-TRACKER-Alert: no motion detected - {timestamp}'
+      body: '
+        Movement has not been detected since {timestamp}!
+        Please check the issue via the web application at: {website_url}.
+
+        Details:
+        Session-ID: {session_id}
+        Last motion at: {last_motion_time}
+        Camera: Index {camera_index}
+        Sensitivity: {sensitivity}
+        ROI enabled: {roi_enabled}
+
+        Attached is the current webcam image.
+        '
+
+# ---------------------------------------------------------------------------
+# GUI
+# ---------------------------------------------------------------------------
+gui:
+  title: CVD-Tracker
+  host: localhost
+  port: 8080
+  auto_open_browser: false
+  update_interval_ms: 100
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging:
+  level: INFO
+  file: logs/cvd_tracker.log
+  max_file_size_mb: 10
+  backup_count: 5
+  console_output: true
