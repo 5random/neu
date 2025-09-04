@@ -105,7 +105,38 @@ class MeasurementController:
         self._alert_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="alert_executor")  # Executor für Alert-Operationen
         self._camera_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="camera_executor")  # Executor für Kamera-Operationen
 
+        # Asymmetrische Hysterese (Frames)
+        self.debounce_on_frames: int = max(1, int(getattr(self.config, 'motion_log_debounce_on_frames', 3)))
+        self.debounce_off_frames: int = max(1, int(getattr(self.config, 'motion_log_debounce_off_frames', 10)))
+
+        # Mindestdauer eines Motion-Events (Sekunden)
+        self.min_event_duration_s: float = max(0.0, float(getattr(self.config, 'motion_log_min_event_seconds', 3.0)))
+
+        # Periodische Summary (Sekunden)
+        self._summary_interval_s: float = max(1.0, float(getattr(self.config, 'motion_log_summary_interval_seconds', 60.0)))
+        self._last_summary_at: datetime = datetime.now()
+
+        # Debounced State und Zähler
+        self.debounced_motion: bool = False
+        self._stable_on_count: int = 0
+        self._stable_off_count: int = 0
+
+        # Laufende Event-Akkumulatoren
+        self._event_open_time: Optional[datetime] = None
+        self._event_area_sum: float = 0.0
+        self._event_area_max: float = 0.0
+        self._event_frames: int = 0
     # === Session-Management ===
+    def _reset_debounce_state(self) -> None:
+        """Setzt alle Debounce-/Event-Zustände zurück, um saubere Session-Grenzen zu garantieren."""
+        self.debounced_motion = False
+        self._stable_on_count = 0
+        self._stable_off_count = 0
+        self._event_open_time = None
+        self._event_area_sum = 0.0
+        self._event_area_max = 0.0
+        self._event_frames = 0
+
     def _ensure_valid_time(self) -> None:
         alert_delay_minutes = math.ceil(self.config.alert_delay_seconds / 60)
         min_minutes = max(5, alert_delay_minutes)
@@ -145,6 +176,8 @@ class MeasurementController:
             self.motion_history.clear()
             self.alerts_sent_this_session = 0
             self.last_alert_check = None
+            # Debounce-/Event-State zurücksetzen, damit keine offenen Events übernommen werden
+            self._reset_debounce_state()
             
             self.logger.info(f"Session started: {self.session_id}")
             return True
@@ -169,6 +202,8 @@ class MeasurementController:
             
             self.is_session_active = False
             self.session_start_time = None
+            # Debounce-/Event-State zurücksetzen, bevor die Session-ID verworfen wird
+            self._reset_debounce_state()
 
             self.logger.info(f"Session stopped: {self.session_id} "
                            f"(Duration: {session_duration})")
@@ -241,6 +276,9 @@ class MeasurementController:
                 self.alert_triggered = False
                 self.alert_trigger_time = None
                 self.logger.info("Alert state reset - new motion detected")
+        
+        self._update_debounced_motion(motion_result)
+        self._maybe_log_motion_summary()
 
         self.check_session_timeout()  # Prüfe Session-Timeout
         self._check_alert_trigger()   # Prüfe Alert-Trigger
@@ -251,6 +289,97 @@ class MeasurementController:
                 callback(motion_result)
             except Exception as exc:
                 self.logger.error(f"Error in Motion-Callback: {exc}")
+    
+    def _update_debounced_motion(self, mr: 'MotionResult') -> None:
+        """Aktualisiert den entprellten Bewegungsstatus und erzeugt Event-Logs."""
+        if not self.is_session_active:
+            # Während keiner Session nur Summary, keine Events
+            self._stable_on_count = 0
+            self._stable_off_count = 0
+            return
+
+        # Sicherer Zugriff auf optionale Felder des MotionResult
+        area = float(getattr(mr, "contour_area", 0.0) or 0.0)
+
+        if mr.motion_detected:
+            self._stable_on_count += 1
+            self._stable_off_count = 0
+
+            # Akkumulatoren für laufendes Event
+            if self.debounced_motion:
+                self._event_area_sum += area
+                self._event_area_max = max(self._event_area_max, area)
+                self._event_frames += 1
+
+            # MotionStart bei stabilem On
+            if not self.debounced_motion and self._stable_on_count >= self.debounce_on_frames:
+                self.debounced_motion = True
+                self._event_open_time = datetime.now()
+                self._event_area_sum = area
+                self._event_area_max = area
+                self._event_frames = 1
+                self.logger.info(
+                    "MotionStart session=%s ts=%s area=%.1f roi=%s",
+                    self.session_id,
+                    self._event_open_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    area,
+                    getattr(mr, 'roi_used', False),
+                )
+
+        else:
+            self._stable_off_count += 1
+            self._stable_on_count = 0
+
+            # MotionEnd bei stabilem Off
+            if self.debounced_motion and self._stable_off_count >= self.debounce_off_frames:
+                now = datetime.now()
+                duration_s = (now - (self._event_open_time or now)).total_seconds()
+                avg_area = (self._event_area_sum / self._event_frames) if self._event_frames else 0.0
+
+                if duration_s >= self.min_event_duration_s:
+                    self.logger.info(
+                        "MotionEnd   session=%s ts=%s duration=%.2fs frames=%d area_max=%.1f area_avg=%.1f",
+                        self.session_id,
+                        now.strftime("%Y-%m-%d %H:%M:%S"),
+                        duration_s,
+                        self._event_frames,
+                        self._event_area_max,
+                        avg_area,
+                    )
+                else:
+                    # Kurzes Flackern nicht als Event loggen
+                    self.logger.debug(
+                        "MotionShort session=%s duration=%.2fs frames=%d (ignored)",
+                        self.session_id,
+                        duration_s,
+                        self._event_frames,
+                    )
+
+                # State & Akkumulatoren zurücksetzen
+                self.debounced_motion = False
+                self._event_open_time = None
+                self._event_area_sum = 0.0
+                self._event_area_max = 0.0
+                self._event_frames = 0
+
+    def _maybe_log_motion_summary(self) -> None:
+        """Schreibt periodisch eine verdichtete Motion‑Zusammenfassung."""
+        now = datetime.now()
+        if (now - self._last_summary_at).total_seconds() < self._summary_interval_s:
+            return
+
+        with self.history_lock:
+            size = len(self.motion_history)
+            ratio = (sum(self.motion_history) / size) if size >= 1 else 0.0
+
+        self.logger.info(
+            "MotionSummary session=%s active=%s recent_ratio=%.2f history=%d",
+            self.session_id,
+            self.debounced_motion,
+            ratio,
+            size,
+        )
+        self._last_summary_at = now
 
     def _check_alert_trigger(self) -> None:
         """
