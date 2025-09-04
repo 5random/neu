@@ -121,7 +121,7 @@ class MotionDetector:
         Returns:
             True wenn erfolgreich aktualisiert
         """
-        if not 0.1 <= new_sensitivity <= 1.0:
+        if not 0.01 <= new_sensitivity <= 1.0:
             self.logger.warning(f"Invalid sensitivity: {new_sensitivity}")
             return False
         
