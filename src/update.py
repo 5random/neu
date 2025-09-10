@@ -67,12 +67,24 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 UPDATE_LOG = LOG_DIR / 'update.log'
 logger = get_logger("update")
 
-def _run(cmd: list[str], cwd: Optional[Path] = None) -> Tuple[int, str, str]:
-    proc = subprocess.run(
-        cmd, cwd=str(cwd or ROOT),
-        capture_output=True, text=True, shell=False
-    )
-    return proc.returncode, (proc.stdout or ""), (proc.stderr or "")
+def _run(cmd: list[str], cwd: Optional[Path] = None, timeout: float = 120.0) -> Tuple[int, str, str]:
+    """Run a subprocess command with sane defaults and timeout.
+
+    Returns (returncode, stdout, stderr). On timeout, returns code 124 with message in stderr.
+    """
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd or ROOT),
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=timeout,
+            check=False,
+        )
+        return proc.returncode, (proc.stdout or ""), (proc.stderr or "")
+    except subprocess.TimeoutExpired:
+        return 124, "", f"Command timed out after {timeout}s: {' '.join(cmd)}"
 
 def _log_to_file(msg: str) -> None:
     ts = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -93,24 +105,45 @@ def get_local_commit_short() -> str:
     code, out, _ = _run(['git', 'rev-parse', '--short', 'HEAD'])
     return out.strip() if code == 0 and out.strip() else 'unknown'
 
+def _ensure_git_available() -> None:
+    """Raise if git is not available in PATH."""
+    if shutil.which('git') is None:
+        raise RuntimeError('git executable not found in PATH.')
+
+def _get_upstream() -> Tuple[Optional[str], Optional[str]]:
+    """Return (upstream_ref, remote_name) for current HEAD, if any."""
+    u_code, u_out, _ = _run(['git', 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
+    if u_code != 0 or not u_out.strip():
+        return None, None
+    upstream_ref = u_out.strip()
+    remote_name = upstream_ref.split('/', 1)[0] if '/' in upstream_ref else 'origin'
+    return upstream_ref, remote_name
+
 def check_update() -> dict:
-    # Verify remote before any network operation
-    _verify_remote(progress=None, raise_on_fail=True)
+    # Ensure git exists and identify upstream/remote; verify that specific remote and fetch only it
+    _ensure_git_available()
+
+    upstream_ref, remote_name = _get_upstream()
+    if remote_name:
+        _verify_remote(progress=None, raise_on_fail=True, remote_name=remote_name)
+        remote_to_fetch = remote_name
+    else:
+        # Fall back to origin
+        _verify_remote(progress=None, raise_on_fail=True, remote_name='origin')
+        remote_to_fetch = 'origin'
 
     # Fetch and hard-fail on errors so callers can notify the user
-    code, out, err = _run(['git', 'fetch', '--all', '--prune'])
+    code, out, err = _run(['git', 'fetch', remote_to_fetch, '--prune'])
     if code != 0:
-        msg = f'git fetch failed: {err.strip() or out.strip() or "unknown error"}'
+        msg = f'git fetch {remote_to_fetch} failed: {err.strip() or out.strip() or "unknown error"}'
         logger.error(msg)
         raise RuntimeError(msg)
 
     ahead, behind = 0, 0
     remote_short = ''
 
-    # Detect upstream ref (handles detached HEAD or missing upstream)
-    u_code, u_out, _ = _run(['git', 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
-    if u_code == 0 and u_out.strip():
-        upstream_ref = u_out.strip()
+    # Use previously detected upstream ref (handles detached HEAD or missing upstream)
+    if upstream_ref:
         # ahead/behind relative to upstream
         c_code, c_out, _ = _run(['git', 'rev-list', '--left-right', '--count', f'HEAD...{upstream_ref}'])
         if c_code == 0 and c_out.strip():
@@ -154,17 +187,35 @@ def perform_update(progress: Optional[Callable[[str], None]] = None) -> bool:
         return False
 
     # Ensure remote is trusted before reaching out to network
-    if not _verify_remote(progress=progress, raise_on_fail=False):
-        _emit(progress, 'Aborting update due to unverified or missing git remote.')
+    try:
+        # Verify the actual upstream remote if available; fall back to origin
+        upstream_ref, remote_name = _get_upstream()
+        target_remote = remote_name or 'origin'
+        if not _verify_remote(progress=progress, raise_on_fail=True, remote_name=target_remote):
+            _emit(progress, 'Aborting update due to unverified or missing git remote.')
+            return False
+    except Exception as e:
+        _emit(progress, f'Aborting update: remote verification failed: {e}')
         return False
 
     _emit(progress, 'Fetching latest changes...')
-    status = check_update()
+    try:
+        status = check_update()
+    except Exception as e:
+        _emit(progress, f'Failed to check for updates: {e}')
+        logger.error(f'check_update failed: {e}')
+        return False
     _emit(progress, f"Local {status.get('local')} | Remote {status.get('remote') or 'n/a'} | behind={status.get('behind', 0)}")
 
     if status.get('behind', 0) <= 0:
         _emit(progress, 'Already up to date.')
         return True
+
+    # Prevent pull on dirty worktree to avoid failures or unintended merges
+    st_code, st_out, st_err = _run(['git', 'status', '--porcelain'])
+    if st_code == 0 and st_out.strip():
+        _emit(progress, 'Uncommitted local changes detected; aborting pull. Commit or stash them and retry.')
+        return False
 
     _emit(progress, 'Backing up config/config.yaml ...')
     bkp = _backup_config()
@@ -252,7 +303,7 @@ def _get_remote_url(name: str = 'origin') -> Tuple[bool, str]:
         return True, out.strip()
     return False, (err.strip() or 'unknown remote')
 
-def _verify_remote(progress: Optional[Callable[[str], None]] = None, raise_on_fail: bool = False) -> bool:
+def _verify_remote(progress: Optional[Callable[[str], None]] = None, raise_on_fail: bool = False, remote_name: str = 'origin') -> bool:
     """
     Verify that the configured git remote URL is trusted before network operations.
 
@@ -262,9 +313,9 @@ def _verify_remote(progress: Optional[Callable[[str], None]] = None, raise_on_fa
       Defaults to allow only the known repository 'github.com[:/]5random/neu(.git)?'.
     On failure: log and emit an explicit error. If raise_on_fail is True, raise RuntimeError.
     """
-    ok, url = _get_remote_url('origin')
+    ok, url = _get_remote_url(remote_name)
     if not ok:
-        msg = f'Failed to read git remote URL for origin: {url}'
+        msg = f'Failed to read git remote URL for {remote_name}: {url}'
         logger.error(msg)
         _emit(progress, msg)
         if raise_on_fail:
@@ -283,7 +334,7 @@ def _verify_remote(progress: Optional[Callable[[str], None]] = None, raise_on_fa
             if raise_on_fail:
                 raise RuntimeError(msg)
             return False
-        _emit(progress, f'Git remote verified: {url}')
+        _emit(progress, f'Git remote verified ({remote_name}): {url}')
         return True
 
     # Otherwise fall back to allowlist patterns
@@ -313,7 +364,7 @@ def _verify_remote(progress: Optional[Callable[[str], None]] = None, raise_on_fa
             raise RuntimeError(msg)
         return False
 
-    _emit(progress, f'Git remote verified: {url}')
+    _emit(progress, f'Git remote verified ({remote_name}): {url}')
     return True
 
 def _verify_requirements_file(req_path: Path, progress: Optional[Callable[[str], None]] = None,
@@ -375,16 +426,20 @@ def _verify_requirements_file(req_path: Path, progress: Optional[Callable[[str],
     for line in logical_lines:
         if not line or line.startswith('#'):
             continue
-        if line.startswith('-r ') or line.startswith('--requirement '):
+        # Strip inline comments starting with ' #'
+        line_wo_comment = re.split(r"\s+#", line, 1)[0].strip()
+        if not line_wo_comment:
+            continue
+        if line_wo_comment.startswith('-r ') or line_wo_comment.startswith('--requirement '):
             try:
-                inc = line.split(None, 1)[1].strip()
+                inc = line_wo_comment.split(None, 1)[1].strip()
                 includes.append((req_path.parent / inc).resolve())
             except Exception:
                 pass
             continue
-        if line.startswith(('--index-url', '--extra-index-url', '-i ', '-f ', '--find-links', '-c ', '--constraint')):
+        if line_wo_comment.startswith(('--index-url', '--extra-index-url', '-i ', '-f ', '--find-links', '-c ', '--constraint')):
             continue
-        actionable.append(line)
+        actionable.append(line_wo_comment)
 
     included_hash_mode: list[bool] = []
     for inc_path in includes:
