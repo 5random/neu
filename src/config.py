@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 import re
@@ -189,14 +189,79 @@ class EmailConfig:
     smtp_port: int
     sender_email: str
     templates: Dict[str, Dict[str, str]]
+    # Recipient groups and active group selection
+    groups: Dict[str, List[str]] = field(default_factory=dict)
+    active_groups: List[str] = field(default_factory=list)
+    # Measurement notification toggles
+    notifications: Dict[str, bool] = field(default_factory=dict)
 
     EMAIL_RE = re.compile(r"^[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}$")
 
+    def __post_init__(self) -> None:
+        """Runtime type validation for new fields.
+
+        Ensures:
+        - groups is Dict[str, List[str]] (each value list of str)
+        - active_groups is List[str]
+        - notifications is Dict[str, bool]
+        Raises TypeError with a clear message on violations.
+        """
+        # groups
+        if not isinstance(self.groups, dict):
+            raise TypeError(f"EmailConfig.groups must be Dict[str, List[str]], got {type(self.groups).__name__}: {self.groups!r}")
+        for k, v in self.groups.items():
+            if not isinstance(k, str):
+                raise TypeError(f"EmailConfig.groups keys must be str, got {type(k).__name__}: {k!r}")
+            if not isinstance(v, list):
+                raise TypeError(f"EmailConfig.groups['{k}'] must be List[str], got {type(v).__name__}: {v!r}")
+            for idx, item in enumerate(v):
+                if not isinstance(item, str):
+                    raise TypeError(f"EmailConfig.groups['{k}'][{idx}] must be str, got {type(item).__name__}: {item!r}")
+
+        # active_groups
+        if not isinstance(self.active_groups, list):
+            raise TypeError(f"EmailConfig.active_groups must be List[str], got {type(self.active_groups).__name__}: {self.active_groups!r}")
+        for idx, g in enumerate(self.active_groups):
+            if not isinstance(g, str):
+                raise TypeError(f"EmailConfig.active_groups[{idx}] must be str, got {type(g).__name__}: {g!r}")
+
+        # notifications
+        if not isinstance(self.notifications, dict):
+            raise TypeError(f"EmailConfig.notifications must be Dict[str, bool], got {type(self.notifications).__name__}: {self.notifications!r}")
+        for k, v in self.notifications.items():
+            if not isinstance(k, str):
+                raise TypeError(f"EmailConfig.notifications keys must be str, got {type(k).__name__}: {k!r}")
+            if not isinstance(v, bool):
+                raise TypeError(f"EmailConfig.notifications['{k}'] must be bool, got {type(v).__name__}: {v!r}")
+
     def validate(self) -> List[str]:
         errors: List[str] = []
-        for mail in [self.sender_email, *self.recipients]:
+        # Base emails
+        if not self.sender_email:
+            errors.append("missing sender email address")
+        elif not self.EMAIL_RE.match(self.sender_email):
+            errors.append(f"invalid sender email address: {self.sender_email}")
+        for mail in self.recipients or []:
             if not self.EMAIL_RE.match(mail):
                 errors.append(f"invalid email address: {mail}")
+        # Groups and active groups
+        if self.groups:
+            for gname, addrs in self.groups.items():
+                if not gname or not isinstance(gname, str):
+                    errors.append(f"invalid group name: {gname!r}")
+                for mail in addrs or []:
+                    if not self.EMAIL_RE.match(mail):
+                        errors.append(f"invalid email address in group '{gname}': {mail}")
+        if self.active_groups:
+            unknown = [g for g in self.active_groups if g not in (self.groups or {})]
+            if unknown:
+                errors.append(f"unknown active groups: {unknown}")
+        # Notifications flags (optional)
+        if self.notifications is not None and isinstance(self.notifications, dict):
+            for k, v in self.notifications.items():
+                if not isinstance(v, bool):
+                    errors.append(f"notification flag '{k}' must be a bool, got {type(v).__name__}")
+        # SMTP
         if not 1 <= self.smtp_port <= 65535:
             errors.append("smtp_port must be between [1, 65535]")
         if not self.smtp_server:
@@ -223,6 +288,67 @@ class EmailConfig:
             subject=data.get("subject", "CVD-Tracker: No Motion Detected - {timestamp}"),
             body=data.get("body", default_body),
         )
+
+    def measurement_template(self, event: str) -> EmailTemplate:
+        """Return measurement templates for 'start' or 'end'.
+
+        Parameters
+        ----------
+        event: str
+            Must be either 'start' or 'end' (case-insensitive, surrounding whitespace ignored).
+
+        Raises
+        ------
+        ValueError
+            If event is not one of 'start' or 'end'.
+        """
+        event_norm = (event or "").strip().lower()
+        if event_norm not in ("start", "end"):
+            raise ValueError(f"invalid measurement event '{event}'; expected 'start' or 'end'")
+
+        key = f"measurement_{event_norm}"
+        data = (self.templates or {}).get(key, {})
+
+        if event_norm == 'start':
+            default_subject = "CVD-Tracker: Measurement started - {timestamp}"
+            default_body = (
+                "Measurement session started at {timestamp}.\n"
+                "Session-ID: {session_id}\n"
+                "Website: {website_url}\n"
+            )
+        else:
+            default_subject = "CVD-Tracker: Measurement ended - {timestamp}"
+            default_body = (
+                "Measurement session ended at {timestamp}.\n"
+                "Session-ID: {session_id}\n"
+                "Start: {start_time}\n"
+                "End: {end_time}\n"
+                "Duration: {duration}\n"
+                "Reason: {reason}\n"
+                "Website: {website_url}\n"
+            )
+
+        return EmailTemplate(
+            subject=data.get("subject", default_subject),
+            body=data.get("body", default_body),
+        )
+
+    def get_target_recipients(self) -> List[str]:
+        """Compute effective recipients based on active groups.
+
+        If active_groups is non-empty and groups exist, return the union of those
+        addresses (de-duplicated, stable order). Otherwise, return recipients.
+        """
+        if self.active_groups and self.groups:
+            collected: List[str] = []
+            for g in self.active_groups:
+                for addr in (self.groups.get(g, []) or []):
+                    if self.EMAIL_RE.match(addr):
+                        collected.append(addr)
+            if collected:
+                # Preserve first occurrence order while removing duplicates
+                return list(dict.fromkeys(collected))
+        return list(self.recipients)
 # ---------------------------------------------------------------------------
 # GUI & Logging
 # ---------------------------------------------------------------------------
@@ -497,17 +623,43 @@ def _create_default_config() -> AppConfig:
             smtp_server="smtp.example.com",
             smtp_port=25,
             sender_email="sender@example.com",
-            templates={"alert": {"subject": "CVD-TRACKER-Alert: no motion detected - {timestamp}", "body": 
-                                 "Movement has not been detected since {timestamp}!"
-                                 "\nPlease check the issue via the web application at: {website_url}."
-                                 "\n\nDetails:"
-                                 "\nSession-ID: {session_id}"
-                                 "\nLast motion at: {last_motion_time}"
-                                 "\nCamera: Index {camera_index}"
-                                 "\nSensitivity: {sensitivity}"
-                                 "\nROI enabled: {roi_enabled}"
-                                 "\n\nAttached is the current webcam image."
-                                 }}
+            templates={
+                "alert": {
+                    "subject": "CVD-TRACKER-Alert: no motion detected - {timestamp}",
+                    "body": (
+                        "Movement has not been detected since {timestamp}!"
+                        "\nPlease check the issue via the web application at: {website_url}."
+                        "\n\nDetails:"
+                        "\nSession-ID: {session_id}"
+                        "\nLast motion at: {last_motion_time}"
+                        "\nCamera: Index {camera_index}"
+                        "\nSensitivity: {sensitivity}"
+                        "\nROI enabled: {roi_enabled}"
+                        "\n\nAttached is the current webcam image."
+                    )
+                },
+                "measurement_start": {
+                    "subject": "CVD-Tracker: Measurement started - {timestamp}",
+                    "body": (
+                        "Measurement session started at {timestamp}.\n"
+                        "Session-ID: {session_id}\n"
+                        "Website: {website_url}\n"
+                    )
+                },
+                "measurement_end": {
+                    "subject": "CVD-Tracker: Measurement ended - {timestamp}",
+                    "body": (
+                        "Measurement session ended at {timestamp}.\n"
+                        "Session-ID: {session_id}\n"
+                        "Start: {start_time}\n"
+                        "End: {end_time}\n"
+                        "Duration: {duration}\n"
+                        "Reason: {reason}\n"
+                        "Website: {website_url}\n"
+                    )
+                }
+            },
+            notifications={"on_start": False, "on_end": False}
                                  
         ),
         gui=GUIConfig(
@@ -628,6 +780,16 @@ def _prepare_for_yaml(cfg_dict: dict) -> dict:
         alert = data["email"]["templates"]["alert"]
         if isinstance(alert, dict):
             data["email"]["templates"]["alert"] = _order_map(alert, ["subject", "body"])
+    except Exception:
+        pass
+
+    # Also order measurement templates: subject before body
+    try:
+        tpls = data["email"]["templates"]
+        for key in ("measurement_start", "measurement_end"):
+            tpl = tpls.get(key)
+            if isinstance(tpl, dict):
+                tpls[key] = _order_map(tpl, ["subject", "body"])
     except Exception:
         pass
 

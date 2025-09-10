@@ -1,16 +1,62 @@
-from typing import Dict, Optional, Any
-import re
+from typing import Optional
 import asyncio
 
 from nicegui import ui
+from nicegui import events
 from nicegui.client import Client
 
 from src.config import get_global_config, save_global_config, get_logger
+from src.config import EmailConfig as _EmailConfig
 from src.alert import AlertSystem
 
 logger = get_logger('gui.email')
 
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z0-9]{2,}$")
+# Reuse the central email regex from EmailConfig for consistency
+EMAIL_RE = _EmailConfig.EMAIL_RE
+
+# --- helpers (module-level) -------------------------------------------------
+def sanitize_group_addresses(addresses: list[str]) -> list[str]:
+    """Return addresses filtered to valid emails, preserving order and de-duplicated.
+
+    This performs one-time validation for group storage so later consumers
+    don't need to re-validate on each merge.
+    """
+    seen: dict[str, None] = {}
+    for addr in addresses or []:
+        a = (addr or '').strip()
+        if a and EMAIL_RE.match(a) and a not in seen:
+            seen[a] = None
+    return list(seen.keys())
+
+
+def sanitize_groups_dict(groups: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Sanitize an entire groups mapping (name -> addresses)."""
+    clean: dict[str, list[str]] = {}
+    for name, addrs in (groups or {}).items():
+        clean[name] = sanitize_group_addresses(list(addrs or []))
+    return clean
+
+
+def _get_effective_recipients_from_config(cfg, state: dict) -> list[str]:
+    """Return effective recipients from cfg.email if available; fallback to state['recipients'].
+
+    This wrapper is defensive and will never raise, always returning a list.
+    """
+    try:
+        if cfg and getattr(cfg, 'email', None):
+            getter = getattr(cfg.email, 'get_target_recipients', None)
+            if callable(getter):
+                result = getter()
+                if isinstance(result, (list, tuple)):
+                    return list(result)
+                if result is None:
+                    return []
+                logger.debug("Unexpected type from get_target_recipients: %r", type(result))
+                return list(state.get('recipients', []) or [])
+    except Exception:
+        # fall through to state fallback on any error
+        logger.debug("Falling back to local recipients for effective list", exc_info=True)
+    return list(state.get('recipients', []) or [])
 
 def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
     """
@@ -28,19 +74,51 @@ def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
     # ------------------------------------------------------------------ #
     # interner Zustand                                                   #
     # ------------------------------------------------------------------ #
-    state: Dict = {
+    state: dict = {
         "recipients": list(config.email.recipients),
         "smtp": {
             "server": config.email.smtp_server,
             "port": config.email.smtp_port,
             "sender": config.email.sender_email,
         },
-    }
+    # Groups feature
+    "groups": dict(getattr(config.email, "groups", {}) or {}),
+        "active_groups": list(getattr(config.email, "active_groups", []) or []),
+        "current_group": None,
+        # Measurement notifications
+        "notifications": dict(getattr(config.email, "notifications", {}) or {}),    }
+
+    # Sanitize any pre-existing groups loaded from config (once on init)
+    try:
+        original_groups = state.get("groups", {})
+        sanitized_groups = sanitize_groups_dict(original_groups)
+        # If anything changed, log a warning for visibility and replace in state
+        if sanitized_groups != original_groups:
+            for gname, addrs in original_groups.items():
+                sanitized = sanitized_groups.get(gname, [])
+                if set(addrs or []) != set(sanitized):
+                    removed = [a for a in (addrs or []) if a not in sanitized]
+                    if removed:
+                        logger.warning(
+                            "Removed invalid email(s) from group '%s': %s",
+                            gname,
+                            ", ".join(removed),
+                        )
+        state["groups"] = sanitized_groups
+    except Exception:  # noqa: BLE001
+        # Don't break UI init if sanitization fails unexpectedly
+        logger.exception("Failed to sanitize groups on init; continuing with raw data")
 
     recipient_list: Optional[ui.list] = None
+    eff_recipient_list: Optional[ui.list] = None
     table: Optional[ui.table] = None
+    group_table: Optional[ui.table] = None
+    active_groups_select: Optional[ui.select] = None
     email_inp: Optional[ui.input] = None
-    smtp_labels: Dict[str, ui.label] = {}
+    smtp_labels: dict[str, ui.label] = {}
+    overview_counts_base: Optional[ui.label] = None
+    overview_counts_eff: Optional[ui.label] = None
+    notif_labels: dict[str, ui.label] = {}
 
     if alert_system is None:
         logger.error("Alert system is not initialized, email functionality will be disabled.")
@@ -60,6 +138,14 @@ def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
             config.email.smtp_server = state["smtp"]["server"]
             config.email.smtp_port = int(state["smtp"]["port"])
             config.email.sender_email = state["smtp"]["sender"]
+            # groups
+            if hasattr(config.email, 'groups'):
+                config.email.groups = dict(state.get("groups", {}))
+            if hasattr(config.email, 'active_groups'):
+                config.email.active_groups = list(state.get("active_groups", []))
+            # notifications
+            if hasattr(config.email, 'notifications'):
+                config.email.notifications = dict(state.get("notifications", {}))
             if save_global_config():
                 if alert_system:
                     alert_system.refresh_config()
@@ -78,7 +164,7 @@ def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
     def is_valid_email(addr: str) -> bool:
         return bool(EMAIL_RE.match(addr))
 
-    def validate_smtp(cfg: Dict) -> list[str]:
+    def validate_smtp(cfg: dict) -> list[str]:
         errors: list[str] = []
         if not is_valid_email(cfg.get("sender", "")):
             errors.append("Email address is invalid.")
@@ -107,15 +193,17 @@ def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
                 ui.notify("Alert system not initialized", color="negative", position='bottom-right')
             return
         
-        # UI-Updates
-        with client:
-            ui.notify(f"Sending test email to {', '.join(state['recipients'])}", color="info", position='bottom-right')
-
+        # Persist and then compute effective recipients for an accurate UI message
         if not persist_state():
             logger.error("Failed to persist state before sending email")
             with client:
                 ui.notify("Failed to persist state before sending email", color="negative", position='bottom-right')
             return
+        # UI-Updates after persist: show effective recipients (groups aware)
+        cfg = get_global_config()
+        effective = _get_effective_recipients_from_config(cfg, state)
+        with client:
+            ui.notify(f"Sending test email to {', '.join(effective)}", color="info", position='bottom-right')
         
         # E-Mail senden
         try:
@@ -127,20 +215,24 @@ def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
                 ui.notify(error_msg, color="negative", position='bottom-right')
             return
 
-        # Logging der Empfänger
-        for i, recipient in enumerate(config.email.recipients):
-            logger.info(f"Recipient {i+1}/{len(config.email.recipients)}: {recipient}")
+        # Logging der Empfänger (effective recipients)
+        eff_logged = _get_effective_recipients_from_config(get_global_config(), state)
+        for i, recipient in enumerate(eff_logged):
+            logger.info(f"Recipient {i+1}/{len(eff_logged)}: {recipient}")
 
         # Finale UI-Updates
         with client:
             if success:
-                ui.notify(f"Test email sent successfully to all {len(state['recipients'])} recipients", color="positive", position='bottom-right')
+                # Recompute to be robust and avoid depending on prior vars
+                count = len(_get_effective_recipients_from_config(get_global_config(), state))
+                ui.notify(f"Test email sent successfully to all {count} recipients", color="positive", position='bottom-right')
             else:
                 ui.notify("Error sending test email", color="negative", position='bottom-right')
         
         # Finales Logging
         if success:
-            logger.info(f"Test email sent successfully to all {len(state['recipients'])} recipients")
+            count = len(_get_effective_recipients_from_config(get_global_config(), state))
+            logger.info(f"Test email sent successfully to all {count} recipients")
         else:
             logger.error("Error sending test email")
 
@@ -168,6 +260,23 @@ def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
             table.update()
             update_status_icon()
 
+    def _compute_effective_recipients() -> list[str]:
+        """Compute effective recipients from local state (groups + active_groups)."""
+        active = state.get("active_groups") or []
+        groups = state.get("groups") or {}
+        if active and groups:
+            seen: set[str] = set()
+            ordered: list[str] = []
+            for g in active:
+                for addr in groups.get(g, []) or []:
+                    # groups are sanitized to contain only valid emails; merge + dedupe only
+                    if addr not in seen:
+                        seen.add(addr)
+                        ordered.append(addr)
+            if ordered:
+                return ordered
+        return list(state.get("recipients", []))
+
     def refresh_recipient_list() -> None:
         if recipient_list is None:
             return
@@ -176,12 +285,40 @@ def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
             for addr in state["recipients"]:
                 ui.item(addr)
 
+    def refresh_effective_list() -> None:
+        if eff_recipient_list is None:
+            return
+        eff_recipient_list.clear()
+        with eff_recipient_list:
+            for addr in _compute_effective_recipients():
+                ui.item(addr)
+
     def refresh_overview() -> None:
         """Aktualisiert die Overview-Anzeige"""
         refresh_recipient_list()
+        refresh_effective_list()
+        # Update counts
+        if overview_counts_base is not None:
+            overview_counts_base.text = f"({len(state['recipients'])})"
+            overview_counts_base.update()
+        if overview_counts_eff is not None:
+            overview_counts_eff.text = f"({len(_compute_effective_recipients())})"
+            overview_counts_eff.update()
+        # Notification flags
+        if notif_labels.get('start') is not None:
+            on = bool(state['notifications'].get('on_start', False))
+            notif_labels['start'].text = 'enabled' if on else 'disabled'
+            notif_labels['start'].classes(remove='text-negative text-grey text-positive', add=('text-positive' if on else 'text-grey'))
+            notif_labels['start'].update()
+        if notif_labels.get('end') is not None:
+            on = bool(state['notifications'].get('on_end', False))
+            notif_labels['end'].text = 'enabled' if on else 'disabled'
+            notif_labels['end'].classes(remove='text-negative text-grey text-positive', add=('text-positive' if on else 'text-grey'))
+            notif_labels['end'].update()
         for key in ["sender", "server", "port"]:
             if key in smtp_labels and smtp_labels[key] is not None:
                 smtp_labels[key].text = str(state["smtp"][key])
+                smtp_labels[key].update()
 
     def add_recipient() -> None:
         if email_inp is None:
@@ -213,14 +350,92 @@ def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
         state["recipients"] = [
             addr for addr in state["recipients"] if addr not in selected_addresses
         ]
+        # Also remove from all groups
+        for gname, addrs in list(state["groups"].items()):
+            state["groups"][gname] = [a for a in addrs if a not in selected_addresses]
         if persist_state():
             refresh_table()
             table.selected = []
             refresh_overview()
+            if group_table is not None:
+                group_table.rows = [{"address": addr} for addr in state["recipients"]]
+                group_table.selected = []
+                group_table.update()
             if alert_system:
                 alert_system.refresh_config()
             ui.notify(f"{len(selected_addresses)} address(es) deleted", color="positive", position='bottom-right')
             logger.info(f"Deleted {len(selected_addresses)} recipient(s): {', '.join(selected_addresses)}; new total recipients: {len(state['recipients'])}")
+
+    def rename_recipient(e: events.GenericEventArguments) -> None:
+        """Handles in-line edit of a recipient address.
+
+        Expects payload: {'old': str, 'address': str} or legacy {'index': int, 'address': str}
+        Validates, persists, and refreshes UI; reverts on error.
+        """
+        try:
+            payload = e.args or {}
+            new_addr = (payload.get('address') or '').strip()
+            if 'old' in payload:
+                old_addr = (payload.get('old') or '').strip()
+                idx = state['recipients'].index(old_addr) if old_addr in state['recipients'] else -1
+            else:
+                idx_val = payload.get('index')
+                idx = int(idx_val) if idx_val is not None else -1
+                old_addr = state['recipients'][idx] if 0 <= idx < len(state['recipients']) else ''
+        except Exception:
+            ui.notify('Invalid edit event payload', color='negative', position='bottom-right')
+            logger.error('Invalid edit payload for recipient rename: %s', e.args)
+            refresh_table()
+            return
+
+        # Bounds check
+        if idx < 0 or idx >= len(state['recipients']):
+            ui.notify('Edit target not found', color='negative', position='bottom-right')
+            logger.error('Edit target not found: %s', e.args)
+            refresh_table()
+            return
+
+        # Validate email format
+        if not is_valid_email(new_addr):
+            ui.notify('Invalid email address', color='negative', position='bottom-right')
+            logger.warning('Rejected invalid email on rename: %s', new_addr)
+            # revert visual table from state
+            refresh_table()
+            return
+
+        # Prevent duplicates (allow same as old)
+        existing = set(state['recipients'])
+        if new_addr != old_addr and new_addr in existing:
+            ui.notify('Address already exists', color='warning', position='bottom-right')
+            logger.warning('Rejected duplicate email on rename: %s', new_addr)
+            refresh_table()
+            return
+
+        # Apply change and persist
+        state['recipients'][idx] = new_addr
+        # Update groups memberships
+        for gname, addrs in list(state["groups"].items()):
+            state["groups"][gname] = [new_addr if a == old_addr else a for a in addrs]
+        if persist_state():
+            refresh_table()
+            refresh_overview()
+            if group_table is not None:
+                group_table.rows = [{"address": addr} for addr in state["recipients"]]
+                # re-apply selection for current group
+                if state["current_group"] in state["groups"]:
+                    tgt = set(state["groups"][state["current_group"]])
+                    group_table.selected = [r for r in group_table.rows if r["address"] in tgt]
+                group_table.update()
+            if alert_system:
+                alert_system.refresh_config()
+            logger.info('Recipient updated: %s -> %s', old_addr, new_addr)
+            ui.notify('Recipient updated', color='positive', position='bottom-right')
+        else:
+            # rollback in-memory state on failure
+            state['recipients'][idx] = old_addr
+            refresh_table()
+            ui.notify('Failed to save changes', color='negative', position='bottom-right')
+            logger.error('Failed to persist state after rename (rolled back)')
 
     # ------------------------------------------------------------------ #
     # Haupt-Card                                                         #
@@ -234,6 +449,7 @@ def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
             tab_overview = ui.tab("Overview").tooltip("Overview of the email configuration")
             tab_rcp = ui.tab("Recipients").tooltip("Manage email recipients")
             tab_smtp = ui.tab("SMTP").tooltip("Configure SMTP settings")
+            tab_groups = ui.tab("Groups").tooltip("Create and activate recipient groups")
 
         # Panels
         with ui.tab_panels(tabs, value=tab_overview).classes("w-full"):
@@ -241,12 +457,29 @@ def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
             # ---------------------- Übersicht --------------------------- #
             with ui.tab_panel(tab_overview):
                 with ui.column().classes("gap-2"):
-                    with ui.row().style("align-self:flex-start; flex-direction:row; justify-content:center; align-items:center; flex-wrap:wrap;"):
-                        ui.label("Recipients").classes("text-subtitle2 text-grey-7 mt-1")
-                        ui.label().bind_text_from(state, "recipients", backward=lambda x: f"({len(x)})").classes("text-caption text-grey-5")
+                    with ui.row().style("align-self:flex-start; flex-direction:row; justify-content:flex-start; align-items:center; flex-wrap:wrap; gap:12px;"):
+                        ui.label("Configured recipients").classes("text-subtitle2 text-grey-7 mt-1")
+                        overview_counts_base = ui.label("").classes("text-caption text-grey-5")
+                        ui.label("Effective recipients").classes("text-subtitle2 text-grey-7 mt-1 ml-4")
+                        overview_counts_eff = ui.label("").classes("text-caption text-grey-5")
 
                     recipient_list = ui.list().props("dense").classes("pl-2")
                     refresh_recipient_list()
+
+                    ui.separator()
+
+                    ui.label("Effective recipients (used for sending)").classes("text-subtitle2 text-grey-7")
+                    eff_recipient_list = ui.list().props("dense").classes("pl-2")
+                    refresh_effective_list()
+
+                    ui.separator()
+
+                    ui.label("Notification emails").classes("text-subtitle2 text-grey-7")
+                    with ui.row().classes("items-center gap-4"):
+                        ui.label("On start:").classes("text-grey-6")
+                        notif_labels['start'] = ui.label("").classes("text-caption text-grey")
+                        ui.label("On end:").classes("text-grey-6 ml-4")
+                        notif_labels['end'] = ui.label("").classes("text-caption text-grey")
 
                     ui.separator()
 
@@ -291,6 +524,19 @@ def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
                     row_key="address",
                     selection="multiple",
                 ).classes("w-full")
+
+                # Inline editing for 'address' cell while keeping selection checkboxes
+                table.add_slot('body-cell-address', r'''
+                    <q-td :props="props">
+                        {{ props.value }}
+                        <q-popup-edit v-model="props.row.address" v-slot="scope"
+                                      @save="(val) => $parent.$emit('rename', { old: scope.initialValue, address: val })">
+                            <q-input v-model="scope.value" dense autofocus counter @keyup.enter="scope.set" />
+                        </q-popup-edit>
+                    </q-td>
+                ''')
+
+                table.on('rename', rename_recipient)
 
                 with ui.row().classes("w-full items-center gap-2 mt-2"):
                     with ui.button(
@@ -354,7 +600,187 @@ def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
                     on_click=manual_save,
                 ).props("round").tooltip("Save SMTP settings")
 
+            # ---------------------- Groups ---------------------------------- #
+            with ui.tab_panel(tab_groups):
+                ui.label("Manage Recipient Groups").classes("text-subtitle2 text-grey-7")
+
+                with ui.row().classes("items-center gap-2 q-mb-sm"):
+                    group_name_inp = ui.input("Group name").classes("w-64")
+
+                    def new_group() -> None:
+                        state["current_group"] = None
+                        group_name_inp.value = ""
+                        if group_table:
+                            group_table.selected = []
+                    ui.button("New", icon="create_new_folder", color="accent", on_click=lambda _: new_group()).props("round")
+
+                    def save_group() -> None:
+                        name = (group_name_inp.value or "").strip()
+                        if not name:
+                            ui.notify("Please enter a group name", color="warning", position='bottom-right'); return
+                        # Collect selected recipients
+                        selected = [r["address"] for r in (group_table.selected or [])] if group_table else []
+                        if not selected:
+                            ui.notify("Please select at least one recipient", color="warning", position='bottom-right'); return
+                        # Sanitize addresses once before storing
+                        sanitized = sanitize_group_addresses(selected)
+                        if len(sanitized) != len(selected):
+                            removed = [a for a in selected if a not in sanitized]
+                            logger.warning("Group '%s': removed invalid/duplicate address(es): %s", name, ", ".join(removed))
+                            ui.notify(
+                                f"Ignored invalid/duplicate addresses: {', '.join(removed)}",
+                                color="warning",
+                                position='bottom-right',
+                            )
+                        # Explicit apply
+                        state["groups"][name] = sanitized
+                        state["current_group"] = name
+                        if persist_state():
+                            refresh_groups_ui()
+                            ui.notify(f"Group '{name}' saved", color="positive", position='bottom-right')
+                    ui.button("Save group", icon="save", color="primary", on_click=lambda _: save_group()).props("round")
+
+                    # Confirmation dialog for group deletion
+                    confirm_dialog = ui.dialog()
+                    with confirm_dialog, ui.card():
+                        ui.label("Delete group?").classes("text-subtitle2")
+                        confirm_text = ui.label("")
+                        with ui.row().classes("justify-end gap-2 mt-2"):
+                            ui.button("Cancel", on_click=confirm_dialog.close)
+                            def _confirm_delete(name: str) -> None:
+                                if not name or name not in state["groups"]:
+                                    ui.notify("Select a valid group to delete", color="warning", position='bottom-right'); return
+                                state["groups"].pop(name, None)
+                                state["active_groups"] = [g for g in state["active_groups"] if g != name]
+                                state["current_group"] = None
+                                group_name_inp.value = ""
+                                if group_table:
+                                    group_table.selected = []
+                                if persist_state():
+                                    refresh_groups_ui()
+                                    refresh_overview()
+                                    ui.notify(f"Group '{name}' deleted", color="positive", position='bottom-right')
+                                confirm_dialog.close()
+                            # Single confirm handler refers to pending name in state to avoid stacking handlers
+                            confirm_btn = ui.button("Delete", color="negative", on_click=lambda _: _confirm_delete(state.get("pending_delete_group", "")))
+
+                    def delete_group() -> None:
+                        name = (group_name_inp.value or "").strip()
+                        if not name:
+                            ui.notify("Select a valid group to delete", color="warning", position='bottom-right'); return
+                        confirm_text.text = f"Group '{name}' will be deleted. This cannot be undone."
+                        state["pending_delete_group"] = name
+                        confirm_dialog.open()
+                    ui.button("Delete group", icon="delete", color="negative", on_click=lambda _: delete_group()).props("round")
+
+                with ui.row().classes("items-start gap-4 w-full"):
+                    # Existing groups list
+                    with ui.column().classes("w-1/3"):
+                        ui.label("Existing groups").classes("text-caption text-grey-7")
+                        groups_list = ui.list().props("bordered dense")
+
+                        def load_group(name: str) -> None:
+                            state["current_group"] = name
+                            group_name_inp.value = name
+                            if group_table:
+                                target = set(state["groups"].get(name, []) or [])
+                                group_table.selected = [r for r in group_table.rows if r["address"] in target]
+                                group_table.update()
+
+                        def refresh_groups_ui() -> None:
+                            groups_list.clear()
+                            with groups_list:
+                                for gname, addrs in sorted(state["groups"].items()):
+                                    with ui.item(on_click=lambda _=None, name=gname: load_group(name)).classes("cursor-pointer"):
+                                        ui.item_section(gname)
+                                        ui.item_section().classes("text-grey-6").text = f"({len(addrs)} recipients)"
+                            # Ensure group table reflects recipients
+                            if group_table:
+                                refresh_group_table_rows()
+                            # Update active groups select options and selection
+                            if active_groups_select is not None:
+                                active_groups_select.options = list(state["groups"].keys())
+                                active_groups_select.value = list(state["active_groups"])
+                                active_groups_select.update()
+
+                    # Recipients selection for group
+                    with ui.column().classes("w-2/3"):
+                        ui.label("Select recipients for this group").classes("text-caption text-grey-7")
+                        group_table = ui.table(
+                            columns=[{"name": "address", "label": "Address", "field": "address"}],
+                            rows=[{"address": addr} for addr in state["recipients"]],
+                            row_key="address",
+                            selection="multiple",
+                        ).classes("w-full")
+
+                        def refresh_group_table_rows() -> None:
+                            group_table.rows = [{"address": addr} for addr in state["recipients"]]
+                            group_table.update()
+
+                ui.separator()
+
+                # Active groups selection
+                ui.label("Active groups (used for sending)").classes("text-subtitle2 text-grey-7")
+                with ui.row().classes("items-center gap-2"):
+                    active_groups_select = ui.select(
+                        options=list(state["groups"].keys()),
+                        value=list(state["active_groups"]),
+                        multiple=True,
+                        label="Active groups",
+                    ).classes("min-w-[280px]")
+
+                    def apply_active_groups() -> None:
+                        selected = active_groups_select.value or []
+                        state["active_groups"] = list(selected)
+                        if persist_state():
+                            ui.notify(
+                                f"Active groups set: {', '.join(state['active_groups']) or '—'}",
+                                color="positive",
+                                position='bottom-right',
+                            )
+                            refresh_overview()
+                    ui.button("Apply", icon="done", color="primary", on_click=lambda _: apply_active_groups()).props("round").tooltip("Apply active groups for sending")
+
+                ui.separator()
+
+                # Measurement notifications toggles
+                ui.label("Measurement notifications").classes("text-subtitle2 text-grey-7")
+                with ui.row().classes("items-center gap-2"):
+                    notify_start_cb = ui.checkbox(
+                        'Send email on measurement start',
+                        value=bool(state["notifications"].get("on_start", False))
+                    )
+                    notify_end_cb = ui.checkbox(
+                        'Send email on measurement end',
+                        value=bool(state["notifications"].get("on_end", False))
+                    )
+
+                    def apply_notifications() -> None:
+                        state["notifications"]["on_start"] = bool(notify_start_cb.value)
+                        state["notifications"]["on_end"] = bool(notify_end_cb.value)
+                        if persist_state():
+                            ui.notify("Notification settings applied", color="positive", position='bottom-right')
+                            refresh_overview()
+                    ui.button("Apply", icon="done", color="primary", on_click=lambda _: apply_notifications()).props("round").tooltip("Apply notification settings")
+
+                # Initialize groups UI
+                def _init_groups():
+                    # Single canonical UI refresh for groups
+                    refresh_groups_ui()
+                _init_groups()
+
     # ------------------------------------------------------------------ #
     # Tabelle initial befüllen                                           #
     # ------------------------------------------------------------------ #
     refresh_table()
+    # Ensure overview labels and lists are initially populated
+    try:
+        refresh_overview()
+    except (AttributeError, RuntimeError):
+        # If overview widgets are not yet available, ignore (expected during initial render)
+        logger.debug("Overview widgets not ready yet; skipping initial refresh", exc_info=True)
+    except Exception:
+        # Surface unexpected issues during development
+        logger.exception("Failed to refresh overview during initial load")
+
+    # no wrapper for refresh_table to avoid name shadowing warnings

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import asyncio
 from nicegui import ui, background_tasks
 
 from src.alert import AlertSystem
@@ -212,6 +213,121 @@ def create_measurement_card(
 
         timer_label = ui.label('-').classes('text-subtitle1 q-mb-xs')
 
+        # --- Active recipient groups selection ---
+        groups_select = None  # will be created after async fetch
+        _last_groups_opts: list[str] = []  # initial empty snapshot
+        groups_build_lock = asyncio.Lock()  # prevent concurrent UI builds
+
+        with ui.row().classes('items-center q-gutter-sm q-mb-sm') as groups_row:
+            ui.label('Active recipient groups:').classes('text-caption text-grey')
+            loading_lbl = ui.label('Loading groups...').classes('text-caption text-grey')
+
+            async def _build_groups_ui():
+                nonlocal groups_select, _last_groups_opts
+                async with groups_build_lock:
+                    # 1) fetch config off the UI thread
+                    cfg = await asyncio.to_thread(get_global_config)
+                    opts = list(getattr(cfg.email, 'groups', {}).keys()) if cfg and cfg.email else []
+                    vals = list(getattr(cfg.email, 'active_groups', [])) if cfg and cfg.email else []
+                    # snapshot for change detection
+                    _last_groups_opts = list(opts)
+                    # 2) apply UI changes in one protected block
+                    try:
+                        with groups_row:
+                            try:
+                                loading_lbl.delete()
+                            except Exception:
+                                pass
+                            # create or replace the select
+                            groups_select = ui.select(
+                                options=opts,
+                                value=vals,
+                                multiple=True,
+                                label='Groups'
+                            ).props('dense outlined').classes('min-w-[260px]')
+
+                            # Apply button with robust handler (validation, errors, and UI feedback)
+                            apply_btn = ui.button('Apply', icon='done', color='primary').props('round')
+
+                            def apply_groups(_=None):
+                                nonlocal apply_btn
+                                # Disable button during processing for clear user feedback
+                                try:
+                                    apply_btn.disable()
+                                except Exception:
+                                    pass
+                                try:
+                                    conf = get_global_config()
+                                    if not conf or not getattr(conf, 'email', None):
+                                        ui.notify('Configuration not available', color='warning', position='bottom-right')
+                                        return
+                                    if groups_select is None:
+                                        ui.notify('Groups not ready yet', color='warning', position='bottom-right')
+                                        return
+
+                                    raw_val = getattr(groups_select, 'value', [])
+                                    if raw_val is None:
+                                        selected: list[str] = []
+                                    elif isinstance(raw_val, (list, tuple, set)):
+                                        selected = list(raw_val)
+                                    else:
+                                        raise TypeError(f'Unexpected selection type: {type(raw_val).__name__}')
+
+                                    # Only persist after validation succeeds
+                                    conf.email.active_groups = selected
+                                    save_global_config()
+                                    if alert_system:
+                                        alert_system.refresh_config()
+
+                                    ui.notify('Active groups applied', color='positive', position='bottom-right')
+                                except Exception as exc:
+                                    logger.error('Failed to apply active groups: %s', exc, exc_info=True)
+                                    ui.notify(f'Failed to apply active groups: {exc}', color='negative', position='bottom-right')
+                                finally:
+                                    try:
+                                        apply_btn.enable()
+                                    except Exception:
+                                        pass
+
+                            apply_btn.on('click', apply_groups)
+                    except Exception as exc:
+                        # Surface errors to logs and UI, but don't crash the page
+                        logger.error('Failed to build groups UI: %s', exc, exc_info=True)
+                        ui.notify('Error loading groups UI', color='negative', position='bottom-right')
+
+            background_tasks.create_lazy(_build_groups_ui(), name='load_groups_select')
+
+        # Periodically refresh groups options if the config changes elsewhere
+        def _refresh_groups_ui():
+            nonlocal _last_groups_opts, groups_select
+            try:
+                # Ensure the select exists and has required attributes
+                if groups_select is None:
+                    return
+                if not all(hasattr(groups_select, attr) for attr in ('value', 'options', 'update')):
+                    return
+
+                conf = get_global_config()
+                if not conf or not getattr(conf, 'email', None):
+                    return
+
+                new_opts = list(getattr(conf.email, 'groups', {}).keys())
+                if new_opts != _last_groups_opts:
+                    # Compute intersection of configured active groups and available options
+                    configured_active = list(getattr(conf.email, 'active_groups', []) or [])
+                    filtered_active = [g for g in configured_active if g in new_opts]
+                    # Apply filtered value first, then options, then update
+                    groups_select.value = filtered_active
+                    groups_select.options = new_opts
+                    groups_select.update()
+                    # Update the last options snapshot after successful UI apply
+                    _last_groups_opts = list(new_opts)
+            except Exception as exc:
+                logger.error('Groups UI refresh failed: %s', exc, exc_info=True)
+                # Return True to indicate handled error and allow timer to continue
+                return True
+        ui.timer(5.0, _refresh_groups_ui)
+
         # Fortschrittsbalken und Prozent
         with ui.row().classes('w-full flex-nowrap').style("align-self:flex-start; flex-direction:row; display:flex; flex-wrap:nowrap; gap:8px;") as progress_row:
             progress = ui.linear_progress(value=0.0, color='accent', show_value=False).classes('w-8/12 h-4')
@@ -287,7 +403,7 @@ def create_measurement_card(
         status = measurement_controller.get_session_status()
         if status['is_active']:
             # Messung läuft, also stoppen
-            measurement_controller.stop_session()
+            measurement_controller.stop_session(reason='manual')
         else:
             measurement_controller.start_session()
             last_measurement = datetime.now()

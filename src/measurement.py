@@ -180,13 +180,26 @@ class MeasurementController:
             self._reset_debounce_state()
             
             self.logger.info(f"Session started: {self.session_id}")
+            # Fire optional start notification (non-blocking)
+            try:
+                if self.alert_system:
+                    self._alert_executor.submit(
+                        self.alert_system.send_measurement_event,
+                        'start',
+                        self.session_id,
+                        self.session_start_time,
+                        None,
+                        None,
+                    )
+            except Exception as exc:
+                self.logger.error(f"Error scheduling start notification: {exc}")
             return True
             
         except Exception as exc:
             self.logger.error(f"Error starting session: {exc}")
             return False
     
-    def stop_session(self) -> bool:
+    def stop_session(self, *, reason: str | None = None) -> bool:
         """
         Stoppt die aktuelle Überwachungssitzung.
         
@@ -199,14 +212,30 @@ class MeasurementController:
         
         try:
             session_duration = self._get_session_duration()
+            start_time = self.session_start_time
+            sess_id = self.session_id
             
             self.is_session_active = False
             self.session_start_time = None
             # Debounce-/Event-State zurücksetzen, bevor die Session-ID verworfen wird
             self._reset_debounce_state()
 
-            self.logger.info(f"Session stopped: {self.session_id} "
+            self.logger.info(f"Session stopped: {sess_id} "
                            f"(Duration: {session_duration})")
+
+            # Fire optional end notification (non-blocking)
+            try:
+                if self.alert_system and start_time:
+                    self._alert_executor.submit(
+                        self.alert_system.send_measurement_event,
+                        'end',
+                        sess_id,
+                        start_time,
+                        datetime.now(),
+                        (reason or 'manual')
+                    )
+            except Exception as exc:
+                self.logger.error(f"Error scheduling end notification: {exc}")
 
             self.session_id = None
 
@@ -234,7 +263,7 @@ class MeasurementController:
             session_duration = self._get_session_duration()
             if session_duration and session_duration.total_seconds() > max_min * 60:
                 self.logger.info(f"Session timeout reached after {max_min}min - stopping session")
-                self.stop_session()
+                self.stop_session(reason='timeout')
                 return True
         
         # Check for inactivity timeout
@@ -243,7 +272,7 @@ class MeasurementController:
             time_since_motion = self._get_time_since_motion()
             if time_since_motion and time_since_motion.total_seconds() > inactivity_timeout * 60:
                 self.logger.info(f"Inactivity timeout reached after {inactivity_timeout}min - stopping session")
-                self.stop_session()
+                self.stop_session(reason='inactivity_timeout')
                 return True
         
         return False

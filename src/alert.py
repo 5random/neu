@@ -20,7 +20,7 @@ import cv2
 import numpy as np
 import requests
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
@@ -76,8 +76,13 @@ class AlertSystem:
         if email_errors:
             raise ValueError(f"invalid E-Mail-Config: {', '.join(email_errors)}")
         
-        if not hasattr(email_config, 'recipients') or not email_config.recipients:
-            raise ValueError("At least one recipient must be configured")
+        # Ensure at least one effective recipient is configured (recipients or active groups)
+        try:
+            effective = email_config.get_target_recipients() if hasattr(email_config, 'get_target_recipients') else email_config.recipients
+        except Exception:
+            effective = email_config.recipients
+        if not effective:
+            raise ValueError("At least one recipient must be configured (recipients or active groups)")
 
         if not measurement_config:
             raise ValueError("MeasurementConfig is needed")
@@ -167,6 +172,23 @@ class AlertSystem:
         """
         with self._state_lock:
             return self.app_cfg.email
+
+    def _get_effective_recipients(self) -> List[str]:
+        """Return effective recipients using current email config.
+
+        Prefers EmailConfig.get_target_recipients() when available, otherwise
+        falls back to the base recipients list. Always returns a list and never raises.
+        """
+        try:
+            current_email_config = self._get_current_email_config()
+            if hasattr(current_email_config, 'get_target_recipients'):
+                return list(current_email_config.get_target_recipients() or [])
+            return list(current_email_config.recipients or [])
+        except Exception:
+            try:
+                return list(self.email_config.recipients or [])
+            except Exception:
+                return []
     
     def send_motion_alert(
         self,
@@ -251,7 +273,8 @@ class AlertSystem:
                     if ok and img_buffer is not None and filename is not None and self.measurement_config.save_alert_images:
                         self._save_alert_image(img_buffer, filename)
 
-                msg = self._create_email_message(subject, body, current_email_config.recipients)
+                recipients = self._get_effective_recipients()
+                msg = self._create_email_message(subject, body, recipients)
 
                 # Bild-Anhang hinzufügen wenn verfügbar
                 if img_buffer is not None and filename is not None:
@@ -259,15 +282,16 @@ class AlertSystem:
                     img_attach.add_header('Content-Disposition', f'attachment; filename="{filename}"')
                     msg.attach(img_attach)
 
-                # E-Mail versenden
-                success_count = self._send_emails_batch(msg, current_email_config.recipients)
+                # E-Mail versenden (one message per recipient for compatibility)
+                messages = [(r, msg) for r in recipients]
+                success_count = self._send_emails_batch(messages)
 
                 # Erfolg wenn mindestens eine E-Mail gesendet wurde
                 if success_count > 0:
                     with self._state_lock:
                         self.alerts_sent_count = temp_count
                     self.logger.info(
-                        f"Alert #{temp_count} sent ({success_count}/{len(current_email_config.recipients)} successful)"
+                        f"Alert #{temp_count} sent ({success_count}/{len(recipients)} successful)"
                     )
                     if saved_frame_path:
                         try:
@@ -304,11 +328,102 @@ class AlertSystem:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(self._executor, self.send_motion_alert, last_motion_time, session_id, camera_frame)
 
-    def _send_emails_batch(self, message: MIMEMultipart, recipients: List[str], max_retries: int = 3) -> int:
-        """Send a single message to multiple recipients"""
+    # ------------------------------------------------------------------
+    # Measurement lifecycle notifications
+    # ------------------------------------------------------------------
+    def send_measurement_event(
+        self,
+        event: str,
+        session_id: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Send start/end measurement notification if enabled.
 
-        success_count = 0
+        Args:
+            event: 'start' or 'end'
+            session_id: session identifier
+            start_time: session start time
+            end_time: session end time
+            reason: reason for end (manual/timeout/etc.)
+        """
+        event = (event or '').lower()
+        if event not in ('start', 'end'):
+            self.logger.error(f"Unknown measurement event: {event}")
+            return False
+
         current_email_config = self._get_current_email_config()
+        flags = getattr(current_email_config, 'notifications', None)
+        if not flags:
+            self.logger.info(
+                "notifications disabled or missing for email config (sender=%s, id=%s)",
+                getattr(current_email_config, 'sender_email', 'unknown'),
+                id(current_email_config),
+            )
+            return False
+        enabled_key = 'on_start' if event == 'start' else 'on_end'
+        enabled = bool(flags.get(enabled_key, False))
+        if not enabled:
+            self.logger.info("notification flag %s disabled for event '%s'", enabled_key, event)
+            return False
+
+        try:
+            template = current_email_config.measurement_template(event)
+            now = datetime.now()
+            # Nicely formatted duration
+            duration_str = ""
+            if start_time and end_time and end_time >= start_time:
+                delta: timedelta = end_time - start_time
+                secs = int(delta.total_seconds())
+                h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
+                duration_str = f"{h:02}:{m:02}:{s:02}"
+
+            params = {
+                'timestamp': now.strftime('%Y-%m-%d %H:%M:%S'),
+                'session_id': session_id or 'unknown',
+                'website_url': current_email_config.website_url or '',
+                'start_time': start_time.strftime('%Y-%m-%d %H:%M:%S') if start_time else '',
+                'end_time': end_time.strftime('%Y-%m-%d %H:%M:%S') if end_time else '',
+                'duration': duration_str,
+                'reason': reason or '',
+            }
+            subject = template.subject.format(**params)
+            body = template.body.format(**params)
+
+            recipients = self._get_effective_recipients()
+            if not recipients:
+                self.logger.warning("No recipients configured; skipping measurement event email")
+                return False
+            msg = self._create_email_message(subject, body, recipients)
+            messages = [(r, msg) for r in recipients]
+            success_count = self._send_emails_batch(messages)
+            return success_count > 0
+        except Exception as exc:
+            self.logger.error(f"Error sending measurement {event} notification: {exc}")
+            return False
+
+    async def send_measurement_event_async(
+        self,
+        event: str,
+        session_id: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        reason: Optional[str] = None,
+    ) -> bool:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self._executor, self.send_measurement_event, event, session_id, start_time, end_time, reason)
+
+    def _send_emails_batch(self, messages: list[tuple[str, MIMEMultipart]], max_retries: int = 3) -> int:
+        """Send a message to multiple recipients; one item per recipient.
+
+        messages: list of (recipient, message)
+        Returns number of successful sends.
+        """
+
+        current_email_config = self._get_current_email_config()
+        recipients = [r for r, _ in messages]
+        success_count = 0
 
         self.logger.info("=" * 50)
         self.logger.info("📧 STARTING EMAIL BATCH SEND!")
@@ -330,15 +445,24 @@ class AlertSystem:
                         current_email_config.smtp_port,
                         timeout=self._connection_timeout,
                     ) as smtp:
-                        failed = smtp.sendmail(
-                            current_email_config.sender_email,
-                            recipients,
-                            message.as_string(),
-                        )
-                        success_count = len(recipients) - len(failed)
+                        success_count = 0
+                        failed_total = {}
+                        for r, m in messages:
+                            try:
+                                failed = smtp.sendmail(
+                                    current_email_config.sender_email,
+                                    [r],
+                                    m.as_string(),
+                                )
+                                if failed:
+                                    failed_total.update(failed)
+                                else:
+                                    success_count += 1
+                            except Exception as exc:
+                                failed_total[r] = str(exc)
 
-                        if failed:
-                            self.logger.warning(f"Failed to send email to: {failed}")
+                        if failed_total:
+                            self.logger.warning(f"Failed to send email to: {failed_total}")
 
                 if success_count > 0:
                     break
@@ -377,7 +501,7 @@ class AlertSystem:
                 with self._smtp_lock:
                     self._close_smtp_connection()
                 break
-        
+
         self.logger.info("=" * 50)
         if success_count > 0:
             self.logger.info(f"✅ EMAIL BATCH COMPLETED SUCCESSFULLY")
@@ -390,7 +514,7 @@ class AlertSystem:
             self.logger.error(f"   📡 Failed config: Server: {current_email_config.smtp_server}; Port: {current_email_config.smtp_port}")
             self.logger.error(f"   📤 Failed sender: {current_email_config.sender_email}")
             self.logger.error(f"   🎯 Target recipients: {recipients}")
-        
+
         self.logger.info("=" * 50)
         return success_count
 
@@ -585,8 +709,8 @@ class AlertSystem:
                 'alerts_sent_count': self.alerts_sent_count,
                 'cooldown_remaining': self._get_cooldown_remaining_unsafe(),
                 'can_send_alert': self._should_send_alert_unsafe(),
-                'configured_recipients': len(current_email_config.recipients),
-                'smtp_server': current_email_config.smtp_server
+                'configured_recipients': len(self._get_effective_recipients()),
+                'smtp_server': current_email_config.smtp_server,
             }
 
     def _get_cooldown_remaining_unsafe(self) -> Optional[float]:
@@ -653,7 +777,8 @@ class AlertSystem:
             self.logger.info(f"   Server: {current_email_config.smtp_server}")
             self.logger.info(f"   Port: {current_email_config.smtp_port}")
             self.logger.info(f"   Sender: {current_email_config.sender_email}")
-            self.logger.info(f"   Recipients: {current_email_config.recipients}")
+            recipients_for_log = self._get_effective_recipients()
+            self.logger.info(f"   Recipients: {recipients_for_log}")
             self.logger.info(f"   Website URL: {current_email_config.website_url}")
             self.logger.info("=" * 50)
 
@@ -685,11 +810,13 @@ class AlertSystem:
                 self.logger.warning(f"Error retrieving test image: {exc}")
                 frame = None
 
-            msg = self._create_email_message(subject, test_message, current_email_config.recipients)
+            recipients = self._get_effective_recipients()
+            msg = self._create_email_message(subject, test_message, recipients)
             if frame is not None:
                 self._attach_camera_image(msg, frame, timestamp)
 
-            success_count = self._send_emails_batch(msg, current_email_config.recipients)
+            messages = [(r, msg) for r in recipients]
+            success_count = self._send_emails_batch(messages)
             return success_count > 0
             
         except Exception as exc:
@@ -702,7 +829,8 @@ class AlertSystem:
             self.logger.error(f"      Server: {current_email_config.smtp_server}")
             self.logger.error(f"      Port: {current_email_config.smtp_port}")
             self.logger.error(f"      Sender: {current_email_config.sender_email}")
-            self.logger.error(f"      Recipients: {current_email_config.recipients}")
+            recipients_for_log = self._get_effective_recipients()
+            self.logger.error(f"      Recipients: {recipients_for_log}")
             self.logger.error("=" * 50)
             return False
     
@@ -764,9 +892,10 @@ class AlertSystem:
             config_ok = True
             config_message = "Configuration valid"
             try:
-                if not self.email_config.recipients:
+                recipients = self._get_effective_recipients()
+                if not recipients:
                     config_ok = False
-                    config_message = "No email recipients configured"
+                    config_message = "No effective email recipients configured"
             except Exception as exc:
                 config_ok = False
                 config_message = f"Configuration error: {exc}"
@@ -804,7 +933,8 @@ class AlertSystem:
                 'alerts_sent_total': self.alerts_sent_count,
                 'last_alert_timestamp': self.last_alert_time.timestamp() if self.last_alert_time else None,
                 'cooldown_remaining_seconds': self._get_cooldown_remaining_unsafe(),
-                'recipients_configured': len(current_email_config.recipients),
+                'total_recipients_configured': len(current_email_config.recipients),
+                'recipients_configured': len(self._get_effective_recipients()),
                 'cooldown_minutes_configured': self.cooldown_minutes
             }
 
