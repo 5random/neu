@@ -23,7 +23,7 @@ from .motion import MotionResult, MotionDetector
 
 
 class Camera:
-    """Kameraklasse mit vollständiger (und funktionierender) UVC‑Steuerung."""
+    """Kameraklasse mit vollständiger (und funktionierender) UVC-Steuerung."""
 
     # ------------------------- Initialisierung ------------------------- #
 
@@ -84,6 +84,17 @@ class Camera:
 
         self._jpeg_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
 
+        # JPEG cache and optional TurboJPEG encoder
+        self._jpeg_lock = threading.Lock()
+        self._last_jpeg: Optional[bytes] = None
+        self._last_jpeg_frame: int = -1
+        try:
+            from turbojpeg import TurboJPEG  # type: ignore[import-not-found]  # optional acceleration
+            self._turbojpeg = TurboJPEG()
+            self.logger.info("TurboJPEG available for faster JPEG encoding")
+        except Exception:
+            self._turbojpeg = None
+
         # -- Backend je nach Plattform explizit wählen --
         system = platform.system()
         if system == "Windows":
@@ -96,6 +107,14 @@ class Camera:
             # macOS oder unbekannt → OpenCV entscheidet selbst
             self.backend = 0
             self.logger.warning("Unknown OS - use standard backend (can restrict controllers)")
+
+        # FPS limiter for capture loop (prevents busy loop CPU burn)
+        try:
+            cap_fps = int(getattr(self.webcam_config, 'capture_fps', None) or getattr(self.webcam_config, 'fps', 30) or 30)
+        except Exception:
+            cap_fps = 30
+        self.capture_target_fps = max(1, min(cap_fps, 60))
+        self._min_frame_interval = 1.0 / self.capture_target_fps
 
         # -- Kamera initialisieren --
         try:
@@ -129,6 +148,13 @@ class Camera:
                     video_capture.release()
                     self.video_capture = None
                     raise RuntimeError(f"Camera {self.webcam_config.camera_index} could not be opened")
+
+                # Try MJPG FourCC to reduce USB bandwidth/CPU if supported
+                try:
+                    fourcc = cv2.VideoWriter_fourcc(*'MJPG')  # type: ignore[attr-defined]
+                    self._safe_set_for_capture(video_capture, cv2.CAP_PROP_FOURCC, fourcc)
+                except Exception:
+                    pass
 
                 self._set_camera_properties(video_capture)
 
@@ -435,12 +461,13 @@ class Camera:
         max_consecutive_failures = 5
         
         while self.is_running:
+            loop_start = time.perf_counter()
             with self.frame_lock:
                 video_capture_ref = self.video_capture
             if not video_capture_ref:
                 time.sleep(0.04)
                 continue
-                
+            
             # Frame lesen
             try:
                 ret, frame = video_capture_ref.read() if video_capture_ref else (False, None)
@@ -463,32 +490,43 @@ class Camera:
                     else:
                         self.logger.error("Reconnection failed")
                         break
+                # keep loop pacing
+                elapsed = time.perf_counter() - loop_start
+                sleep = self._min_frame_interval - elapsed
+                if sleep > 0:
+                    time.sleep(sleep)
                 continue
                 
             # Erfolgreicher Frame
             consecutive_failures = 0
             self._reconnect_attempts = 0
 
-            frame_copy = frame.copy()
-            
             with self.frame_lock:
-                self.current_frame = frame_copy
+                self.current_frame = frame  # store without copy
                 self.frame_count += 1
                 
-            # Motion Detection
-            self._process_motion_detection(frame, frame_copy)
+            # Motion Detection: create a single copy only if a callback exists
+            cb_copy = frame.copy() if self.motion_callback is not None else None
+            self._process_motion_detection(frame, cb_copy)
+
+            # FPS limiter pacing
+            elapsed = time.perf_counter() - loop_start
+            sleep = self._min_frame_interval - elapsed
+            if sleep > 0:
+                time.sleep(sleep)
             
         self.logger.info("Frame capture loop stopped")
     
-    def _process_motion_detection(self, original_frame: np.ndarray, frame_copy: np.ndarray) -> None:
+    def _process_motion_detection(self, original_frame: np.ndarray, frame_copy: Optional[np.ndarray] = None) -> None:
         if self.motion_detector and self.motion_enabled:
-                try:
-                    motion_result = self.motion_detector.detect_motion(original_frame)
-                    self.last_motion_result = motion_result
-                    if self.motion_callback:
-                        self.motion_callback(frame_copy, motion_result)
-                except Exception as exc:
-                    self.logger.error(f"Motion-Detection-Error: {exc}")
+            try:
+                motion_result = self.motion_detector.detect_motion(original_frame)
+                self.last_motion_result = motion_result
+                if self.motion_callback:
+                    # provide a copy only if callback is set
+                    self.motion_callback(frame_copy if frame_copy is not None else original_frame.copy(), motion_result)
+            except Exception as exc:
+                self.logger.error(f"Motion-Detection-Error: {exc}")
 
         elif self.motion_callback:
             # Fallback: Alten Callback-Stil unterstützen für Rückwärtskompatibilität
@@ -916,12 +954,14 @@ class Camera:
     @staticmethod
     @lru_cache(maxsize=1)  # Cache für JPEG-Parameter
     def _get_jpeg_params(quality: int = 85) -> list:
-        return [cv2.IMWRITE_JPEG_QUALITY, quality]
+        params = [cv2.IMWRITE_JPEG_QUALITY, int(quality)]
+        return params
     
     def _get_jpeg_executor(self):
         """Gibt den ThreadPoolExecutor für JPEG-Kodierung zurück."""
         if self._jpeg_executor is None:
-            self._jpeg_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="jpeg_encoder")
+            # one worker is sufficient; avoids piling up encodes
+            self._jpeg_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="jpeg_encoder")
         return self._jpeg_executor
 
     @staticmethod
@@ -933,13 +973,31 @@ class Camera:
         return enc.tobytes()
 
     async def grab_video_frame(self) -> Response:
+        # return cached JPEG if frame hasn't changed
+        current_count = self.frame_count
+        with self._jpeg_lock:
+            if self._last_jpeg is not None and self._last_jpeg_frame == current_count:
+                return Response(content=self._last_jpeg, media_type="image/jpeg")
+
         current_frame = self.get_current_frame()
         if current_frame is None:
             return self.placeholder
 
         try:
             loop = asyncio.get_event_loop()
-            jpeg = await loop.run_in_executor(self._get_jpeg_executor(), Camera.convert_frame_to_jpeg, current_frame)
+            quality = 85
+
+            tj = self._turbojpeg
+            if tj is not None:
+                # Use TurboJPEG encoder
+                jpeg: bytes = await loop.run_in_executor(self._get_jpeg_executor(), tj.encode, current_frame, quality)
+            else:
+                jpeg: bytes = await loop.run_in_executor(self._get_jpeg_executor(), Camera.convert_frame_to_jpeg, current_frame, quality)
+
+            with self._jpeg_lock:
+                self._last_jpeg = jpeg
+                self._last_jpeg_frame = current_count
+
             return Response(content=jpeg, media_type="image/jpeg")
         except Exception as exc:
             self.logger.error(f"Error grabbing video frame: {exc}")

@@ -55,15 +55,34 @@ uvc_controls:
 # Motion Detection
 # ---------------------------------------------------------------------------
 motion_detection:
+  processing_scale: 0.6
   region_of_interest:
     enabled: true
     x: 117
     y: 125
     width: 382
     height: 269
-  sensitivity: 0.2
-  background_learning_rate: 0.005
-  min_contour_area: 252
+  simple_mode: true
+  sensitivity: 0.6
+  min_contour_area: 150
+  background_learning_rate: 0.01
+  brightness_threshold: 180
+  min_vertical_speed: 0.8
+  required_consecutive_frames: 3
+
+  bubble_min_area: 80
+  bubble_max_area: 800
+  bubble_circularity_min: 0.55
+  bubble_aspect_ratio_max: 1.8
+  max_h_to_v_ratio: 0.7
+  border_ignore_pct: 0.04
+  global_brightness_skip_delta: 8.0
+  saturated_value: 245
+  saturated_persistence_frames: 8
+  trigger_cooldown_s: 1.0
+  surface_band_only: false
+  surface_band_top_frac: 0.10
+  surface_band_height_frac: 0.20
 
 # ---------------------------------------------------------------------------
 # Measurement
