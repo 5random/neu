@@ -1,5 +1,5 @@
 """
-Alert-System für Webcam-Überwachung mit E-Mail-Benachrichtigung.
+E-Mail-System für Webcam-Überwachung mit E-Mail-Benachrichtigung.
 
 Dieses Modul implementiert die E-Mail-Benachrichtigung bei anhaltender 
 Bewegungslosigkeit gemäß Projektbeschreibung:
@@ -33,9 +33,9 @@ from typing import Optional, List, Dict, Any, TYPE_CHECKING
 from .config import EmailConfig, MeasurementConfig, AppConfig, get_logger
 
 
-class AlertSystem:
+class EMailSystem:
     """
-    Einfaches Alert-System für E-Mail-Benachrichtigungen.
+    Einfaches E-Mail-System für Webcam-Überwachung.
     
     Versendet E-Mails bei anhaltender Bewegungslosigkeit mit:
     - SMTP-Integration ohne SSL/TLS (wie in Projektbeschreibung)
@@ -944,15 +944,15 @@ class AlertSystem:
 def create_alert_system_from_config(
     config: Optional[AppConfig] = None,
     logger: Optional[logging.Logger] = None,
-) -> AlertSystem:
+) -> EMailSystem:
     """
-    Erstellt AlertSystem aus Konfiguration.
-    
+    Erstellt EMailSystem aus Konfiguration.
+
     Args:
         config_path: Optional Pfad zur Konfigurationsdatei
         
     Returns:
-        Konfiguriertes AlertSystem
+        Konfiguriertes EMailSystem
     """
     from .config import load_config
     
@@ -960,8 +960,8 @@ def create_alert_system_from_config(
         config = load_config("config/config.yaml")
     
     logger = get_logger("alert")
-    
-    return AlertSystem(config.email, config.measurement, config, logger)
+
+    return EMailSystem(config.email, config.measurement, config, logger)
 
 # Test-Code zur Verifikation
 

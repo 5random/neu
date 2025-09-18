@@ -8,7 +8,7 @@ from typing import Optional
 import sys
 
 from src import cam
-from src.gui.elements import (
+from src.gui.default_elements import (
     create_camfeed_content,
     create_emailcard,
     create_measurement_card,
@@ -19,7 +19,7 @@ from src.gui.elements import (
 
 from src.cam.camera import Camera
 from src.measurement import create_measurement_controller_from_config, MeasurementController
-from src.alert import create_alert_system_from_config, AlertSystem
+from src.notify import create_alert_system_from_config, EMailSystem
 from src.config import load_config, set_global_config, get_global_config, save_global_config, AppConfig, get_logger
 from src.update import check_update, perform_update, get_local_commit_short, restart_self
 
@@ -27,7 +27,7 @@ from src.update import check_update, perform_update, get_local_commit_short, res
 # Globales Kamerahandle, wird erst in ``main`` erzeugt
 global_camera: Camera | None = None
 global_measurement_controller: MeasurementController | None = None
-global_alert_system: AlertSystem | None = None
+global_alert_system: EMailSystem | None = None
 global_config: AppConfig | None = None
 
 # Shutdown-Flag für thread-sichere Cleanup-Koordination

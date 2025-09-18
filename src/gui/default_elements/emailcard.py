@@ -2,7 +2,7 @@ from typing import Dict
 import re
 from nicegui import ui
 from src.config import AppConfig, save_config
-from src.alert import AlertSystem
+from src.notify import EMailSystem
 
 def create_emailcard(*, config: AppConfig) -> None:
     state: Dict = {
@@ -137,7 +137,7 @@ def create_emailcard(*, config: AppConfig) -> None:
                         ui.notify("Saved", color="positive")
                 
                 def send_test_email():
-                        alert = AlertSystem(config.email, config.measurement, config)
+                        alert = EMailSystem(config.email, config.measurement, config)
                         if alert.send_test_email():
                             ui.notify("Test email sent successfully", color="positive")
                         else:

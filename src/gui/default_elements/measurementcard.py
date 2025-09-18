@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 import asyncio
 from nicegui import ui, background_tasks
 
-from src.alert import AlertSystem
+from src.notify import EMailSystem
 from src.config import get_global_config, save_global_config, get_logger
 from src.measurement import MeasurementController
 from src.cam.camera import Camera
@@ -12,7 +12,7 @@ logger = get_logger('gui.measurement')
 def create_measurement_card(
     measurement_controller: MeasurementController | None = None,
     camera: Camera | None = None,
-    alert_system: AlertSystem | None = None,
+    alert_system: EMailSystem | None = None,
 ) -> None:
     
 
@@ -27,7 +27,7 @@ def create_measurement_card(
     
     if measurement_controller is None:
         if alert_system is None:
-            alert_system = AlertSystem(config.email, config.measurement, config)
+            alert_system = EMailSystem(config.email, config.measurement, config)
         measurement_controller = MeasurementController(config.measurement, alert_system, camera)
     else:
         if alert_system is not None and measurement_controller.alert_system != alert_system:

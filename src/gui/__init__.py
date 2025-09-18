@@ -1,6 +1,6 @@
 # filepath: /home/wd/vscode/neu/src/gui/__init__.py
 
-from .elements import (
+from .default_elements import (
     create_emailcard,
     create_uvc_content,
     create_motiondetection_card,

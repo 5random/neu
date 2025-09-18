@@ -1,4 +1,4 @@
-from .alert import AlertSystem, create_alert_system_from_config
+from .notify import EMailSystem, create_alert_system_from_config
 from .measurement import *
 from .cam import Camera, MotionDetector, MotionResult, create_motion_detector_from_config
 

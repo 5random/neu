@@ -4,6 +4,16 @@
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Metadata
+# ---------------------------------------------------------------------------
+metadata:
+  version: 1.0
+  description: CVD-Tracker
+  cvd_id: 0
+  author: Your Name
+  released_at: 2023-01-01
+
+# ---------------------------------------------------------------------------
 # Webcam
 # ---------------------------------------------------------------------------
 webcam:
@@ -89,12 +99,14 @@ email:
   sender_email: CHANGE_ME@tuhh.de
   templates:
     alert:
-      subject: 'CVD-TRACKER-Alert: no motion detected - {timestamp}'
+      subject: 'CVD-TRACKER{cvd_id}-Alert: no motion detected - {timestamp}'
       body: '
+        CVD-Tracker{cvd_id} Alert!
         Movement has not been detected since {timestamp}!
         Please check the issue via the web application at: {website_url}.
 
         Details:
+        CVD-ID: {cvd_id}
         Session-ID: {session_id}
         Last motion at: {last_motion_time}
         Camera: Index {camera_index}
@@ -102,6 +114,48 @@ email:
         ROI enabled: {roi_enabled}
 
         Attached is the current webcam image.
+        '
+    test:
+      subject: 'CVD-TRACKER: Test email - {timestamp}'
+      body: '
+        This is a test email from CVD-Tracker{cvd_id} sent at {timestamp}.
+        If you received this email, the email configuration is correct.
+
+        You can access the web application at: {website_url}.
+
+        Details:
+        CVD-ID: {cvd_id}
+        Camera: Index {camera_index}
+        '
+    measurement_start:
+      subject: 'CVD-TRACKER{cvd_id}: Measurement started - {timestamp}'
+      body: '
+        CVD-Tracker{cvd_id} Measurement Started
+        A new measurement session has started at {timestamp}.
+
+        You can monitor the session via the web application at: {website_url}.
+
+        Details:
+        CVD-ID: {cvd_id}
+        Session-ID: {session_id}
+        Camera: Index {camera_index}
+        Sensitivity: {sensitivity}
+        ROI enabled: {roi_enabled}
+        '
+    measurement_end:
+      subject: 'CVD-TRACKER{cvd_id}: Measurement ended - {timestamp}'
+      body: '
+        CVD-Tracker{cvd_id} Measurement Ended
+        The measurement session has ended at {timestamp}.
+
+        You can review the session via the web application at: {website_url}.
+
+        Details:
+        CVD-ID: {cvd_id}
+        Session-ID: {session_id}
+        Camera: Index {camera_index}
+        Sensitivity: {sensitivity}
+        ROI enabled: {roi_enabled}
         '
 
 # ---------------------------------------------------------------------------

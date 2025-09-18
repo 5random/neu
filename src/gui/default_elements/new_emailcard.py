@@ -7,7 +7,7 @@ from nicegui.client import Client
 
 from src.config import get_global_config, save_global_config, get_logger
 from src.config import EmailConfig as _EmailConfig
-from src.alert import AlertSystem
+from src.notify import EMailSystem
 
 logger = get_logger('gui.email')
 
@@ -58,7 +58,7 @@ def _get_effective_recipients_from_config(cfg, state: dict) -> list[str]:
         logger.debug("Falling back to local recipients for effective list", exc_info=True)
     return list(state.get('recipients', []) or [])
 
-def create_emailcard(*, alert_system: Optional[AlertSystem] = None) -> None:
+def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
     """
     Karte mit drei Tabs:
     1) Übersicht   - read-only Konfig & Test-Mail
