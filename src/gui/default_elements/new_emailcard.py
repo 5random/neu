@@ -237,18 +237,20 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
 
     def send_test_email() -> None:
         """Sende Test-E-Mail an alle Empfänger."""
-        if not state["recipients"]:
-            logger.warning("No recipients configured for test email")
-            ui.notify("Can't send test email: No recipients configured", color="warning", position='bottom-right')
+        cfg = get_global_config()
+        effective = _get_effective_recipients_from_config(cfg, state)
+        if not effective:
+            logger.warning("No effective recipients configured for test email")
+            ui.notify("Can't send test email: No recipients configured (recipients or active groups)", color="warning", position='bottom-right')
             return
-        
-        logger.info(f"Starting test email to {len(state['recipients'])} recipients")
-        for recipient in state["recipients"]:
+
+        logger.info(f"Starting test email to {len(effective)} recipients")
+        for recipient in effective:
             logger.info(f"Will send to: {recipient}")
-        
-        client: Client = ui.context.client
-        
-        asyncio.create_task(send_async_test_email(client))
+         
+         client: Client = ui.context.client
+         
+         asyncio.create_task(send_async_test_email(client))
 
     # ------------------------------------------------------------------ #
     # UI-Helper                                                          #
