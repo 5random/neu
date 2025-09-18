@@ -28,7 +28,7 @@ __all__ = [
     "LoggingConfig",
     "load_config",
     "save_config",
-    "AlertSystem",
+    "EMailSystem",
     "create_alert_system_from_config",
     "MeasurementController",
     "create_measurement_controller_from_config",

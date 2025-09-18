@@ -3,8 +3,6 @@ from nicegui.events import GenericEventArguments
 from typing import Optional, Any, Callable, TypeVar
 import asyncio
 
-T = TypeVar('T')
-
 from src.cam.camera import Camera
 from src.config import get_logger, get_global_config, save_global_config
 
@@ -37,8 +35,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
 
             camera_setter(value)
 
-             # Verzögerte Config-Speicherung
-            async def save_config_delayed():
+             # Delayed config saving            async def save_config_delayed():
                 await asyncio.sleep(0.5)  # 500ms Verzögerung
                 try:
                     config = get_global_config()

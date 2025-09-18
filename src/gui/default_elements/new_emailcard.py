@@ -81,14 +81,13 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
             "port": config.email.smtp_port,
             "sender": config.email.sender_email,
         },
-    # Groups feature
-    "groups": dict(getattr(config.email, "groups", {}) or {}),
+        # Groups feature
+        "groups": dict(getattr(config.email, "groups", {}) or {}),
         "active_groups": list(getattr(config.email, "active_groups", []) or []),
         "current_group": None,
         # Measurement notifications
-        "notifications": dict(getattr(config.email, "notifications", {}) or {}),    }
-
-    # Sanitize any pre-existing groups loaded from config (once on init)
+        "notifications": dict(getattr(config.email, "notifications", {}) or {}),
+    }    # Sanitize any pre-existing groups loaded from config (once on init)
     try:
         original_groups = state.get("groups", {})
         sanitized_groups = sanitize_groups_dict(original_groups)

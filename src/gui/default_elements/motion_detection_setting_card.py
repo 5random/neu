@@ -340,7 +340,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                     else:
                         ui.notify('ROI config could not be saved to config!', type='warning',
                                   position='bottom-right')
-                        logger.warning('ROI config not be saved to config!')
+                        logger.warning('ROI config could not be saved to config!')
                 except Exception as e:
                     ui.notify(f'Error saving config: {e}', type='warning',
                               position='bottom-right')

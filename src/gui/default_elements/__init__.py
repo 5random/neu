@@ -1,4 +1,3 @@
-#from .emailcard import create_emailcard
 from .uvc_knobs import create_uvc_content
 from .motion_detection_setting_card import create_motiondetection_card
 from .measurementcard import create_measurement_card

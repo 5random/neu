@@ -9,7 +9,7 @@ from .default_elements import (
     create_camfeed_content,
 )
 
-from src.gui.gui_ import create_gui, init_camera
+from .gui_ import create_gui, init_camera
 
 __all__ = [
     "create_emailcard",

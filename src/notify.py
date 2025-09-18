@@ -45,8 +45,8 @@ class EMailSystem:
     - Anti-Spam-Mechanismus
     
     Usage:
-        alert_system = AlertSystem(email_config, measurement_config)
-        success = await alert_system.send_motion_alert_async(last_motion_time, session_id)
+        email_system = EMailSystem(email_config, measurement_config)
+        success = await email_system.send_motion_alert_async(last_motion_time, session_id)
     """
     
     def __init__(
@@ -190,6 +190,67 @@ class EMailSystem:
             except Exception:
                 return []
     
+    def _build_common_template_params(
+        self,
+        session_id: Optional[str] = None,
+        last_motion_time: Optional[datetime] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        duration: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Baut ein vollständiges Parameter-Set für alle E-Mail-Templates.
+        Stellt sicher, dass alle erwarteten Platzhalter vorhanden sind.
+        """
+        now = datetime.now()
+        current_email_config = self._get_current_email_config()
+
+        # Metadata sicher ermitteln
+        meta = getattr(self.app_cfg, "metadata", None)
+        cvd_id = getattr(meta, "cvd_id", 0) if meta is not None else 0
+        cvd_name = getattr(meta, "cvd_name", "Unknown")
+
+        # Kamera-/Motion-Infos robust ermitteln
+        camera_index = getattr(self.webcam_cfg, "camera_index", "unknown") if self.webcam_cfg else "unknown"
+        sensitivity = getattr(self.motion_cfg, "sensitivity", "unknown") if self.motion_cfg else "unknown"
+        try:
+            roi_enabled = self.motion_cfg.get_roi().enabled if self.motion_cfg else "unknown"
+        except Exception:
+            roi_enabled = "unknown"
+
+        # Zeiten formatieren
+        ts_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        last_motion_str = last_motion_time.strftime("%H:%M:%S") if last_motion_time else "unknown"
+        start_str = start_time.strftime("%Y-%m-%d %H:%M:%S") if start_time else ""
+        end_str = end_time.strftime("%Y-%m-%d %H:%M:%S") if end_time else ""
+
+        # Dauer ggf. aus Zeiten ableiten, falls nicht vorgegeben
+        if duration is None:
+            if start_time and end_time and end_time >= start_time:
+                delta: timedelta = end_time - start_time
+                secs = int(delta.total_seconds())
+                h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
+                duration = f"{h:02}:{m:02}:{s:02}"
+            else:
+                duration = ""
+
+        return {
+            "timestamp": ts_str,
+            "session_id": session_id or "unknown",
+            "last_motion_time": last_motion_str,
+            "website_url": getattr(current_email_config, "website_url", "") or "",
+            "camera_index": camera_index,
+            "sensitivity": sensitivity,
+            "roi_enabled": roi_enabled,
+            "start_time": start_str,
+            "end_time": end_str,
+            "duration": duration or "",
+            "reason": reason or "",
+            "cvd_id": cvd_id,
+            "cvd_name": cvd_name,
+        }
+
     def send_motion_alert(
         self,
         last_motion_time: Optional[datetime] = None,
@@ -227,20 +288,17 @@ class EMailSystem:
             # E-Mail-Template rendern
             try:
                 template = current_email_config.alert_template()
-                timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
-
-                template_params = {
-                    'timestamp': timestamp,
-                    'session_id': session_id or "unknown",
-                    'last_motion_time': last_motion_time.strftime("%H:%M:%S") if last_motion_time else "unknown",
-                    'website_url': current_email_config.website_url or "unknown",
-                    'camera_index': self.webcam_cfg.camera_index if self.webcam_cfg else "unknown",
-                    'sensitivity': self.motion_cfg.sensitivity if self.motion_cfg else "unknown",
-                    'roi_enabled': self.motion_cfg.get_roi().enabled if self.motion_cfg else "unknown"
-                }
+                # Alle erwarteten Platzhalter bereitstellen
+                template_params = self._build_common_template_params(
+                    session_id=session_id,
+                    last_motion_time=last_motion_time,
+                    start_time=None,
+                    end_time=None,
+                    duration="",
+                    reason="",
+                )
                 
                 subject = template.subject.format(**template_params)
-
                 body = template.body.format(**template_params)
                 
             except (KeyError, ValueError, AttributeError) as e:
@@ -263,7 +321,7 @@ class EMailSystem:
             try:
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 img_buffer = None
-                filename: str | None = None
+                filename: Optional[str] = None
                 saved_frame_path: Optional[Path] = None
                 ok = False
                 
@@ -271,7 +329,7 @@ class EMailSystem:
                     ok, img_buffer, filename = self._encode_frame(camera_frame, ts=timestamp)
 
                     if ok and img_buffer is not None and filename is not None and self.measurement_config.save_alert_images:
-                        self._save_alert_image(img_buffer, filename)
+                        saved_frame_path = self._save_alert_image(img_buffer, filename)
 
                 recipients = self._get_effective_recipients()
                 msg = self._create_email_message(subject, body, recipients)
@@ -339,7 +397,7 @@ class EMailSystem:
         end_time: Optional[datetime] = None,
         reason: Optional[str] = None,
     ) -> bool:
-        """Send start/end measurement notification if enabled.
+        """Send start/end/stop measurement notification if enabled.
 
         Args:
             event: 'start' or 'end'
@@ -349,7 +407,7 @@ class EMailSystem:
             reason: reason for end (manual/timeout/etc.)
         """
         event = (event or '').lower()
-        if event not in ('start', 'end'):
+        if event not in ('start', 'end', 'stop'):
             self.logger.error(f"Unknown measurement event: {event}")
             return False
 
@@ -362,16 +420,22 @@ class EMailSystem:
                 id(current_email_config),
             )
             return False
-        enabled_key = 'on_start' if event == 'start' else 'on_end'
+        enabled_key = {'start': 'on_start', 'end': 'on_end', 'stop': 'on_stop'}[event]
         enabled = bool(flags.get(enabled_key, False))
         if not enabled:
             self.logger.info("notification flag %s disabled for event '%s'", enabled_key, event)
             return False
 
         try:
-            template = current_email_config.measurement_template(event)
-            now = datetime.now()
-            # Nicely formatted duration
+            # Template passend zum Event wählen
+            if event == 'start':
+                template = current_email_config.measurement_start_template()
+            elif event == 'end':
+                template = current_email_config.measurement_end_template()
+            else:  # stop
+                template = current_email_config.measurement_stop_template()
+
+            # Dauer berechnen (falls möglich)
             duration_str = ""
             if start_time and end_time and end_time >= start_time:
                 delta: timedelta = end_time - start_time
@@ -379,15 +443,16 @@ class EMailSystem:
                 h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
                 duration_str = f"{h:02}:{m:02}:{s:02}"
 
-            params = {
-                'timestamp': now.strftime('%Y-%m-%d %H:%M:%S'),
-                'session_id': session_id or 'unknown',
-                'website_url': current_email_config.website_url or '',
-                'start_time': start_time.strftime('%Y-%m-%d %H:%M:%S') if start_time else '',
-                'end_time': end_time.strftime('%Y-%m-%d %H:%M:%S') if end_time else '',
-                'duration': duration_str,
-                'reason': reason or '',
-            }
+            # Vollständige Parameter liefern (inkl. cvd_id/cvd_name, Kamera, ROI etc.)
+            params = self._build_common_template_params(
+                session_id=session_id,
+                last_motion_time=None,
+                start_time=start_time,
+                end_time=end_time,
+                duration=duration_str,
+                reason=reason,
+            )
+
             subject = template.subject.format(**params)
             body = template.body.format(**params)
 
@@ -658,7 +723,7 @@ class EMailSystem:
                 file_path = save_path / filename
                 if image_buffer is None or image_buffer.size == 0:
                     self.logger.warning(f'No valid image buffer to save, skipping save: {filename}')
-                    return
+                    return None
                 
                 with open(file_path, 'wb') as f:
                     f.write(image_buffer.tobytes())
@@ -959,11 +1024,10 @@ def create_alert_system_from_config(
     if config is None:
         config = load_config("config/config.yaml")
     
-    logger = get_logger("alert")
+    logger = logger or get_logger("alert")
 
     return EMailSystem(config.email, config.measurement, config, logger)
 
-# Test-Code zur Verifikation
 
 # Test-Code zur Verifikation
 def test_template_rendering():
@@ -972,11 +1036,11 @@ def test_template_rendering():
     from pathlib import Path
     # Projekt-Root zum Python-Pfad hinzufügen
     project_root = Path(__file__).parents[1]
-    sys.path.insert(0, str(project_root))
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
     from src.config import load_config
     logger = logging.getLogger(__name__)
     try:
-        """Testet ob Template-Rendering funktioniert"""
         template = load_config("config/config.yaml").email.alert_template()
 
         test_params = {

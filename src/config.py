@@ -19,6 +19,18 @@ _configured_loggers: set[str] = set()
 _configured_loggers_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
+# Metadaten
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Metadata:
+    version: str = "1.0"
+    description: str = "CVD-Tracker"
+    cvd_id: int = 0
+    cvd_name: str = "Default_CVD"
+    released_at: str = "2023-01-01"
+
+# ---------------------------------------------------------------------------
 # Logging Enums & Classes
 # ---------------------------------------------------------------------------
 
@@ -74,14 +86,14 @@ class UVCConfig:
     def validate(self) -> List[str]:
         errors: List[str] = []
         checks = [
-            ("brightness", self.brightness, 0, 255),
+            ("brightness", self.brightness, -64, 64),
             ("hue", self.hue, -180, 180),
-            ("contrast", self.contrast, 0, 255),
-            ("saturation", self.saturation, 0, 255),
-            ("sharpness", self.sharpness, 0, 255),
-            ("gamma", self.gamma, 1, 500),
-            ("gain", self.gain, 0, 255),
-            ("backlight_compensation", self.backlight_compensation, 0, 255),
+            ("contrast", self.contrast, 0, 64),
+            ("saturation", self.saturation, 0, 128),
+            ("sharpness", self.sharpness, 0, 14),
+            ("gamma", self.gamma, 72, 500),
+            ("gain", self.gain, 0, 100),
+            ("backlight_compensation", self.backlight_compensation, 0, 160),
         ]
         for name, value, lo, hi in checks:
             if not lo <= value <= hi:
@@ -270,75 +282,166 @@ class EmailConfig:
 
     def alert_template(self) -> EmailTemplate:
         data = self.templates.get("alert", {})
-        
-        # Robuster Default-Body mit allen verfügbaren Parametern
+        default_subject = "CVD-TRACKER{cvd_id}-{cvd_name}-Alert: no motion detected - {timestamp}"
         default_body = (
-            "No Motion detected since {timestamp}!\n"
-            "Please check the website at: {website_url}\n\n"
+            "CVD-Tracker{cvd_id} {cvd_name}: Alert!\n"
+            "Movement has not been detected since: {last_motion_time}!\n"
+            "Please check the issue via the web application at: {website_url}.\n"
+            "\n"
             "Details:\n"
-            "Session-ID: {session_id}\n"
-            "Last motion at {last_motion_time}\n"
-            "Camera: Index {camera_index}\n"
-            "Sensitivity: {sensitivity}\n"
-            "ROI enabled: {roi_enabled}\n\n"
+            "   CVD-ID:         {cvd_id}\n"
+            "   CVD-Name:       {cvd_name}\n"
+            "   Website URL:    {website_url}\n"
+            "\n"
+            "   Session-ID:     {session_id}\n"
+            "   Last motion at: {last_motion_time}\n"
+            "   Start:          {start_time}\n"
+            "   End:            {end_time}\n"
+            "   Duration:       {duration}\n"
+            "   Reason:         {reason}\n"
+            "\n"
+            "   Camera: Index   {camera_index}\n"
+            "   Sensitivity:    {sensitivity}\n"
+            "   ROI enabled:    {roi_enabled}\n"
+            "\n"
             "Attached is the current webcam image."
         )
         
         return EmailTemplate(
-            subject=data.get("subject", "CVD-Tracker: No Motion Detected - {timestamp}"),
+            subject=data.get("subject", default_subject),
             body=data.get("body", default_body),
         )
-
-    def measurement_template(self, event: str) -> EmailTemplate:
-        """Return measurement templates for 'start' or 'end'.
-
-        Parameters
-        ----------
-        event: str
-            Must be either 'start' or 'end' (case-insensitive, surrounding whitespace ignored).
-
-        Raises
-        ------
-        ValueError
-            If event is not one of 'start' or 'end'.
-        """
-        event_norm = (event or "").strip().lower()
-        if event_norm not in ("start", "end"):
-            raise ValueError(f"invalid measurement event '{event}'; expected 'start' or 'end'")
-
-        key = f"measurement_{event_norm}"
-        data = (self.templates or {}).get(key, {})
-
-        if event_norm == 'start':
-            default_subject = "CVD-Tracker: Measurement started - {timestamp}"
-            default_body = (
-                "Measurement session started at {timestamp}.\n"
-                "Session-ID: {session_id}\n"
-                "Website: {website_url}\n"
-            )
-        else:
-            default_subject = "CVD-Tracker: Measurement ended - {timestamp}"
-            default_body = (
-                "Measurement session ended at {timestamp}.\n"
-                "Session-ID: {session_id}\n"
-                "Start: {start_time}\n"
-                "End: {end_time}\n"
-                "Duration: {duration}\n"
-                "Reason: {reason}\n"
-                "Website: {website_url}\n"
-            )
-
+    
+    def test_template(self) -> EmailTemplate:
+        data = self.templates.get("test", {})
+        default_subject = "CVD-TRACKER{cvd_id}-{cvd_name}: Test email - {timestamp}"
+        default_body = (
+            "This is a test email from CVD-TRACKER{cvd_id}-{cvd_name} sent at {timestamp}.\n"
+            "If you received this email, the email configuration is correct.\n"
+            "\n"
+            "You can access the web application at: {website_url}.\n"
+            "\n"
+            "Details:\n"
+            "   CVD-ID:         {cvd_id}\n"
+            "   CVD-Name:       {cvd_name}\n"
+            "   Website URL:    {website_url}\n"
+            "\n"
+            "   Session-ID:     {session_id}\n"
+            "   Last motion at: {last_motion_time}\n"
+            "   Start:          {start_time}\n"
+            "   End:            {end_time}\n"
+            "   Duration:       {duration}\n"
+            "   Reason:         {reason}\n"
+            "\n"
+            "   Camera: Index   {camera_index}\n"
+            "   Sensitivity:    {sensitivity}\n"
+            "   ROI enabled:    {roi_enabled}\n"
+            "\n"
+        )
+        
+        return EmailTemplate(
+            subject=data.get("subject", default_subject),
+            body=data.get("body", default_body),
+        )
+    
+    def measurement_start_template(self) -> EmailTemplate:
+        data = self.templates.get("measurement_start", {})
+        default_subject = "CVD-TRACKER{cvd_id}-{cvd_name}: Measurement started - {timestamp}"
+        default_body = (
+            "CVD-Tracker{cvd_id}-{cvd_name} Measurement Started\n"
+            "A new measurement session has started at {timestamp}.\n"
+            "\n"
+            "You can monitor the session via the web application at: {website_url}.\n"
+            "\n"
+            "Details:\n"
+            "   CVD-ID:         {cvd_id}\n"
+            "   CVD-Name:       {cvd_name}\n"
+            "   Website URL:    {website_url}\n"
+            "\n"
+            "   Session-ID:     {session_id}\n"
+            "   Last motion at: {last_motion_time}\n"
+            "   Start:          {start_time}\n"
+            "   End:            {end_time}\n"
+            "   Duration:       {duration}\n"
+            "   Reason:         {reason}\n"
+            "\n"
+            "   Camera: Index   {camera_index}\n"
+            "   Sensitivity:    {sensitivity}\n"
+            "   ROI enabled:    {roi_enabled}\n"
+            "\n"
+        )
+        
+        return EmailTemplate(
+            subject=data.get("subject", default_subject),
+            body=data.get("body", default_body),
+        )
+    
+    def measurement_end_template(self) -> EmailTemplate:
+        data = self.templates.get("measurement_end", {})
+        default_subject = "CVD-TRACKER{cvd_id}-{cvd_name}: Measurement ended - {timestamp}"
+        default_body = (
+            "CVD-Tracker{cvd_id}-{cvd_name} Measurement Ended\n"
+            "The measurement session has ended at {timestamp}.\n"
+            "\n"
+            "You can monitor the session via the web application at: {website_url}.\n"
+            "\n"
+            "Details:\n"
+            "   CVD-ID:         {cvd_id}\n"
+            "   CVD-Name:       {cvd_name}\n"
+            "   Website URL:    {website_url}\n"
+            "\n"
+            "   Session-ID:     {session_id}\n"
+            "   Last motion at: {last_motion_time}\n"
+            "   Start:          {start_time}\n"
+            "   End:            {end_time}\n"
+            "   Duration:       {duration}\n"
+            "   Reason:         {reason}\n"
+            "\n"
+            "   Camera: Index   {camera_index}\n"
+            "   Sensitivity:    {sensitivity}\n"
+            "   ROI enabled:    {roi_enabled}\n"
+            "\n"
+        )
+        
+        return EmailTemplate(
+            subject=data.get("subject", default_subject),
+            body=data.get("body", default_body),
+        )
+    
+    def measurement_stop_template(self) -> EmailTemplate:
+        data = self.templates.get("measurement_stop", {})
+        default_subject = "CVD-TRACKER{cvd_id}-{cvd_name}: Measurement stopped - {timestamp}"
+        default_body = (
+            "CVD-Tracker{cvd_id}-{cvd_name} Measurement Stopped\n"
+            "The measurement session has ended at {timestamp}.\n"
+            "\n"
+            "You can monitor the session via the web application at: {website_url}.\n"
+            "\n"
+            "Details:\n"
+            "   CVD-ID:         {cvd_id}\n"
+            "   CVD-Name:       {cvd_name}\n"
+            "   Website URL:    {website_url}\n"
+            "\n"
+            "   Session-ID:     {session_id}\n"
+            "   Last motion at: {last_motion_time}\n"
+            "   Start:          {start_time}\n"
+            "   End:            {end_time}\n"
+            "   Duration:       {duration}\n"
+            "   Reason:         {reason}\n"
+            "\n"
+            "   Camera: Index   {camera_index}\n"
+            "   Sensitivity:    {sensitivity}\n"
+            "   ROI enabled:    {roi_enabled}\n"
+            "\n"
+        )
+        
         return EmailTemplate(
             subject=data.get("subject", default_subject),
             body=data.get("body", default_body),
         )
 
     def get_target_recipients(self) -> List[str]:
-        """Compute effective recipients based on active groups.
-
-        If active_groups is non-empty and groups exist, return the union of those
-        addresses (de-duplicated, stable order). Otherwise, return recipients.
-        """
+        """Compute effective recipients based on active groups."""
         if self.active_groups and self.groups:
             collected: List[str] = []
             for g in self.active_groups:
@@ -346,7 +449,6 @@ class EmailConfig:
                     if self.EMAIL_RE.match(addr):
                         collected.append(addr)
             if collected:
-                # Preserve first occurrence order while removing duplicates
                 return list(dict.fromkeys(collected))
         return list(self.recipients)
 # ---------------------------------------------------------------------------
@@ -457,6 +559,7 @@ class LoggingConfig:
 
 @dataclass
 class AppConfig:
+    metadata: Metadata
     webcam: WebcamConfig
     uvc_controls: UVCConfig
     motion_detection: MotionDetectionConfig
@@ -534,6 +637,13 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
     logger = app_logger.getChild("config")
     logger.info("✅ Config loaded: %s", config_path)
     cfg = AppConfig(
+        metadata=Metadata(**data.get("metadata", {
+            "version": 1.0,
+            "description": "CVD-Tracker",
+            "cvd_id": 0,
+            "cvd_name": "Default_CVD",
+            "released_at": "2023-01-01",
+        })),
         webcam=WebcamConfig(**data["webcam"]),
         uvc_controls=UVCConfig(
             brightness=data["uvc_controls"]["brightness"],
@@ -587,6 +697,13 @@ def _create_default_config() -> AppConfig:
     """Fallback-Konfiguration für Notfälle"""
     logger.info("creating default config")
     return AppConfig(
+        metadata=Metadata(
+            version="1.0",
+            description="CVD-Tracker",
+            cvd_id=0,
+            cvd_name="Default_CVD",
+            released_at="2023-01-01",
+        ),
         webcam=WebcamConfig(
             camera_index=0,
             default_resolution={"width": 1920, "height": 1080},
@@ -602,11 +719,11 @@ def _create_default_config() -> AppConfig:
                         {"width": 1920, "height": 1080}
                     ]
                 ),
-                uvc_controls=UVCConfig(
+        uvc_controls=UVCConfig(
             brightness=0, hue=0, contrast=16, saturation=64,
             sharpness=2, gamma=164, gain=10, backlight_compensation=42,
             white_balance=WhiteBalance(auto=True, value=4000),
-            exposure=Exposure(auto=True, value=100)
+            exposure=Exposure(auto=True, value=-6)
         ),
         motion_detection=MotionDetectionConfig(
             region_of_interest={"enabled": False, "x": 100, "y": 100, "width": 300, "height": 200},
@@ -660,7 +777,6 @@ def _create_default_config() -> AppConfig:
                 }
             },
             notifications={"on_start": False, "on_end": False}
-                                 
         ),
         gui=GUIConfig(
             title="CVD-Tracker", host="localhost", port=8080,
@@ -758,6 +874,13 @@ def _prepare_for_yaml(cfg_dict: dict) -> dict:
     """
     data = dict(cfg_dict)  # flache Kopie
 
+    # metadata: übliche Reihenfolge
+    if "metadata" in data and isinstance(data["metadata"], dict):
+        data["metadata"] = _order_map(
+            data["metadata"],
+            ["version", "description", "cvd_id", "cvd_name", "released_at"]
+        )
+
     # webcam: width vor height
     if "webcam" in data:
         wc = data["webcam"]
@@ -786,7 +909,7 @@ def _prepare_for_yaml(cfg_dict: dict) -> dict:
     # Also order measurement templates: subject before body
     try:
         tpls = data["email"]["templates"]
-        for key in ("measurement_start", "measurement_end"):
+        for key in ("measurement_start", "measurement_end", "measurement_stop"):
             tpl = tpls.get(key)
             if isinstance(tpl, dict):
                 tpls[key] = _order_map(tpl, ["subject", "body"])
@@ -821,6 +944,7 @@ def save_config(cfg: AppConfig, path: str = "config/config.yaml") -> None:
 
         # Reihenfolge und sichtbare Abschnittstitel festlegen
         sections = [
+            ("Metadata", "metadata"),
             ("Webcam", "webcam"),
             ("UVC Controls", "uvc_controls"),
             ("Motion Detection", "motion_detection"),

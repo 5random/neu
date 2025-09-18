@@ -24,7 +24,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Optional, Dict, Any, Callable
 
 from .config import MeasurementConfig, AppConfig, load_config, save_config, get_logger
-from .alert import AlertSystem
+from .notify import EMailSystem
 from .cam.motion import MotionResult
 from .cam.camera import Camera
 
@@ -54,7 +54,7 @@ class MeasurementController:
     def __init__(
         self,
         config: 'MeasurementConfig',
-        alert_system: Optional['AlertSystem'] = None,
+        alert_system: Optional['EMailSystem'] = None,
         camera: Optional['Camera'] = None,
         logger: Optional[logging.Logger] = None
     ):
@@ -223,12 +223,13 @@ class MeasurementController:
             self.logger.info(f"Session stopped: {sess_id} "
                            f"(Duration: {session_duration})")
 
-            # Fire optional end notification (non-blocking)
+            # Fire optional end/stop notification (non-blocking)
             try:
                 if self.alert_system and start_time:
+                    event_type = 'stop' if (reason and reason != 'timeout') else 'end'
                     self._alert_executor.submit(
                         self.alert_system.send_measurement_event,
-                        'end',
+                        event_type,
                         sess_id,
                         start_time,
                         datetime.now(),
@@ -689,7 +690,7 @@ class MeasurementController:
 
 def create_measurement_controller_from_config(
     config: Optional[AppConfig] = None,
-    alert_system: Optional['AlertSystem'] = None,
+    email_system: Optional['EMailSystem'] = None,
     camera: Optional['Camera'] = None,
     logger: Optional[logging.Logger] = None
 ) -> MeasurementController:
@@ -708,4 +709,4 @@ def create_measurement_controller_from_config(
         config = load_config()
     measurement_config = config.measurement
     logger = get_logger('measurement')
-    return MeasurementController(measurement_config, alert_system, camera, logger)
+    return MeasurementController(measurement_config, email_system, camera, logger)

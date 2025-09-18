@@ -3,9 +3,6 @@ import time
 import sys
 from pathlib import Path
 
-# Projekt-Root zum Python-Pfad hinzufügen
-#project_root = Path(__file__).parents[4]  # 4 Ebenen nach oben
-#sys.path.insert(0, str(project_root))
 
 from src.cam.camera import Camera
 from src.config import get_logger

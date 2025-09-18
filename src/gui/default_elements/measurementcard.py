@@ -14,7 +14,6 @@ def create_measurement_card(
     camera: Camera | None = None,
     alert_system: EMailSystem | None = None,
 ) -> None:
-    
 
     config = get_global_config()
 

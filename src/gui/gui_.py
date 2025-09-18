@@ -85,12 +85,12 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
 
     if global_alert_system is None:
         try:
-            logger.info('Initializing alert system...')
+            logger.info('Initializing E-Mail-Notification system...')
             global_alert_system = create_alert_system_from_config(global_config, logger=logger)
-            logger.info('Alert system initialized successfully')
+            logger.info('E-Mail-Notification system initialized successfully')
         except Exception as exc:
-            logger.error(f"AlertSystem-Init failed: {exc}")
-            ui.notify('Alert system initialization failed', type='warning', position='bottom-right')
+            logger.error(f"E-Mail-Notification system initialization failed: {exc}")
+            ui.notify('E-Mail-Notification system initialization failed', type='warning', position='bottom-right')
             global_alert_system = None
 
     if global_measurement_controller is None:
