@@ -3,7 +3,7 @@ from typing import Optional, Any
 from nicegui import ui, background_tasks, core
 
 
-def schedule_bg(coroutine: Any, name: Optional[str] = None):
+def schedule_bg(coroutine: Any, name: Optional[str] = None) -> Optional[Any] | None:
     """Safely schedule a coroutine on NiceGUI's event loop.
 
     If the NiceGUI loop is not yet available (core.loop is None), defer scheduling

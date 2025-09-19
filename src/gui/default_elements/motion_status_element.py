@@ -3,6 +3,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 import os
 from datetime import datetime
+import threading
 
 from src.measurement import MeasurementController
 from src.cam.camera import Camera
@@ -23,6 +24,7 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
     logger.info("Creating motion status element")
     motion_detected: bool = False           # Start: keine Bewegung
     last_changed: datetime = datetime.now() # Zeitstempel der letzten Änderung
+    state_lock = threading.RLock()          # Schutz für gemeinsamen Zustand
 
     # ---------- UI ----------
     with ui.card().classes('w-full h-full shadow-2 q-pa-md').style('align-self:stretch;'):
@@ -38,24 +40,31 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
                                 .style('white-space: nowrap')
 
     def refresh_view() -> None:
-        """Icon, Text und Zeitstempel aktualisieren."""
-        if motion_detected:
-            icon.props('name=check_circle color=green')
-            status_label.text = 'Motion detected'
-        else:
-            icon.props('name=highlight_off color=red')
-            status_label.text = 'No motion detected'
-        timestamp_label.text = f'Last changed: {last_changed.strftime("%Y-%m-%d %H:%M:%S")}'
+        """Icon, Text und Zeitstempel aktualisieren (thread-sicher)."""
+        with state_lock:
+            if motion_detected:
+                icon.props('name=check_circle color=green')
+                status_label.text = 'Motion detected'
+            else:
+                icon.props('name=highlight_off color=red')
+                status_label.text = 'No motion detected'
+            timestamp_label.text = f'Last changed: {last_changed.strftime("%Y-%m-%d %H:%M:%S")}'
 
     def _motion_callback(frame, result):
         nonlocal motion_detected, last_changed
-
-        if result.motion_detected != motion_detected:
-            motion_detected = result.motion_detected
-            last_changed = datetime.fromtimestamp(result.timestamp)
-            refresh_view()
+        updated = False
+        with state_lock:
+            if result.motion_detected != motion_detected:
+                motion_detected = result.motion_detected
+                last_changed = datetime.fromtimestamp(result.timestamp)
+                refresh_view()
+                updated = True
+        # Ausserhalb des Locks aufrufen, um Blockierung zu vermeiden
         if measurement_controller is not None:
-            measurement_controller.on_motion_detected(result)
+            try:
+                measurement_controller.on_motion_detected(result)
+            except Exception:
+                logger.exception("Error in measurement_controller.on_motion_detected")
 
     camera.enable_motion_detection(_motion_callback)
     logger.info("Motion detection callback registered")
@@ -136,20 +145,24 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
                     content={'status': 'error', 'error': 'bad_request', 'message': "Missing required query parameter 'motion'"},
                 )
 
-            updated = False
-            if new_motion != motion_detected:
-                motion_detected = new_motion
-                last_changed = datetime.now()
-                refresh_view()
-                updated = True
+            # Thread-sicher lesen/schreiben
+            with state_lock:
+                updated = False
+                if new_motion != motion_detected:
+                    motion_detected = new_motion
+                    last_changed = datetime.now()
+                    refresh_view()
+                    updated = True
+                current_motion = motion_detected
+                current_last_changed = last_changed
 
             return JSONResponse(
                 status_code=200,
                 content={
                     'status': 'success',
                     'updated': updated,
-                    'motion': motion_detected,
-                    'last_changed': last_changed.isoformat(),
+                    'motion': current_motion,
+                    'last_changed': current_last_changed.isoformat(),
                 },
             )
         except ValueError as ve:

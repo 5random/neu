@@ -10,15 +10,12 @@ import sys
 from src import cam
 from src.gui.default_elements import (
     create_camfeed_content,
+    create_emailcard,
     create_measurement_card,
     create_motion_status_element,
+    create_uvc_content,
+    create_motiondetection_card,
 )
-
-# Register settings page route via side-effect import (if available)
-try:
-    from . import settings_page as _settings_page  # noqa: F401
-except Exception:
-    _settings_page = None
 
 from src.cam.camera import Camera
 from src.measurement import create_measurement_controller_from_config, MeasurementController
@@ -39,7 +36,7 @@ _cleanup_completed = threading.Event()
 
 dark = ui.dark_mode(value=False)
 
-logger = get_logger("gui")
+logger = get_logger("default_page")
 
 def init_camera(config: AppConfig) -> Camera | None:
     """Initialisiere Kamera und starte die Bilderfassung.
@@ -122,14 +119,6 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
             global_measurement_controller = None
     else:
         logger.warning("Motion detection not available - missing camera or measurement controller")
-
-    # Expose core instances for other pages (e.g., /settings) without tight coupling
-    try:
-        app.storage.user['cvd.camera'] = global_camera
-        app.storage.user['cvd.measurement'] = global_measurement_controller
-        app.storage.user['cvd.email'] = global_email_system
-    except Exception:
-        pass
 
     logger.info('creating GUI')
 
@@ -234,7 +223,56 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 on_click=toggle_dark,
             ).props('flat round dense').classes('text-xl')).tooltip('Toggle dark mode')
 
-            # Log download moved to Settings > Logs section
+            app.add_static_files('/logs', 'logs')
+
+            def download_logs_as_zip():
+                """Erstellt ZIP-Archiv aller Log-Dateien und lädt es herunter."""
+                import zipfile
+                import tempfile
+                from pathlib import Path
+                import os
+                
+                logs_dir = Path('logs')
+                if not logs_dir.exists():
+                    ui.notify('No log directory found', type='warning', position='bottom-right')
+                    return
+                
+                # Temporäre ZIP-Datei erstellen
+                with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_file:
+                    zip_path = tmp_file.name
+                
+                try:
+                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                        log_files_found = 0
+                        
+                        # Alle Log-Dateien hinzufügen
+                        for log_file in logs_dir.glob('cvd_tracker.log*'):
+                            if log_file.is_file():
+                                zipf.write(log_file, log_file.name)
+                                log_files_found += 1
+                                logger.debug(f'Added {log_file.name} to ZIP archive')
+                    
+                    if log_files_found > 0:
+                        # ZIP-Datei über temporären statischen Pfad verfügbar machen
+                        import shutil
+                        final_zip_path = logs_dir / 'cvd_tracker_logs.zip'
+                        shutil.move(zip_path, final_zip_path)
+                        
+                        ui.download.from_url('/logs/cvd_tracker_logs.zip')
+                        ui.notify(f'{log_files_found} log files packaged and downloaded', type='positive', position='bottom-right')
+                        logger.info(f'Created ZIP archive with {log_files_found} log files')
+                    else:
+                        ui.notify('No log files found', type='warning', position='bottom-right')
+                        
+                except Exception as e:
+                    logger.error(f'Error creating log ZIP archive: {e}')
+                    ui.notify('Error creating log archive', type='negative', position='bottom-right')
+                finally:
+                    # Temporäre Datei bereinigen falls noch vorhanden
+                    if os.path.exists(zip_path):
+                        os.unlink(zip_path)
+
+            ui.button(icon='download', on_click=lambda: download_logs_as_zip()).props('flat round dense').classes('text-xl').tooltip('Download log file')
 
             async def on_update_click():
                 try:
@@ -251,12 +289,8 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 logger.info('Updates available; navigating to /updating')
                 ui.navigate.to('/updating', new_tab=False)
 
-            # Update and Settings buttons in header row
             ui.button(icon='system_update', on_click=on_update_click)\
               .props('flat round dense').classes('text-xl').tooltip('Update prüfen und installieren')
-
-            ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings', new_tab=False))\
-              .props('flat round dense').classes('text-xl').tooltip('Open settings')
 
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
         with ui.column().classes("gap-4"):
@@ -268,8 +302,9 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                     create_measurement_card(global_measurement_controller, global_camera, email_system=global_email_system)
 
         with ui.column().classes("gap-4"):
-            # Settings moved to /settings page
-            pass
+            create_uvc_content(camera=global_camera)
+            create_motiondetection_card(camera=global_camera)
+            create_emailcard(email_system=global_email_system)
     
     with ui.footer(fixed=False).classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
         with ui.row().classes('items-center justify-between px-4 py-2'):
