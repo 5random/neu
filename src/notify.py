@@ -29,6 +29,7 @@ from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
 from pathlib import Path
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
+import logging
 
 from .config import EmailConfig, MeasurementConfig, AppConfig, get_logger
 
@@ -57,10 +58,10 @@ class EMailSystem:
         logger: Optional[logging.Logger] = None
     ):
         """
-        Initialisiert das AlertSystem.
+        Initialisiert das E-Mail-System.
         """
 
-        self.logger = logger or get_logger('alert')
+        self.logger = logger or get_logger('email')
 
         if app_cfg is None:
             raise ValueError("AppConfig is needed")
@@ -109,7 +110,7 @@ class EMailSystem:
         self._executor = ThreadPoolExecutor(max_workers=2)
         self._alert_system_cleanup = False
 
-        self.logger.info("AlertSystem initialized")
+        self.logger.info("EMailSystem initialized")
 
     # ------------------------------------------------------------------
     # SMTP connection helpers
@@ -269,8 +270,8 @@ class EMailSystem:
             True wenn E-Mail erfolgreich gesendet
         """
         if self._alert_system_cleanup:
-            self.logger.error("AlertSystem has been cleaned up, cannot send alert")
-            raise RuntimeError("AlertSystem has been cleaned up")
+            self.logger.error("EMailSystem has been cleaned up, cannot send alert")
+            raise RuntimeError("EMailSystem has been cleaned up")
     
         current_time = datetime.now()
         current_email_config = self._get_current_email_config()
@@ -736,27 +737,47 @@ class EMailSystem:
             
         return None
 
-    def _cleanup_image(self, save_path: Path, max_files: int = 100) -> None:
-        """
-        Cleans up old alert images in the save path.
+    @staticmethod
+    def _cleanup_image(
+        save_path: Path,
+        max_files: int = 100,
+        logger: Optional[logging.Logger] = None,
+        prefix: str = "alert_",
+    ) -> None:
+        """Remove older alert image files in a directory, keeping only the newest max_files.
 
-        Args:
-            save_path: Path to the image save location
+        Only files starting with the given prefix (default: 'alert_') and with common image
+        extensions (.jpg, .jpeg, .png) are considered for deletion.
         """
         try:
-            image_files = (
-                list(save_path.glob("alert_*.jpg")) +
-                list(save_path.glob("alert_*.jpeg")) +
-                list(save_path.glob("alert_*.png"))
-            )
-            if len(image_files) > max_files:
-                # Sort by modification time, delete oldest
-                image_files.sort(key=lambda x: x.stat().st_mtime)
-                for old_file in image_files[:-max_files]:
-                    old_file.unlink()
-                    self.logger.debug(f"Old alert image deleted: {old_file}")
-        except Exception as exc:
-            self.logger.error(f"Error cleaning up old images: {exc}")
+            folder = Path(save_path)
+            if not folder.exists() or not folder.is_dir():
+                return
+
+            image_exts = {'.jpg', '.jpeg', '.png'}
+            # Only consider alert images with the configured prefix
+            files = [
+                p for p in folder.iterdir()
+                if p.is_file()
+                and p.suffix.lower() in image_exts
+                and p.name.startswith(prefix)
+            ]
+            if len(files) <= max_files:
+                return
+
+            files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            to_delete = files[max_files:]
+            for f in to_delete:
+                try:
+                    f.unlink(missing_ok=True)
+                except Exception as e:
+                    if logger:
+                        logger.warning(f'Failed to remove file {f}: {e}')
+
+            if logger:
+                logger.info(f'Cleanup in {folder}: kept {max_files}, removed {len(to_delete)} (prefix="{prefix}")')
+        except Exception as e:
+            (logger or logging.getLogger('email')).error(f'Cleanup error in {save_path}: {e}')
 
     # === Status export for GUI ===
 
@@ -910,7 +931,7 @@ class EMailSystem:
         Schließt SMTP-Verbindungen und gibt Ressourcen frei.
         """
         try:
-            self.logger.info("Starting AlertSystem cleanup...")
+            self.logger.info("Starting EMailSystem cleanup...")
             
             # ThreadPoolExecutor shutdown
             if hasattr(self, '_executor'):
@@ -932,13 +953,13 @@ class EMailSystem:
                 self.alerts_sent_count = 0
             
             self._alert_system_cleanup = True  # Set cleanup flag
-            self.logger.info("AlertSystem cleanup completed")
+            self.logger.info("EMailSystem cleanup completed")
             
         except Exception as exc:
-            self.logger.error(f"Error during AlertSystem cleanup: {exc}")
+            self.logger.error(f"Error during EMailSystem cleanup: {exc}")
     
     def health_check(self) -> Dict[str, Any]:
-        """Comprehensive health check of the AlertSystem"""
+        """Comprehensive health check of the EMailSystem"""
         health = {
             'status': 'healthy',
             'checks': {},
@@ -1006,7 +1027,7 @@ class EMailSystem:
 
 # === Factory-Funktionen ===
 
-def create_alert_system_from_config(
+def create_email_system_from_config(
     config: Optional[AppConfig] = None,
     logger: Optional[logging.Logger] = None,
 ) -> EMailSystem:
@@ -1022,12 +1043,19 @@ def create_alert_system_from_config(
     from .config import load_config
     
     if config is None:
-        config = load_config("config/config.yaml")
-    
-    logger = logger or get_logger("alert")
-
+        from .config import load_config
+        config = load_config()
     return EMailSystem(config.email, config.measurement, config, logger)
 
+
+# Backward compatibility factory (deprecated)
+def create_alert_system_from_config(
+    config: Optional['AppConfig'] = None,
+    logger: Optional['logging.Logger'] = None,
+) -> 'EMailSystem':
+    import warnings
+    warnings.warn("create_alert_system_from_config is deprecated; use create_email_system_from_config", DeprecationWarning, stacklevel=2)
+    return create_email_system_from_config(config, logger)
 
 # Test-Code zur Verifikation
 def test_template_rendering():

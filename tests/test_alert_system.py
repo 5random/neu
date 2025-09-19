@@ -1,7 +1,7 @@
 import numpy as np
 from datetime import datetime
 
-from src.alert import AlertSystem
+from src.notify import EMailSystem
 from src.config import _create_default_config
 
 
@@ -14,7 +14,7 @@ def test_send_motion_alert_includes_image(monkeypatch):
     cfg.email.smtp_server = "localhost"
     cfg.email.smtp_port = 25
 
-    alert = AlertSystem(cfg.email, cfg.measurement, cfg)
+    email_system = EMailSystem(cfg.email, cfg.measurement, cfg)
 
     sent_messages = []
 
@@ -22,13 +22,13 @@ def test_send_motion_alert_includes_image(monkeypatch):
         sent_messages.extend(messages)
         return len(messages)
 
-    monkeypatch.setattr(AlertSystem, "_send_emails_batch", fake_send_emails_batch)
-    monkeypatch.setattr(AlertSystem, "_save_alert_image", lambda self, buf, name: None)
-    monkeypatch.setattr(AlertSystem, "_should_send_alert_unsafe", lambda self: True)
+    monkeypatch.setattr(EMailSystem, "_send_emails_batch", fake_send_emails_batch)
+    monkeypatch.setattr(EMailSystem, "_save_alert_image", lambda self, buf, name: None)
+    monkeypatch.setattr(EMailSystem, "_should_send_alert_unsafe", lambda self: True)
 
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
-    assert alert.send_motion_alert(datetime.now(), "session", frame)
+    assert email_system.send_motion_alert(datetime.now(), "session", frame)
     # One message per recipient
     assert len(sent_messages) == len(cfg.email.recipients)
 

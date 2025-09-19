@@ -2,9 +2,9 @@
 Messungssteuerung (Measurement Control) für Webcam-Überwachungssystem.
 
 Dieses Modul implementiert die zentrale Steuerungslogik für Überwachungszeiträume
-und Alert-System-Integration gemäß Projektbeschreibung:
+und E-Mail-System-Integration gemäß Projektbeschreibung:
 - Messungen (Überwachungszeiträume) starten und stoppen
-- Alert-Delay-System bei anhaltender Bewegungslosigkeit  
+- E-Mail-Delay-System bei anhaltender Bewegungslosigkeit
 - E-Mail-Trigger-Integration
 - Session-Management für GUI-Steuerung
 
@@ -33,18 +33,18 @@ from .cam.camera import Camera
 class MeasurementController:
     """
     Zentrale Steuerungslogik für Überwachungssitzungen.
-    
-    Orchestriert Motion-Detection, Alert-System und Session-Management
-    für die Webcam-Überwachung mit Alert-Delay-Funktionalität.
-    
+
+    Orchestriert Motion-Detection, E-Mail-System und Session-Management
+    für die Webcam-Überwachung mit E-Mail-Delay-Funktionalität.
+
     Features:
     - Session-Lifecycle-Management (Start/Stop)
-    - Alert-Delay-Timer bei Bewegungslosigkeit
-    - Integration mit Motion-Detection und Alert-System
+    - E-Mail-Delay-Timer bei Bewegungslosigkeit
+    - Integration mit Motion-Detection und E-Mail-System
     - GUI-Status-Export für Live-Updates
     
     Usage:
-        controller = MeasurementController(config, alert_system)
+        controller = MeasurementController(config, email_system)
         controller.start_session()
         # Motion-Events über register_motion_callback()
         if controller.should_trigger_alert():
@@ -54,7 +54,7 @@ class MeasurementController:
     def __init__(
         self,
         config: 'MeasurementConfig',
-        alert_system: Optional['EMailSystem'] = None,
+        email_system: Optional['EMailSystem'] = None,
         camera: Optional['Camera'] = None,
         logger: Optional[logging.Logger] = None
     ):
@@ -63,12 +63,12 @@ class MeasurementController:
         
         Args:
             config: MeasurementConfig mit Alert-Delay und Session-Parametern
-            alert_system: Optional AlertSystem für E-Mail-Benachrichtigungen
+            email_system: Optional EMailSystem für E-Mail-Benachrichtigungen
             camera: Optional Camera-Instanz für Snapshot-Aufnahmen
             logger: Optional Logger für Session-Tracking
         """
         self.config = config
-        self.alert_system = alert_system
+        self.email_system = email_system
         self.camera = camera
         self.logger = logger or get_logger('measurement')
         
@@ -178,13 +178,12 @@ class MeasurementController:
             self.last_alert_check = None
             # Debounce-/Event-State zurücksetzen, damit keine offenen Events übernommen werden
             self._reset_debounce_state()
-            
-            self.logger.info(f"Session started: {self.session_id}")
+            self.logger.info(f"Session started at: {self.session_id}")
             # Fire optional start notification (non-blocking)
             try:
-                if self.alert_system:
+                if self.email_system:
                     self._alert_executor.submit(
-                        self.alert_system.send_measurement_event,
+                        self.email_system.send_measurement_event,
                         'start',
                         self.session_id,
                         self.session_start_time,
@@ -225,10 +224,10 @@ class MeasurementController:
 
             # Fire optional end/stop notification (non-blocking)
             try:
-                if self.alert_system and start_time:
+                if self.email_system and start_time:
                     event_type = 'stop' if (reason and reason != 'timeout') else 'end'
                     self._alert_executor.submit(
-                        self.alert_system.send_measurement_event,
+                        self.email_system.send_measurement_event,
                         event_type,
                         sess_id,
                         start_time,
@@ -482,11 +481,11 @@ class MeasurementController:
             True wenn Alert erfolgreich ausgelöst
         """
         # Doppelte Validierung vermeiden - wurde bereits in _trigger_alert_sync geprüft
-        if not self.alert_system:
+        if not self.email_system:
             # Fallback: Alert als "gesendet" markieren
             self.alert_triggered = True
             self.alert_trigger_time = datetime.now()
-            self.logger.warning("Alert triggered (no AlertSystem available, sync)")
+            self.logger.warning("Alert triggered (no EMailSystem available, sync)")
             return True
         
         try:
@@ -506,7 +505,7 @@ class MeasurementController:
                     # Weitermachen ohne Bild - Alert trotzdem senden
 
             # E-Mail-Alert synchron senden (läuft im ThreadPoolExecutor)
-            success = self.alert_system.send_motion_alert(
+            success = self.email_system.send_motion_alert(
                 last_motion_time=self.last_motion_time,
                 session_id=self.session_id,
                 camera_frame=camera_frame,
@@ -678,7 +677,7 @@ class MeasurementController:
                 self.motion_history.clear()
             
             # Referenzen auf None setzen für Garbage Collection
-            self.alert_system = None
+            self.email_system = None
             self.camera = None
             
             self.logger.info("MeasurementController cleanup completed")
@@ -699,7 +698,7 @@ def create_measurement_controller_from_config(
     
     Args:
         config_path: Optional Pfad zur Konfigurationsdatei
-        alert_system: Optional AlertSystem für E-Mail-Funktionalität
+        email_system: Optional EMailSystem für E-Mail-Funktionalität
         camera: Optional Camera-Instanz für Snapshots
         
     Returns:

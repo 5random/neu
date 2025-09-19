@@ -1,13 +1,14 @@
 from typing import Optional
 import asyncio
 
-from nicegui import ui
+from nicegui import ui, background_tasks
 from nicegui import events
 from nicegui.client import Client
 
 from src.config import get_global_config, save_global_config, get_logger
 from src.config import EmailConfig as _EmailConfig
 from src.notify import EMailSystem
+from src.gui.util import schedule_bg
 
 logger = get_logger('gui.email')
 
@@ -58,7 +59,7 @@ def _get_effective_recipients_from_config(cfg, state: dict) -> list[str]:
         logger.debug("Falling back to local recipients for effective list", exc_info=True)
     return list(state.get('recipients', []) or [])
 
-def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
+def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
     """
     Karte mit drei Tabs:
     1) Übersicht   - read-only Konfig & Test-Mail
@@ -113,18 +114,39 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
     table: Optional[ui.table] = None
     group_table: Optional[ui.table] = None
     active_groups_select: Optional[ui.select] = None
+    active_groups_apply_btn: Optional[ui.button] = None
     email_inp: Optional[ui.input] = None
     smtp_labels: dict[str, ui.label] = {}
     overview_counts_base: Optional[ui.label] = None
     overview_counts_eff: Optional[ui.label] = None
     notif_labels: dict[str, ui.label] = {}
+    # Notification UI refs for enable/disable handling
+    notifications_apply_btn: Optional[ui.button] = None
+    notify_start_cb: Optional[ui.checkbox] = None
+    notify_end_cb: Optional[ui.checkbox] = None
 
-    if alert_system is None:
-        logger.error("Alert system is not initialized, email functionality will be disabled.")
+    if email_system is None:
+        logger.error("Email system is not initialized, email functionality will be disabled.")
 
     # ------------------------------------------------------------------ #
     # Hilfsfunktionen                                                    #
     # ------------------------------------------------------------------ #
+    def _summarize_email_config(email_cfg) -> str:
+        """Return a concise summary string for logging (no templates / large fields)."""
+        try:
+            rec_count = len(getattr(email_cfg, "recipients", []) or [])
+            groups = getattr(email_cfg, "groups", {}) or {}
+            grp_count = len(groups)
+            active_count = len(getattr(email_cfg, "active_groups", []) or [])
+            smtp = getattr(email_cfg, "smtp_server", getattr(email_cfg, "smtp", {}).get("server", "<unknown>"))
+            sender = getattr(email_cfg, "sender_email", getattr(email_cfg, "smtp", {}).get("sender", "<unknown>"))
+            return (
+                f"EmailConfig(summary): recipients={rec_count}, groups={grp_count}, "
+                f"active_groups={active_count}, smtp_server={smtp}, sender={sender}"
+            )
+        except Exception:
+            return "EmailConfig(summary): <error building summary>"
+
     def persist_state() -> bool:
         """Speichert Konfiguration, meldet Fehler im UI."""
         config = get_global_config()
@@ -146,10 +168,11 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
             if hasattr(config.email, 'notifications'):
                 config.email.notifications = dict(state.get("notifications", {}))
             if save_global_config():
-                if alert_system:
-                    alert_system.refresh_config()
-                    logger.info("Alert system configuration refreshed")
-                logger.info(f"Configuration saved successfully: {config.email}")
+                if email_system:
+                    email_system.refresh_config()
+                    logger.info("Email system configuration refreshed")
+                # Replace verbose dataclass repr with concise summary
+                logger.info(_summarize_email_config(config.email))
                 return True
             else:
                 logger.error("Failed to save configuration")
@@ -182,14 +205,14 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
         
         # Logging am Anfang
         logger.info("Sending test email...")
-        logger.info(f"Alert system: {alert_system}")
+        logger.info(f"Email system: {email_system}")
         logger.info(f'Recipients: {state["recipients"]}')
         logger.info(f'Total recipients: {len(state["recipients"])}')
-        
-        if alert_system is None:
-            logger.error("Alert system not initialized")
+
+        if email_system is None:
+            logger.error("Email system not initialized")
             with client:
-                ui.notify("Alert system not initialized", color="negative", position='bottom-right')
+                ui.notify("Email system not initialized", color="negative", position='bottom-right')
             return
         
         # Persist and then compute effective recipients for an accurate UI message
@@ -206,7 +229,7 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
         
         # E-Mail senden
         try:
-            success = await alert_system.send_test_email_async()
+            success = await email_system.send_test_email_async()
         except Exception as e:
             error_msg = f"Failed to send test email: {e}"
             logger.error(error_msg)
@@ -248,13 +271,54 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
         for recipient in effective:
             logger.info(f"Will send to: {recipient}")
          
-         client: Client = ui.context.client
-         
-         asyncio.create_task(send_async_test_email(client))
+        client: Client = ui.context.client
+        
+        # Schedule test email send safely via helper (defers if loop not ready)
+        schedule_bg(send_async_test_email(client), name='send_test_email')
 
     # ------------------------------------------------------------------ #
     # UI-Helper                                                          #
     # ------------------------------------------------------------------ #
+    def _update_active_groups_apply_state() -> None:
+        """Enable Active-Groups Apply button only if selection differs from current state."""
+        nonlocal active_groups_select, active_groups_apply_btn
+        try:
+            if active_groups_apply_btn is None or active_groups_select is None:
+                return
+            selected = set((active_groups_select.value or []))
+            current = set(state.get("active_groups", []) or [])
+            if selected == current:
+                active_groups_apply_btn.disable()
+            else:
+                active_groups_apply_btn.enable()
+        except Exception:
+            # Be conservative: disable on error
+            try:
+                if active_groups_apply_btn is not None:
+                    active_groups_apply_btn.disable()
+            except Exception:
+                pass
+
+    def _update_notifications_apply_state() -> None:
+        """Enable Notifications Apply only if checkbox values differ from state."""
+        nonlocal notifications_apply_btn, notify_start_cb, notify_end_cb
+        try:
+            if notifications_apply_btn is None or notify_start_cb is None or notify_end_cb is None:
+                return
+            cur_start = bool(state.get("notifications", {}).get("on_start", False))
+            cur_end = bool(state.get("notifications", {}).get("on_end", False))
+            sel_start = bool(getattr(notify_start_cb, 'value', cur_start))
+            sel_end = bool(getattr(notify_end_cb, 'value', cur_end))
+            if (cur_start == sel_start) and (cur_end == sel_end):
+                notifications_apply_btn.disable()
+            else:
+                notifications_apply_btn.enable()
+        except Exception:
+            try:
+                if notifications_apply_btn is not None:
+                    notifications_apply_btn.disable()
+            except Exception:
+                pass
     def refresh_table() -> None:
         if table is not None:
             table.rows = [{"address": addr} for addr in state["recipients"]]
@@ -337,8 +401,8 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
         if persist_state():
             refresh_table()
             refresh_overview()
-            if alert_system:
-                alert_system.refresh_config()
+            if email_system:
+                email_system.refresh_config()
             logger.info(f"Added new recipient: {addr}; total recipients: {len(state['recipients'])}")
 
     def delete_selected() -> None:
@@ -362,8 +426,8 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
                 group_table.rows = [{"address": addr} for addr in state["recipients"]]
                 group_table.selected = []
                 group_table.update()
-            if alert_system:
-                alert_system.refresh_config()
+            if email_system:
+                email_system.refresh_config()
             ui.notify(f"{len(selected_addresses)} address(es) deleted", color="positive", position='bottom-right')
             logger.info(f"Deleted {len(selected_addresses)} recipient(s): {', '.join(selected_addresses)}; new total recipients: {len(state['recipients'])}")
 
@@ -427,8 +491,8 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
                     tgt = set(state["groups"][state["current_group"]])
                     group_table.selected = [r for r in group_table.rows if r["address"] in tgt]
                 group_table.update()
-            if alert_system:
-                alert_system.refresh_config()
+            if email_system:
+                email_system.refresh_config()
             logger.info('Recipient updated: %s -> %s', old_addr, new_addr)
             ui.notify('Recipient updated', color='positive', position='bottom-right')
         else:
@@ -587,8 +651,8 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
                         if persist_state():
                             update_status_icon()
                             refresh_overview()
-                            if alert_system:
-                                alert_system.refresh_config()
+                            if email_system:
+                                email_system.refresh_config()
 
                 for inp in (sender_inp, server_inp, port_inp):
                     inp.on("update:model-value", lambda _: update_status_icon())
@@ -613,7 +677,7 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
                         group_name_inp.value = ""
                         if group_table:
                             group_table.selected = []
-                    ui.button("New", icon="create_new_folder", color="accent", on_click=lambda _: new_group()).props("round")
+                    ui.button(icon="create_new_folder", color="accent", on_click=lambda _: new_group()).props("round").tooltip("Create new group")
 
                     def save_group() -> None:
                         name = (group_name_inp.value or "").strip()
@@ -639,7 +703,7 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
                         if persist_state():
                             refresh_groups_ui()
                             ui.notify(f"Group '{name}' saved", color="positive", position='bottom-right')
-                    ui.button("Save group", icon="save", color="primary", on_click=lambda _: save_group()).props("round")
+                    ui.button(icon="save", color="primary", on_click=lambda _: save_group()).props("round").tooltip("Save group with selected recipients")
 
                     # Confirmation dialog for group deletion
                     confirm_dialog = ui.dialog()
@@ -672,7 +736,7 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
                         confirm_text.text = f"Group '{name}' will be deleted. This cannot be undone."
                         state["pending_delete_group"] = name
                         confirm_dialog.open()
-                    ui.button("Delete group", icon="delete", color="negative", on_click=lambda _: delete_group()).props("round")
+                    ui.button(icon="delete", color="negative", on_click=lambda _: delete_group()).props("round").tooltip("Delete the currently loaded group")
 
                 with ui.row().classes("items-start gap-4 w-full"):
                     # Existing groups list
@@ -730,6 +794,9 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
                         label="Active groups",
                     ).classes("min-w-[280px]")
 
+                    # Keep Apply button state in sync on selection changes
+                    active_groups_select.on('update:model-value', lambda _=None: _update_active_groups_apply_state())
+
                     def apply_active_groups() -> None:
                         selected = active_groups_select.value or []
                         state["active_groups"] = list(selected)
@@ -740,7 +807,12 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
                                 position='bottom-right',
                             )
                             refresh_overview()
-                    ui.button("Apply", icon="done", color="primary", on_click=lambda _: apply_active_groups()).props("round").tooltip("Apply active groups for sending")
+                        # After applying, selection equals state; disable button again
+                        _update_active_groups_apply_state()
+                    active_groups_apply_btn = ui.button(icon="done", color="primary").props("round").tooltip("Apply active groups for sending")
+                    active_groups_apply_btn.on('click', lambda _=None: apply_active_groups())
+                    # Initialize button state
+                    _update_active_groups_apply_state()
 
                 ui.separator()
 
@@ -756,18 +828,33 @@ def create_emailcard(*, alert_system: Optional[EMailSystem] = None) -> None:
                         value=bool(state["notifications"].get("on_end", False))
                     )
 
+                    # Update Apply state when user toggles checkboxes
+                    notify_start_cb.on('update:model-value', lambda _=None: _update_notifications_apply_state())
+                    notify_end_cb.on('update:model-value', lambda _=None: _update_notifications_apply_state())
+
                     def apply_notifications() -> None:
                         state["notifications"]["on_start"] = bool(notify_start_cb.value)
                         state["notifications"]["on_end"] = bool(notify_end_cb.value)
                         if persist_state():
                             ui.notify("Notification settings applied", color="positive", position='bottom-right')
                             refresh_overview()
-                    ui.button("Apply", icon="done", color="primary", on_click=lambda _: apply_notifications()).props("round").tooltip("Apply notification settings")
+                        # After applying, disable button until next change
+                        _update_notifications_apply_state()
+                    notifications_apply_btn = ui.button(icon="done", color="primary").props("round").tooltip("Apply notification settings")
+                    notifications_apply_btn.on('click', lambda _=None: apply_notifications())
+                    # Initialize button state
+                    _update_notifications_apply_state()
 
                 # Initialize groups UI
                 def _init_groups():
                     # Single canonical UI refresh for groups
                     refresh_groups_ui()
+                    # Also ensure Apply state reflects current selection after initial load
+                    try:
+                        _update_active_groups_apply_state()
+                        _update_notifications_apply_state()
+                    except Exception:
+                        pass
                 _init_groups()
 
     # ------------------------------------------------------------------ #

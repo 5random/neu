@@ -1,9 +1,10 @@
-from nicegui import ui
+from nicegui import ui, background_tasks
 from nicegui.events import GenericEventArguments
 from typing import Optional, Any, Callable, TypeVar
 import asyncio
 
 from src.cam.camera import Camera
+from src.gui.util import schedule_bg, cancel_task_safely
 from src.config import get_logger, get_global_config, save_global_config
 
 logger = get_logger('gui.uvc_knobs')
@@ -35,7 +36,8 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
 
             camera_setter(value)
 
-             # Delayed config saving            async def save_config_delayed():
+             # Delayed config saving            
+            async def save_config_delayed():
                 await asyncio.sleep(0.5)  # 500ms Verzögerung
                 try:
                     config = get_global_config()
@@ -59,11 +61,11 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                               position='bottom-right')
 
             # Vorherige Task für dieses Feld abbrechen
-            if config_field in debounce_tasks and not debounce_tasks[config_field].done():
-                debounce_tasks[config_field].cancel()
-            
-            # Neue Task starten
-            debounce_tasks[config_field] = asyncio.create_task(save_config_delayed())
+            if config_field in debounce_tasks:
+                cancel_task_safely(debounce_tasks.get(config_field))
+
+            # Start a safe background task (deferred if loop not ready)
+            debounce_tasks[config_field] = schedule_bg(save_config_delayed(), name=f'save_{config_field}')
         
         return handler
     

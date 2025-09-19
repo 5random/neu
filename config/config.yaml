@@ -46,7 +46,7 @@ webcam:
 # UVC Controls
 # ---------------------------------------------------------------------------
 uvc_controls:
-  brightness: 0
+  brightness: 35
   hue: 0
   contrast: 16
   saturation: 64
@@ -55,7 +55,7 @@ uvc_controls:
   white_balance:
     auto: true
     value: 4000
-  gain: 10
+  gain: 50
   backlight_compensation: 42
   exposure:
     auto: true
@@ -100,106 +100,27 @@ email:
   templates:
     alert:
       subject: 'CVD-TRACKER{cvd_id}-{cvd_name}-Alert: no motion detected - {timestamp}'
-      body: '
-        CVD-Tracker{cvd_id} {cvd_name}: Alert!
-        Movement has not been detected since: {last_motion_time}!
-        Please check the issue via the web application at: {website_url}.
-
-        Details:
-           CVD-ID: {cvd_id}
-           CVD-Name: {cvd_name}
-
-           Session-ID: {session_id}
-           Last motion at: {last_motion_time}
-           Start: {start_time}
-           End: {end_time}
-           Duration: {duration}
-           Reason: {reason}
-
-           Camera: Index {camera_index}
-           Sensitivity: {sensitivity}
-           ROI enabled: {roi_enabled}
-
-        Attached is the current webcam image.
-        '
+      body: " CVD-Tracker{cvd_id} {cvd_name}: Alert! Movement has not been detected since: {last_motion_time}! Please check the issue via the web application at: {website_url}.\nDetails: CVD-ID: {cvd_id} CVD-Name: {cvd_name}\nSession-ID: {session_id} Last motion at: {last_motion_time} Start: {start_time} End: {end_time} Duration: {duration} Reason: {reason}\nCamera: Index {camera_index} Sensitivity: {sensitivity} ROI enabled: {roi_enabled}\nAttached is the current webcam image. "
     test:
       subject: 'CVD-TRACKER{cvd_id}-{cvd_name}: Test email - {timestamp}'
-      body: '
-        This is a test email from CVD-TRACKER{cvd_id}-{cvd_name} sent at {timestamp}.
-        If you received this email, the email configuration is correct.
-
-        You can access the web application at: {website_url}.
-
-        Details:
-           CVD-ID: {cvd_id}
-           CVD-Name: {cvd_name}
-        '
+      body: " This is a test email from CVD-TRACKER{cvd_id}-{cvd_name} sent at {timestamp}. If you received this email, the email configuration is correct.\nYou can access the web application at: {website_url}.\nDetails: CVD-ID: {cvd_id} CVD-Name: {cvd_name} "
     measurement_start:
       subject: 'CVD-TRACKER{cvd_id}-{cvd_name}: Measurement started - {timestamp}'
-      body: '
-        CVD-Tracker{cvd_id}-{cvd_name} Measurement Started
-        A new measurement session has started at {timestamp}.
-
-        You can monitor the session via the web application at: {website_url}.
-
-        Details:
-
-           CVD-ID: {cvd_id}
-           CVD-Name: {cvd_name}
-
-           Session-ID: {session_id}
-           Start: {start_time}
-           End: {end_time}
-           Duration: {duration}
-
-           Camera: Index {camera_index}
-           Sensitivity: {sensitivity}
-           ROI enabled: {roi_enabled}
-        '
+      body: " CVD-Tracker{cvd_id}-{cvd_name} Measurement Started A new measurement session has started at {timestamp}.\nYou can monitor the session via the web application at: {website_url}.\nDetails:\nCVD-ID: {cvd_id} CVD-Name: {cvd_name}\nSession-ID: {session_id} Start: {start_time} End: {end_time} Duration: {duration}\nCamera: Index {camera_index} Sensitivity: {sensitivity} ROI enabled: {roi_enabled} "
     measurement_end:
       subject: 'CVD-TRACKER{cvd_id}-{cvd_name}: Measurement ended - {timestamp}'
-      body: '
-        CVD-Tracker{cvd_id}-{cvd_name} Measurement Ended
-        The measurement session has ended at {timestamp}.
-
-        You can access the web application at: {website_url}.
-
-        Details:
-           CVD-ID: {cvd_id}
-           CVD-Name: {cvd_name}
-
-           Session-ID: {session_id}
-           Start: {start_time}
-           End: {end_time}
-           Duration: {duration}
-           Reason: {reason}
-
-           Camera: Index {camera_index}
-           Sensitivity: {sensitivity}
-           ROI enabled: {roi_enabled}
-        '
+      body: " CVD-Tracker{cvd_id}-{cvd_name} Measurement Ended The measurement session has ended at {timestamp}.\nYou can access the web application at: {website_url}.\nDetails: CVD-ID: {cvd_id} CVD-Name: {cvd_name}\nSession-ID: {session_id} Start: {start_time} End: {end_time} Duration: {duration} Reason: {reason}\nCamera: Index {camera_index} Sensitivity: {sensitivity} ROI enabled: {roi_enabled} "
     measurement_stop:
       subject: 'CVD-TRACKER{cvd_id}-{cvd_name}: Measurement stopped - {timestamp}'
-      body: '
-        CVD-Tracker{cvd_id}-{cvd_name} Measurement Stopped
-        The measurement session was stopped at {timestamp}.
-
-        You can access the web application at: {website_url}.
-
-        Details:
-           CVD-ID: {cvd_id}
-           CVD-Name: {cvd_name}
-
-           Session-ID: {session_id}
-           Start: {start_time}
-           End: {end_time}
-           Duration: {duration}
-           Reason: {reason}
-
-           Camera: Index {camera_index}
-           Sensitivity: {sensitivity}
-           ROI enabled: {roi_enabled}
-        '
+      body: " CVD-Tracker{cvd_id}-{cvd_name} Measurement Stopped The measurement session was stopped at {timestamp}.\nYou can access the web application at: {website_url}.\nDetails: CVD-ID: {cvd_id} CVD-Name: {cvd_name}\nSession-ID: {session_id} Start: {start_time} End: {end_time} Duration: {duration} Reason: {reason}\nCamera: Index {camera_index} Sensitivity: {sensitivity} ROI enabled: {roi_enabled} "
+  groups:
+    '1':
+      - CHANGE_ME@example.com
+  active_groups:
+    - '1'
+  notifications:
+    on_start: true
+    on_end: true
 
 # ---------------------------------------------------------------------------
 # GUI
@@ -220,3 +141,4 @@ logging:
   max_file_size_mb: 10
   backup_count: 5
   console_output: true
+

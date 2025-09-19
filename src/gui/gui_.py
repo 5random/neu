@@ -19,7 +19,7 @@ from src.gui.default_elements import (
 
 from src.cam.camera import Camera
 from src.measurement import create_measurement_controller_from_config, MeasurementController
-from src.notify import create_alert_system_from_config, EMailSystem
+from src.notify import create_email_system_from_config, EMailSystem
 from src.config import load_config, set_global_config, get_global_config, save_global_config, AppConfig, get_logger
 from src.update import check_update, perform_update, get_local_commit_short, restart_self
 
@@ -27,7 +27,7 @@ from src.update import check_update, perform_update, get_local_commit_short, res
 # Globales Kamerahandle, wird erst in ``main`` erzeugt
 global_camera: Camera | None = None
 global_measurement_controller: MeasurementController | None = None
-global_alert_system: EMailSystem | None = None
+global_email_system: EMailSystem | None = None
 global_config: AppConfig | None = None
 
 # Shutdown-Flag für thread-sichere Cleanup-Koordination
@@ -65,7 +65,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
         config_path: Pfad zur zu ladenden Konfigurationsdatei
     """
 
-    global global_camera, global_measurement_controller, global_alert_system, global_config
+    global global_camera, global_measurement_controller, global_email_system, global_config
     try:
         global_config = load_config(config_path)
         set_global_config(global_config, config_path)
@@ -83,21 +83,21 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
             logger.error('Failed to initialize camera')
             ui.notify('Camera initialization failed, starting GUI without camera', close_button=True, type='warning', position='bottom-right')
 
-    if global_alert_system is None:
+    if global_email_system is None:
         try:
             logger.info('Initializing E-Mail-Notification system...')
-            global_alert_system = create_alert_system_from_config(global_config, logger=logger)
+            global_email_system = create_email_system_from_config(global_config, logger=logger)
             logger.info('E-Mail-Notification system initialized successfully')
         except Exception as exc:
             logger.error(f"E-Mail-Notification system initialization failed: {exc}")
             ui.notify('E-Mail-Notification system initialization failed', type='warning', position='bottom-right')
-            global_alert_system = None
+            global_email_system = None
 
     if global_measurement_controller is None:
         try:
             global_measurement_controller = create_measurement_controller_from_config(
                 config=global_config,
-                alert_system=global_alert_system,
+                email_system=global_email_system,
                 camera=global_camera,
                 logger=logger,
             )
@@ -299,12 +299,12 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 with ui.column().classes("h-full"):
                     create_motion_status_element(global_camera, global_measurement_controller)
                 with ui.column().classes("h-full"):
-                    create_measurement_card(global_measurement_controller, global_camera, alert_system=global_alert_system)
+                    create_measurement_card(global_measurement_controller, global_camera, email_system=global_email_system)
 
         with ui.column().classes("gap-4"):
             create_uvc_content(camera=global_camera)
             create_motiondetection_card(camera=global_camera)
-            create_emailcard(alert_system=global_alert_system)
+            create_emailcard(email_system=global_email_system)
     
     with ui.footer(fixed=False).classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
         with ui.row().classes('items-center justify-between px-4 py-2'):
@@ -324,7 +324,7 @@ async def cleanup_camera_async():
 
 def cleanup_application_sync():
     """Thread-sichere synchrone Cleanup-Funktion."""
-    global global_measurement_controller, global_alert_system
+    global global_measurement_controller, global_email_system
     
     logger.info("Starting synchronous application cleanup...")
     
@@ -334,12 +334,12 @@ def cleanup_application_sync():
             global_measurement_controller.cleanup()
             global_measurement_controller = None
             logger.info("Measurement controller cleanup completed")
-            
-        if global_alert_system:
-            global_alert_system.cleanup()
-            global_alert_system = None
-            logger.info("Alert system cleanup completed")
-            
+
+        if global_email_system:
+            global_email_system.cleanup()
+            global_email_system = None
+            logger.info("Email system cleanup completed")
+
         logger.info("Synchronous cleanup completed")
         
     except Exception as e:
@@ -417,5 +417,4 @@ def signal_handler(signum, frame):
 
 # Signal-Handler registrieren
 signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler) 
-    
+signal.signal(signal.SIGTERM, signal_handler)

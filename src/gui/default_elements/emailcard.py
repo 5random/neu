@@ -137,8 +137,8 @@ def create_emailcard(*, config: AppConfig) -> None:
                         ui.notify("Saved", color="positive")
                 
                 def send_test_email():
-                        alert = EMailSystem(config.email, config.measurement, config)
-                        if alert.send_test_email():
+                        email = EMailSystem(config.email, config.measurement, config)
+                        if email.send_test_email():
                             ui.notify("Test email sent successfully", color="positive")
                         else:
                             ui.notify("Error sending test email", color="negative")

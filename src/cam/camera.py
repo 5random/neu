@@ -128,14 +128,47 @@ class Camera:
                 if not video_capture.isOpened():
                     video_capture.release()
                     self.video_capture = None
-                    raise RuntimeError(f"Camera {self.webcam_config.camera_index} could not be opened")
-
+                    # Windows: Fallback auf MSMF versuchen
+                    if platform.system() == "Windows" and self.backend == cv2.CAP_DSHOW:
+                        self.logger.warning("DirectShow failed; trying MSMF backend")
+                        vc2 = cv2.VideoCapture(self.webcam_config.camera_index, cv2.CAP_MSMF)
+                        if vc2 and vc2.isOpened():
+                            video_capture = vc2
+                        else:
+                            if vc2:
+                                vc2.release()
+                            raise RuntimeError(f"Camera {self.webcam_config.camera_index} could not be opened")
+                # Properties setzen
                 self._set_camera_properties(video_capture)
-
-                # Test‑Frame zum Validieren
-                ret, _ = video_capture.read()
-                if not ret:
-                    raise RuntimeError("No frame received from camera during initialization")
+                # Warmup siehe Fix 1
+                ok = False
+                for i in range(30):
+                    ret, _ = video_capture.read()
+                    if ret:
+                        ok = True
+                        break
+                    time.sleep(0.03)
+                if not ok:
+                    # letzter Fallback: Default-Backend probieren
+                    if platform.system() == "Windows" and self.backend != 0:
+                        self.logger.warning("No frame after warmup; trying default backend")
+                        try:
+                            tmp = cv2.VideoCapture(self.webcam_config.camera_index, 0)
+                            if tmp and tmp.isOpened():
+                                video_capture.release()
+                                video_capture = tmp
+                                self._set_camera_properties(video_capture)
+                                # noch einmal warmup
+                                for _ in range(30):
+                                    ret, _ = video_capture.read()
+                                    if ret:
+                                        ok = True
+                                        break
+                                    time.sleep(0.03)
+                        except Exception:
+                            self.logger.exception("Default backend attempt failed")
+                    if not ok:
+                        raise RuntimeError("No frame received from camera during initialization (all backends)")
 
             with self.frame_lock:
                 self.video_capture = video_capture

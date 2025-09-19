@@ -14,9 +14,13 @@ from nicegui.elements.interactive_image import InteractiveImage
 from nicegui.elements.knob import Knob
 
 from src.cam.camera import Camera, MotionDetector
+from src.gui.util import schedule_bg
 from src.config import get_global_config, save_global_config, get_logger
 
 logger = get_logger('gui.motion')
+
+# Use centralized schedule_bg from src.gui.util for safe background scheduling
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
@@ -227,10 +231,21 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         ui.notify(f'Sensitivity saved', type='info',
                 position='bottom-right')
         
-        if debounce_task is not None and not debounce_task.done():
-            debounce_task.cancel()
-        
-        debounce_task = asyncio.create_task(save_config_delayed())
+        # Robust cancel: supports asyncio.Task and NiceGUI TaskProxy
+        if debounce_task is not None:
+            try:
+                if hasattr(debounce_task, 'done'):
+                    if not debounce_task.done():
+                        debounce_task.cancel()
+                else:
+                    # no done(): best-effort cancel
+                    debounce_task.cancel()
+            except Exception:
+                pass
+         
+
+        # Defer scheduling until NiceGUI event loop is available
+        debounce_task = schedule_bg(save_config_delayed(), name='save_sensitivity')
 
     # ---------- Event-Handler ------------------------------------------------
     def reset_roi() -> None:
@@ -416,9 +431,30 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             with ui.card().classes('w-full').style("align-items:center;"):
                 ui.label('Sensitivity:').classes('font-semibold mb-2 self-start')
                 with ui.row().classes('justify-center gap-4'):
+                    # Bind change handler after loop is ready to prevent early invocation during build
                     sensitivity_knob = ui.knob(
-                        min=0, max=100, value=10, step=1, show_value=True, on_change=lambda e: update_sensitivity(e.value)
+                        min=0, max=100, value=10, step=1, show_value=True
                     ).tooltip('Adjust motion detection sensitivity (0-100%)')
+                    def _bind_sensitivity():
+                        if sensitivity_knob:
+                            def _on_change(e):
+                                # Read value only from the generic args dict to satisfy type checker
+                                val = None
+                                try:
+                                    args = getattr(e, 'args', None)
+                                    if isinstance(args, dict):
+                                        val = args.get('value')
+                                except Exception:
+                                    val = None
+                                if val is None:
+                                    return
+                                try:
+                                    update_sensitivity(int(val))
+                                except Exception:
+                                    # ignore non-integer values gracefully
+                                    return
+                            sensitivity_knob.on('change', _on_change)
+                    ui.timer(0.0, _bind_sensitivity, once=True)
 
             ui.separator()
 
@@ -427,7 +463,28 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                 with ui.column().classes('w-full gap-2'):
                     ui.label('Region of Interest (ROI)').classes('font-semibold mb-2 self-start')
                     # Kopfzeile mit Titel und Edit-Button
-                    roi_enabled_checkbox = ui.checkbox('ROI enabled', value=True, on_change=lambda e: update_roi_enabled(e.value)).tooltip('Enable/disable Region of Interest')
+                    # Bind ROI toggle handler after loop is ready to prevent early invocation
+                    roi_enabled_checkbox = ui.checkbox('ROI enabled', value=True).tooltip('Enable/disable Region of Interest')
+                    def _bind_roi_toggle():
+                        if roi_enabled_checkbox:
+                            def _on_roi_change(e):
+                                val = None
+                                try:
+                                    args = getattr(e, 'args', None)
+                                    if isinstance(args, dict):
+                                        val = args.get('value')
+                                    elif hasattr(e, 'value'):
+                                        val = e.value
+                                except Exception:
+                                    val = None
+                                if val is None:
+                                    return
+                                try:
+                                    update_roi_enabled(bool(val))
+                                except Exception:
+                                    return
+                            roi_enabled_checkbox.on('change', _on_roi_change)
+                    ui.timer(0.0, _bind_roi_toggle, once=True)
                     ui.separator()
                     with ui.row().classes('items-center gap-2 justify-center'):
                         

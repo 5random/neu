@@ -6,15 +6,20 @@ from src.notify import EMailSystem
 from src.config import get_global_config, save_global_config, get_logger
 from src.measurement import MeasurementController
 from src.cam.camera import Camera
+from src.gui.util import schedule_bg
 
 logger = get_logger('gui.measurement')
 
 def create_measurement_card(
     measurement_controller: MeasurementController | None = None,
     camera: Camera | None = None,
-    alert_system: EMailSystem | None = None,
+    email_system: EMailSystem | None = None,
+    **kwargs,
 ) -> None:
-
+    # Back-compat: accept old keyword 'alert_system'
+    if email_system is None and 'alert_system' in kwargs:
+        email_system = kwargs.pop('alert_system')
+ 
     config = get_global_config()
 
     if not config:
@@ -25,12 +30,12 @@ def create_measurement_card(
     logger.info("Creating measurement card")
     
     if measurement_controller is None:
-        if alert_system is None:
-            alert_system = EMailSystem(config.email, config.measurement, config)
-        measurement_controller = MeasurementController(config.measurement, alert_system, camera)
+        if email_system is None:
+            email_system = EMailSystem(config.email, config.measurement, config)
+        measurement_controller = MeasurementController(config.measurement, email_system, camera)
     else:
-        if alert_system is not None and measurement_controller.alert_system != alert_system:
-            measurement_controller.alert_system = alert_system
+        if email_system is not None and measurement_controller.email_system != email_system:
+            measurement_controller.email_system = email_system
 
     # ------------------------- Zustände -------------------------
 
@@ -39,7 +44,7 @@ def create_measurement_card(
     def on_motion(_):
         async def _refresh():
             update_view.refresh()
-        background_tasks.create_lazy(_refresh(), name='refresh_view')
+        schedule_bg(_refresh(), name='refresh_view')
 
     measurement_controller.register_motion_callback(on_motion)
 
@@ -216,13 +221,40 @@ def create_measurement_card(
         groups_select = None  # will be created after async fetch
         _last_groups_opts: list[str] = []  # initial empty snapshot
         groups_build_lock = asyncio.Lock()  # prevent concurrent UI builds
+        apply_btn = None  # apply button reference for enable/disable state
+
+        def _update_apply_groups_state() -> None:
+            """Enable Apply only if selection differs from currently active groups.
+            If selection equals the active groups from config, disable the button."""
+            nonlocal groups_select, apply_btn
+            try:
+                if apply_btn is None or groups_select is None:
+                    return
+                conf = get_global_config()
+                if not conf or not getattr(conf, 'email', None):
+                    apply_btn.disable()
+                    return
+                raw_val = getattr(groups_select, 'value', [])
+                selected = set((raw_val or [])) if isinstance(raw_val, (list, tuple, set)) else {raw_val}
+                current = set(getattr(conf.email, 'active_groups', []) or [])
+                if selected == current:
+                    apply_btn.disable()
+                else:
+                    apply_btn.enable()
+            except Exception as exc:
+                logger.error('Failed to update apply button state: %s', exc, exc_info=True)
+                try:
+                    if apply_btn is not None:
+                        apply_btn.disable()
+                except Exception:
+                    pass
 
         with ui.row().classes('items-center q-gutter-sm q-mb-sm') as groups_row:
             ui.label('Active recipient groups:').classes('text-caption text-grey')
             loading_lbl = ui.label('Loading groups...').classes('text-caption text-grey')
 
             async def _build_groups_ui():
-                nonlocal groups_select, _last_groups_opts
+                nonlocal groups_select, _last_groups_opts, apply_btn
                 async with groups_build_lock:
                     # 1) fetch config off the UI thread
                     cfg = await asyncio.to_thread(get_global_config)
@@ -246,13 +278,19 @@ def create_measurement_card(
                             ).props('dense outlined').classes('min-w-[260px]')
 
                             # Apply button with robust handler (validation, errors, and UI feedback)
-                            apply_btn = ui.button('Apply', icon='done', color='primary').props('round')
+                            apply_btn = ui.button(icon='done', color='primary').props('round').tooltip('Apply active groups for sending')
+
+                            # Update Apply button state on selection changes
+                            def _on_groups_change(_=None):
+                                _update_apply_groups_state()
+                            groups_select.on('update:model-value', _on_groups_change)
 
                             def apply_groups(_=None):
                                 nonlocal apply_btn
                                 # Disable button during processing for clear user feedback
                                 try:
-                                    apply_btn.disable()
+                                    if apply_btn is not None:
+                                        apply_btn.disable()
                                 except Exception:
                                     pass
                                 try:
@@ -275,26 +313,32 @@ def create_measurement_card(
                                     # Only persist after validation succeeds
                                     conf.email.active_groups = selected
                                     save_global_config()
-                                    if alert_system:
-                                        alert_system.refresh_config()
+                                    if email_system:
+                                        email_system.refresh_config()
 
                                     ui.notify('Active groups applied', color='positive', position='bottom-right')
+                                    # After applying, selection equals active groups; update button state
+                                    _update_apply_groups_state()
                                 except Exception as exc:
                                     logger.error('Failed to apply active groups: %s', exc, exc_info=True)
                                     ui.notify(f'Failed to apply active groups: {exc}', color='negative', position='bottom-right')
                                 finally:
+                                    # Recompute state so button remains disabled when selection == active groups
                                     try:
-                                        apply_btn.enable()
+                                        _update_apply_groups_state()
                                     except Exception:
                                         pass
 
                             apply_btn.on('click', apply_groups)
+                            # Initialize button state after building controls
+                            _update_apply_groups_state()
                     except Exception as exc:
                         # Surface errors to logs and UI, but don't crash the page
                         logger.error('Failed to build groups UI: %s', exc, exc_info=True)
                         ui.notify('Error loading groups UI', color='negative', position='bottom-right')
 
-            background_tasks.create_lazy(_build_groups_ui(), name='load_groups_select')
+            # Use create_lazy to schedule building UI groups safely on the NiceGUI loop
+            ui.timer(0.0, lambda: schedule_bg(_build_groups_ui(), name='build_groups_ui'), once=True)
 
         # Periodically refresh groups options if the config changes elsewhere
         def _refresh_groups_ui():
@@ -321,6 +365,8 @@ def create_measurement_card(
                     groups_select.update()
                     # Update the last options snapshot after successful UI apply
                     _last_groups_opts = list(new_opts)
+                # Keep Apply button state in sync with current selection vs active config
+                _update_apply_groups_state()
             except Exception as exc:
                 logger.error('Groups UI refresh failed: %s', exc, exc_info=True)
                 # Return True to indicate handled error and allow timer to continue
