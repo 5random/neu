@@ -37,8 +37,6 @@ global_config: AppConfig | None = None
 _shutdown_requested = threading.Event()
 _cleanup_completed = threading.Event()
 
-dark = ui.dark_mode(value=False)
-
 logger = get_logger("gui")
 
 def init_camera(config: AppConfig) -> Camera | None:
@@ -131,7 +129,42 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     except Exception:
         pass
 
+    # Also publish to app-wide general storage to avoid per-user scoping issues
+    try:
+        app.storage.general['cvd.camera'] = global_camera
+        app.storage.general['cvd.measurement'] = global_measurement_controller
+        app.storage.general['cvd.email'] = global_email_system
+    except Exception:
+        pass
+
     logger.info('creating GUI')
+
+    # Mount static files once at app level
+    try:
+        app.add_static_files('/pics', 'pics')
+    except Exception:
+        logger.warning("Failed to mount /pics static files directory")
+        pass
+    try:
+        app.add_static_files('/logs', 'logs')
+    except Exception:
+        logger.warning("Failed to mount /logs static files directory")
+        pass
+
+    # Per-client last visited route: if client previously used /settings, redirect there
+    try:
+        _last_route = app.storage.client.get('cvd.last_route')
+    except Exception:
+        _last_route = None
+    if _last_route == '/settings' and _settings_page is not None:
+        # Defer navigation slightly to avoid interfering with initial render
+        ui.timer(0.01, lambda: ui.navigate.to('/settings', new_tab=False), once=True)
+    else:
+        # Default to root for this client
+        try:
+            app.storage.client['cvd.last_route'] = '/'
+        except Exception:
+            pass
 
     @ui.page('/shutdown')
     def shutdown_page() -> None:
@@ -193,70 +226,83 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
             ui.timer(0.1, drain_progress)
             ui.timer(0.05, run_update, once=True)
 
-    with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
-        # --- Linke Seite -------------------------------------------
-        with ui.row().classes('items-center gap-3'):
-            # Favicon per URL
-            shutdown_dialog = ui.dialog().classes('items-center justify-center')
+    def build_header() -> None:
+        with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
+            # Per-client dark mode binding with immediate initialization from client storage
+            dark = ui.dark_mode()
+            try:
+                _stored_dark = app.storage.client.get('cvd.dark_mode')
+                if _stored_dark is not None:
+                    dark.value = bool(_stored_dark)
+            except Exception:
+                pass
+            # --- Linke Seite -------------------------------------------
+            with ui.row().classes('items-center gap-3'):
+                # Favicon per URL
+                shutdown_dialog = ui.dialog().classes('items-center justify-center')
 
-            with shutdown_dialog:
-                with ui.card().classes('items-center justify-center'):
-                    ui.label('Shutdown the server?').classes('text-h6')
-                    
-                    async def do_shutdown() -> None:
-                        ui.navigate.to('/shutdown', new_tab=False)
-                        await asyncio.sleep(2)
-                        app.shutdown()
+                with shutdown_dialog:
+                    with ui.card().classes('items-center justify-center'):
+                        ui.label('Shutdown the server?').classes('text-h6')
+                        
+                        async def do_shutdown() -> None:
+                            ui.navigate.to('/shutdown', new_tab=False)
+                            await asyncio.sleep(2)
+                            app.shutdown()
 
-                    with ui.row().classes('gap-2 items-center justify-center'):
-                        ui.button('Yes', on_click=do_shutdown).props('color=negative').tooltip('Shutdown the server and close the application')
-                        ui.button('No', on_click=shutdown_dialog.close).props('color=positive').tooltip('Cancel shutdown')
+                        with ui.row().classes('gap-2 items-center justify-center'):
+                            ui.button('Yes', on_click=do_shutdown).props('color=negative').tooltip('Shutdown the server and close the application')
+                            ui.button('No', on_click=shutdown_dialog.close).props('color=positive').tooltip('Cancel shutdown')
 
-            def show_shutdown_dialog() -> None:
-                shutdown_dialog.open()
+                def show_shutdown_dialog() -> None:
+                    shutdown_dialog.open()
 
-            app.add_static_files('/pics', 'pics')
+                ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_shutdown_dialog).props('flat').style('max-height:72px; width:auto').tooltip('Shutdown the server and close the application')
 
-            ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_shutdown_dialog).props('flat').style('max-height:72px; width:auto').tooltip('Shutdown the server and close the application')
+                ui.label('CVD-TRACKER').classes(
+                    'text-xl font-semibold tracking-wider text-gray-100')
 
-            ui.label('CVD-TRACKER').classes(
-                'text-xl font-semibold tracking-wider text-gray-100')
+            # --- Rechte Seite ------------------------------------------
+            def toggle_dark():
+                    dark.toggle()
+                    new_icon = 'light_mode' if dark.value else 'dark_mode'
+                    btn.props(f'icon={new_icon}')
+                    # Persist per-client preference
+                    try:
+                        app.storage.client['cvd.dark_mode'] = bool(dark.value)
+                    except Exception:
+                        pass
 
-        # --- Rechte Seite ------------------------------------------
-        def toggle_dark():
-                dark.toggle()
-                new_icon = 'light_mode' if dark.value else 'dark_mode'
-                btn.props(f'icon={new_icon}')
+            with ui.row().classes('items-center gap-4'):
+                btn= (ui.button(
+                    icon='light_mode' if dark.value else 'dark_mode',
+                    on_click=toggle_dark,
+                ).props('flat round dense').classes('text-xl')).tooltip('Toggle dark mode')
 
-        with ui.row().classes('items-center gap-4'):
-            btn= (ui.button(
-                icon='light_mode' if dark.value else 'dark_mode',
-                on_click=toggle_dark,
-            ).props('flat round dense').classes('text-xl')).tooltip('Toggle dark mode')
+                # Deterministic navigation buttons
+                def _go_home():
+                    try:
+                        app.storage.client['cvd.last_route'] = '/'
+                    except Exception:
+                        pass
+                    ui.navigate.to('/', new_tab=False)
 
-            # Log download moved to Settings > Logs section
+                def _go_settings():
+                    try:
+                        app.storage.client['cvd.last_route'] = '/settings'
+                    except Exception:
+                        pass
+                    ui.navigate.to('/settings', new_tab=False)
 
-            async def on_update_click():
-                try:
-                    stat = await asyncio.to_thread(check_update)
-                except Exception as e:
-                    # Log error with stack trace and notify user; skip navigation on failure
-                    logger.exception("Update check failed")
-                    ui.notify(f'Update check failed: {e}', type='negative', position='bottom-right')
-                    return
-                if stat.get('behind', 0) <= 0:
-                    logger.info('Already up to date.')
-                    ui.notify('Bereits auf dem neuesten Stand.', type='positive', position='bottom-right')
-                    return
-                logger.info('Updates available; navigating to /updating')
-                ui.navigate.to('/updating', new_tab=False)
+                # Add stable IDs so pages can style or test reliably
+                ui.button(icon='home', on_click=_go_home)\
+                  .props('flat round dense id=cvd-header-home').classes('text-xl').tooltip('Home')
 
-            # Update and Settings buttons in header row
-            ui.button(icon='system_update', on_click=on_update_click)\
-              .props('flat round dense').classes('text-xl').tooltip('Update prüfen und installieren')
+                ui.button(icon='settings', on_click=_go_settings)\
+                  .props('flat round dense id=cvd-header-settings').classes('text-xl').tooltip('Open settings')
 
-            ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings', new_tab=False))\
-              .props('flat round dense').classes('text-xl').tooltip('Open settings')
+    # Build header for root page
+    build_header()
 
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
         with ui.column().classes("gap-4"):
@@ -271,10 +317,14 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
             # Settings moved to /settings page
             pass
     
-    with ui.footer(fixed=False).classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
-        with ui.row().classes('items-center justify-between px-4 py-2'):
-            ui.label('CVD-TRACKER').classes('text-white text-sm')
-            ui.label('© 2025 TUHH KVWEB').classes('text-white text-sm')
+    def build_footer() -> None:
+        with ui.footer(fixed=False).classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
+            with ui.row().classes('items-center justify-between px-4 py-2'):
+                ui.label('CVD-TRACKER').classes('text-white text-sm')
+                ui.label('© 2025 TUHH KVWEB').classes('text-white text-sm')
+
+    # Build footer for root page
+    build_footer()
 
 async def cleanup_camera_async():
     """Asynchrone Kamera-Cleanup-Routine."""

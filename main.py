@@ -2,6 +2,8 @@ import sys
 import logging
 from pathlib import Path
 import argparse
+import os
+import secrets
 
 # Projekt-Root zum Python-Pfad hinzufügen
 project_root = Path(__file__).parent
@@ -122,21 +124,23 @@ def main() -> int:
         create_gui(config_path=args.config)
         
         # NiceGUI starten
+        # Provide a storage_secret to enable app.storage.user access (used for sharing instances)
+        storage_secret = os.environ.get('CVD_STORAGE_SECRET') or secrets.token_urlsafe(32)
+
         ui.run(
             host='0.0.0.0',
             port=8080,
             title='CVD-TRACKER',
             favicon='https://www.tuhh.de/favicon.ico',
             reload=False,
-            reconnect_timeout=80.0,
+            reconnect_timeout=100.0,
+            storage_secret=storage_secret,
         )
-
-        #logger.info("Application started")
 
     except ImportError as e:
         logger = create_fallback_logger()
         logger.error(f"Import error: {e}")
-        logger.error("Install required dependencies: pip install -r requirements.txt")
+        logger.error("Please install required dependencies manually: pip install -r requirements.txt")
         return 1
         
     except Exception as e:

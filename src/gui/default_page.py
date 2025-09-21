@@ -34,8 +34,6 @@ global_config: AppConfig | None = None
 _shutdown_requested = threading.Event()
 _cleanup_completed = threading.Event()
 
-dark = ui.dark_mode(value=False)
-
 logger = get_logger("default_page")
 
 def init_camera(config: AppConfig) -> Camera | None:
@@ -122,6 +120,22 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
 
     logger.info('creating GUI')
 
+    # Mount static files once
+    try:
+        app.add_static_files('/pics', 'pics')
+    except Exception:
+        pass
+    try:
+        app.add_static_files('/logs', 'logs')
+    except Exception:
+        pass
+
+    # Persist last visited route per client
+    try:
+        app.storage.client['cvd.last_route'] = '/'
+    except Exception:
+        pass
+
     @ui.page('/shutdown')
     def shutdown_page() -> None:
         with ui.column().classes('absolute-center items-center gap-6'):
@@ -183,6 +197,14 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
             ui.timer(0.05, run_update, once=True)
 
     with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
+        # Per-client dark mode binding
+        dark = ui.dark_mode()
+        try:
+            _stored_dark = app.storage.client.get('cvd.dark_mode')
+            if _stored_dark is not None:
+                dark.value = bool(_stored_dark)
+        except Exception:
+            pass
         # --- Linke Seite -------------------------------------------
         with ui.row().classes('items-center gap-3'):
             # Favicon per URL
@@ -204,8 +226,6 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
             def show_shutdown_dialog() -> None:
                 shutdown_dialog.open()
 
-            app.add_static_files('/pics', 'pics')
-
             ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_shutdown_dialog).props('flat').style('max-height:72px; width:auto').tooltip('Shutdown the server and close the application')
 
             ui.label('CVD-TRACKER').classes(
@@ -216,6 +236,10 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 dark.toggle()
                 new_icon = 'light_mode' if dark.value else 'dark_mode'
                 btn.props(f'icon={new_icon}')
+                try:
+                    app.storage.client['cvd.dark_mode'] = bool(dark.value)
+                except Exception:
+                    pass
 
         with ui.row().classes('items-center gap-4'):
             btn= (ui.button(
@@ -223,7 +247,6 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 on_click=toggle_dark,
             ).props('flat round dense').classes('text-xl')).tooltip('Toggle dark mode')
 
-            app.add_static_files('/logs', 'logs')
 
             def download_logs_as_zip():
                 """Erstellt ZIP-Archiv aller Log-Dateien und lädt es herunter."""
@@ -274,37 +297,46 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
 
             ui.button(icon='download', on_click=lambda: download_logs_as_zip()).props('flat round dense').classes('text-xl').tooltip('Download log file')
 
-            async def on_update_click():
-                try:
-                    stat = await asyncio.to_thread(check_update)
-                except Exception as e:
-                    # Log error with stack trace and notify user; skip navigation on failure
-                    logger.exception("Update check failed")
-                    ui.notify(f'Update check failed: {e}', type='negative', position='bottom-right')
-                    return
-                if stat.get('behind', 0) <= 0:
-                    logger.info('Already up to date.')
-                    ui.notify('Bereits auf dem neuesten Stand.', type='positive', position='bottom-right')
-                    return
-                logger.info('Updates available; navigating to /updating')
-                ui.navigate.to('/updating', new_tab=False)
+            # Update moved to Settings > Update section
 
-            ui.button(icon='system_update', on_click=on_update_click)\
-              .props('flat round dense').classes('text-xl').tooltip('Update prüfen und installieren')
-
+    # Neuaufbau-/Lazy-Mechanismus: schwere Bereiche verzögert erstellen
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
-        with ui.column().classes("gap-4"):
-            create_camfeed_content()
-            with ui.grid(columns="1fr 2fr").classes("gap-4 w-full").style("grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); align-items: stretch;"):
-                with ui.column().classes("h-full"):
-                    create_motion_status_element(global_camera, global_measurement_controller)
-                with ui.column().classes("h-full"):
-                    create_measurement_card(global_measurement_controller, global_camera, email_system=global_email_system)
+        # Linke Spalte (Camfeed + Status/Messung)
+        with ui.column().classes("gap-4") as left_col:
+            left_placeholder = ui.label('Loading camera view…').classes('text-grey')
 
-        with ui.column().classes("gap-4"):
-            create_uvc_content(camera=global_camera)
-            create_motiondetection_card(camera=global_camera)
-            create_emailcard(email_system=global_email_system)
+        # Rechte Spalte (UVC/Motion/E-Mail)
+        with ui.column().classes("gap-4") as right_col:
+            right_placeholder = ui.label('Loading controls…').classes('text-grey')
+
+        def _build_left():
+            try:
+                left_placeholder.visible = False
+            except Exception:
+                pass
+            with left_col:
+                # Camfeed
+                create_camfeed_content()
+                # Status + Messungen in responsivem Grid
+                with ui.grid(columns="1fr 2fr").classes("gap-4 w-full").style("grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); align-items: stretch;"):
+                    with ui.column().classes("h-full"):
+                        create_motion_status_element(global_camera, global_measurement_controller)
+                    with ui.column().classes("h-full"):
+                        create_measurement_card(global_measurement_controller, global_camera, email_system=global_email_system)
+
+        def _build_right():
+            try:
+                right_placeholder.visible = False
+            except Exception:
+                pass
+            with right_col:
+                create_uvc_content(camera=global_camera)
+                create_motiondetection_card(camera=global_camera)
+                create_emailcard(email_system=global_email_system)
+
+        # Nach initialem Paint verzögert aufbauen (verhindert Ruckeln, robuster bei bfcache)
+        ui.timer(0.01, _build_left, once=True)
+        ui.timer(0.05, _build_right, once=True)
     
     with ui.footer(fixed=False).classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
         with ui.row().classes('items-center justify-between px-4 py-2'):

@@ -64,7 +64,7 @@ class MotionDetector:
         self.logger = logger or get_logger('motion')
 
         # Validate configuration
-        if not hasattr(config, 'sensitivity') or not 0.1 <= config.sensitivity <= 1.0:
+        if not hasattr(config, 'sensitivity') or not 0.01 <= config.sensitivity <= 1.0:
             raise ValueError("Invalid sensitivity in config")
         if not hasattr(config, 'min_contour_area') or config.min_contour_area < 1:
             raise ValueError("Invalid min_contour_area in config")
@@ -111,6 +111,84 @@ class MotionDetector:
         else:
             self.logger.info(f"MotionDetector initialized - Sensitivity: {self.sensitivity}, ROI disabled or using fallback")
 
+    # -----------------------------
+    # Public ROI utility functions
+    # -----------------------------
+    @staticmethod
+    def normalize_roi(x: int, y: int, w: int, h: int, frame_w: int, frame_h: int, *, min_size: int = 1) -> Tuple[int, int, int, int]:
+        """
+        Clamp and normalize an ROI to valid in-frame bounds.
+
+        Behavior:
+        - x,y are clamped into [0, frame_w-1] / [0, frame_h-1]
+        - w,h are forced to be at least min_size
+        - width/height are reduced where necessary to keep x+w <= frame_w and y+h <= frame_h
+
+        Note: If the original ROI is partially or fully outside the frame, the
+        normalized ROI will be adjusted to lie within the frame. If the ROI collapses
+        to a very small area, callers may still choose to treat it as invalid based on
+        their own minimum sizes.
+
+        Args:
+            x, y, w, h: ROI top-left and size in pixels
+            frame_w, frame_h: Dimensions of the frame in pixels
+            min_size: Minimum width/height to enforce during normalization (default 1)
+
+        Returns:
+            Tuple (nx, ny, nw, nh) representing a valid ROI within the frame.
+        """
+        # Guard against degenerate frame sizes
+        frame_w = max(1, int(frame_w))
+        frame_h = max(1, int(frame_h))
+
+        x = max(0, min(int(x), frame_w - 1))
+        y = max(0, min(int(y), frame_h - 1))
+
+        w = max(int(min_size), int(w))
+        h = max(int(min_size), int(h))
+
+        if x + w > frame_w:
+            w = frame_w - x
+        if y + h > frame_h:
+            h = frame_h - y
+
+        # Ensure final sizes are at least min_size if possible (may already be at boundary)
+        if w < min_size and x == 0:
+            w = min_size if min_size <= frame_w else frame_w
+        if h < min_size and y == 0:
+            h = min_size if min_size <= frame_h else frame_h
+
+        # Final clamp again (in case min_size expansion exceeded bounds)
+        if x + w > frame_w:
+            w = frame_w - x
+        if y + h > frame_h:
+            h = frame_h - y
+
+        # Ensure strictly positive sizes
+        w = max(1, w)
+        h = max(1, h)
+        return x, y, w, h
+
+    @staticmethod
+    def is_valid_roi(x: int, y: int, w: int, h: int, frame_w: int, frame_h: int, *, min_size: int = 1) -> bool:
+        """
+        Validate that an ROI lies within frame bounds and meets minimum size.
+
+        Returns True only if:
+        - 0 <= x < frame_w and 0 <= y < frame_h
+        - w >= min_size and h >= min_size
+        - x + w <= frame_w and y + h <= frame_h
+        """
+        if frame_w <= 0 or frame_h <= 0:
+            return False
+        if x < 0 or y < 0 or x >= frame_w or y >= frame_h:
+            return False
+        if w < min_size or h < min_size:
+            return False
+        if x + w > frame_w or y + h > frame_h:
+            return False
+        return True
+
     def update_sensitivity(self, new_sensitivity: float) -> bool:
         """
         Aktualisiert die Sensitivität zur Laufzeit.
@@ -121,8 +199,15 @@ class MotionDetector:
         Returns:
             True wenn erfolgreich aktualisiert
         """
-        if not 0.0 <= new_sensitivity <= 1.0:
+        if not 0.01 <= new_sensitivity <= 1.0:
             self.logger.warning(f"Invalid sensitivity: {new_sensitivity}")
+            # Clamp sensitivity into valid range instead of rejecting it
+            if new_sensitivity < 0.01:
+                self.logger.warning(f"Sensitivity {new_sensitivity} below minimum; clamping to 0.01")
+                new_sensitivity = 0.01
+            elif new_sensitivity > 1.0:
+                self.logger.warning(f"Sensitivity {new_sensitivity} above maximum; clamping to 1.0")
+                new_sensitivity = 1.0
             return False
         
         self.sensitivity = new_sensitivity
@@ -273,19 +358,23 @@ class MotionDetector:
             return gray_frame
         
         h, w = gray_frame.shape[:2]
-        
-        # Calculate safe ROI bounds
-        x1 = max(0, min(self.roi.x, w - 1))
-        y1 = max(0, min(self.roi.y, h - 1))
-        x2 = max(x1 + 1, min(self.roi.x + self.roi.width, w))
-        y2 = max(y1 + 1, min(self.roi.y + self.roi.height, h))
-        
-        # Validate ROI dimensions
-        if x2 <= x1 or y2 <= y1 or x1 < 0 or y1 < 0 or x2 > w or y2 > h or x1 >= w or y1 >= h:
-            self.logger.warning(f"Invalid ROI bounds: ({x1}, {y1}) to ({x2}, {y2})")
+
+        # Normalize ROI to frame bounds (min size 1 pixel)
+        nx, ny, nw, nh = MotionDetector.normalize_roi(self.roi.x, self.roi.y, self.roi.width, self.roi.height, w, h, min_size=1)
+
+        # If ROI degenerates to extremely small area, fall back handled by caller
+        if nw <= 0 or nh <= 0:
+            self.logger.warning("ROI normalization produced non-positive size; using full frame")
             return gray_frame
-        
-        return gray_frame[y1:y2, x1:x2]
+
+        x2 = nx + nw
+        y2 = ny + nh
+        # Extra safety (should be guaranteed by normalize)
+        if nx < 0 or ny < 0 or x2 > w or y2 > h or nx >= w or ny >= h:
+            self.logger.warning(f"Invalid ROI after normalization: ({nx}, {ny}) to ({x2}, {y2})")
+            return gray_frame
+
+        return gray_frame[ny:y2, nx:x2]
     
     def cleanup(self) -> None:
         """Clean up resources when detector is no longer needed."""

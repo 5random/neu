@@ -207,12 +207,32 @@ def create_log_settings() -> None:
                 live_log.push(msg)
                 drained += 1
 
+        # Ensure only one drain timer per client; cancel a previous one if present
+        try:
+            prev_timer = getattr(client, 'cvd_logs_timer', None)  # type: ignore[attr-defined]
+            if prev_timer:
+                try:
+                    prev_timer.cancel()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         timer = ui.timer(0.25, drain_queue)
+        try:
+            setattr(client, 'cvd_logs_timer', timer)  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
         # Ensure handler is removed when the client disconnects to prevent duplicates/leaks
         def _cleanup_on_disconnect() -> None:
             try:
                 timer.cancel()
+            except Exception:
+                pass
+            try:
+                if getattr(client, 'cvd_logs_timer', None) is timer:  # type: ignore[attr-defined]
+                    delattr(client, 'cvd_logs_timer')  # type: ignore[attr-defined]
             except Exception:
                 pass
             try:

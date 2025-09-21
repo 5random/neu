@@ -100,7 +100,7 @@ class Camera:
         # -- Kamera initialisieren --
         try:
             self._initialize_camera()
-            self.logger.info("Camera initialized successfully")
+            self.logger.info("Webcam initialized successfully")
         except Exception as exc:
             self.logger.error(f"Camera initialization failed: {exc}")
             self.video_capture = None
