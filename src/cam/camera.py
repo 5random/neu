@@ -220,7 +220,7 @@ class Camera:
         try:
             ok = self.video_capture.set(prop, value)
             actual = self.video_capture.get(prop)
-            if not ok or abs(actual - value) > 1e-3:
+            if not ok or abs(float(actual) - float(value)) > 1e-3:
                 self.logger.debug(f"Property {prop} to set to={value}, received={actual}; tolerance=1e-3")
                 return False
             return True
@@ -236,7 +236,7 @@ class Camera:
         try:
             ok = capture.set(prop, value)
             actual = capture.get(prop)
-            if not ok or abs(actual - value) > 1e-3:
+            if not ok or abs(float(actual) - float(value)) > 1e-3:
                 self.logger.debug(f"Property {prop} to set to={value}, received={actual}")
                 return False
             return True
@@ -279,15 +279,13 @@ class Camera:
         if hasattr(self.uvc_config, "exposure") and self.uvc_config.exposure:
             _set_auto_exposure(self.uvc_config.exposure.auto)
             if not self.uvc_config.exposure.auto and self.uvc_config.exposure.value is not None:
-                self._safe_set(cv2.CAP_PROP_EXPOSURE, self.uvc_config.exposure.value)
+                self._safe_set(cv2.CAP_PROP_EXPOSURE, int(self.uvc_config.exposure.value))
 
         # ----------------- White Balance -----------
         if hasattr(self.uvc_config, "white_balance") and self.uvc_config.white_balance:
             _set_auto_wb(self.uvc_config.white_balance.auto)
             if not self.uvc_config.white_balance.auto and self.uvc_config.white_balance.value is not None:
-                self._safe_set(
-                    cv2.CAP_PROP_WHITE_BALANCE_BLUE_U, self.uvc_config.white_balance.value
-                )
+                self._safe_set(cv2.CAP_PROP_WHITE_BALANCE_BLUE_U, int(self.uvc_config.white_balance.value))
 
         # --------- Weitere Standardregler ----------
         param_map = {
@@ -304,7 +302,7 @@ class Camera:
         for name, prop in param_map.items():
             value = getattr(self.uvc_config, name, None)
             if value is not None:
-                if not self._safe_set(prop, value):
+                if not self._safe_set(prop, float(value)):
                     self.logger.debug(f"Setting of {name} ({value}) was ignored by the driver")
 
         self.logger.info("UVC controls applied")
@@ -328,7 +326,10 @@ class Camera:
             self._invalidate_uvc_cache()
 
             if hasattr(self, '_config_save_timer'):
-                self._config_save_timer.cancel()
+                try:
+                    self._config_save_timer.cancel()
+                except Exception:
+                    pass
 
             self._config_save_timer = threading.Timer(5.0, self._auto_save_config)
             self._config_save_timer.start()
@@ -686,31 +687,16 @@ class Camera:
                     width = video_capture_ref.get(cv2.CAP_PROP_FRAME_WIDTH)
                     height = video_capture_ref.get(cv2.CAP_PROP_FRAME_HEIGHT)
                     fps = video_capture_ref.get(cv2.CAP_PROP_FPS)
-
                     base_status.update({
-                        "resolution": {
-                            "width": int(width) if width is not None else 0,
-                            "height": int(height) if height is not None else 0
-                        },
-                        "fps": float(fps) if fps is not None and fps > 0 else 0.0,
+                        "resolution": {"width": int(width or 0), "height": int(height or 0)},
+                        "fps": float(fps) if fps and fps > 0 else 0.0,
                         "uptime_frames": self.frame_count if self.is_running else 0,
-                        "error_status": False if self._reconnect_attempts < self.max_reconnect_attempts else True
                     })
                 except Exception as e:
                     self.logger.debug(f"Error getting camera status: {e}")
-                    base_status.update({
-                        "resolution": None,
-                        "fps": None,
-                        "uptime_frames": 0,
-                        "error_status": True
-                    })
+                    base_status.update({"resolution": None, "fps": None, "uptime_frames": 0, "error_status": True})
             else:
-                base_status.update({
-                    "resolution": None,
-                    "fps": None,
-                    "uptime_frames": 0
-                })
-                
+                base_status.update({"resolution": None, "fps": None, "uptime_frames": 0})
 
             self._status_cache = base_status
             self._status_cache_time = current_time
@@ -748,21 +734,15 @@ class Camera:
         for name, prop in param_map.items():
             try:
                 value = video_capture_ref.get(prop)
-                if value is not None and isinstance(value, (int,float)):
+                if value is not None and isinstance(value, (int, float)):
                     current_values[name] = value
-                else:
-                    self.logger.warning(f"Property {name} returned invalid value: {value}")
-                    current_values[name] = None
             except cv2.error as e:
-                self.logger.warning(f"OpenCV error reading {name}: {e}")
-                current_values[name] = None
+                self.logger.debug(f"OpenCV get failed for {name}: {e}")
             except Exception as e:
-                self.logger.warning(f"Error reading {name}: {e}")
-                current_values[name] = None
+                self.logger.debug(f"Error reading {name}: {e}")
         
         self._uvc_cache_values = current_values
         self._uvc_cache_time = current_time
-                
         return current_values
     
     
@@ -804,25 +784,22 @@ class Camera:
             ranges = self.get_uvc_ranges()
             success = True
             
-            # Standard-Parameter zurücksetzen
+            # Standard-Parameter zurücksetzen (außer spezielle)
             for param, values in ranges.items():
-                if param in ["exposure", "white_balance"]:
-                    continue  # Diese haben spezielle Behandlung
-                    
+                if param in ("exposure", "white_balance"):
+                    continue
                 setter_name = f"set_{param}"
                 if hasattr(self, setter_name):
                     result = getattr(self, setter_name)(values["default"])
                     success = success and result
-            
+
             # Auto-Exposure und Auto-White-Balance aktivieren
             self.set_auto_exposure(True)
             self.set_auto_white_balance(True)
 
             self._invalidate_uvc_cache()  # Cache invalidieren
-            
             self.logger.info("UVC parameters reset to defaults")
             return success
-            
         except Exception as exc:
             self.logger.error(f"Error resetting UVC parameters: {exc}")
             return False
@@ -831,8 +808,8 @@ class Camera:
         """Validiert UVC-Werte gegen bekannte Ranges."""
         ranges = self.get_uvc_ranges()
         if param_name in ranges:
-            param_range = ranges[param_name]
-            return param_range["min"] <= value <= param_range["max"]
+            r = ranges[param_name]
+            return r["min"] <= float(value) <= r["max"]
         return True
     
     def is_camera_available(self) -> bool:
@@ -842,19 +819,13 @@ class Camera:
         Returns:
             True wenn Kamera verfügbar und läuft
         """
-        
         try:
             video_capture_ref = self.video_capture
             is_connected = video_capture_ref is not None and video_capture_ref.isOpened()
-            # Prüfe die relevanten Status-Flags
             is_running = self.is_running
             error_status = self._reconnect_attempts >= self.max_reconnect_attempts
-            
-            # Kamera ist verfügbar wenn sie verbunden, läuft und kein Error
             return is_connected and is_running and not error_status
-            
-        except Exception as exc:
-            # Bei Fehlern Kamera als nicht verfügbar betrachten
+        except Exception:
             return False
 
     # ----------------- Frame‑Zugriff und Utils ------------------------ #

@@ -1,10 +1,12 @@
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from nicegui import ui, app
 
 from src.cam.camera import Camera
-from src.measurement import MeasurementController
+if TYPE_CHECKING:
+    from src.measurement import MeasurementController
 from src.notify import EMailSystem
+from .instances import get_instances
 from src.config import get_global_config, get_logger
 
 from src.gui.settings_elements.camera_settings import create_uvc_content
@@ -15,58 +17,17 @@ from src.gui.settings_elements.camfeed_settings import create_camfeed_content
 from src.gui.settings_elements.log_settings import create_log_settings
 from src.gui.settings_elements.config_settings import create_config_settings
 from src.gui.settings_elements.update_settings import create_update_settings
+from src.gui.settings_elements.metadata_settings import create_metadata_settings
 
 logger = get_logger("settings_page")
 
 
-def _get_core_instances() -> tuple[Optional[Camera], Optional[MeasurementController], Optional[EMailSystem]]:
-    """Retrieve core instances created during GUI startup.
-
-    Priority:
-    1) module-level globals from src.gui.gui_ (most reliable across pages)
-    2) app.storage.general (server-level shared storage)
-    3) app.storage.user (per-user; may be unset if written outside client context)
-    """
-    cam: Optional[Camera] = None
-    meas: Optional[MeasurementController] = None
-    mail: Optional[EMailSystem] = None
-
-    # 1) Try module globals (set by gui_.create_gui at startup)
+def _get_core_instances() -> tuple[Optional[Camera], Optional['MeasurementController'], Optional[EMailSystem]]:
+    """Retrieve core instances from non-persistent registry to avoid JSON persistence issues."""
     try:
-        from src.gui.gui_ import (
-            global_camera as _g_cam,
-            global_measurement_controller as _g_meas,
-            global_email_system as _g_mail,
-        )
-        cam = _g_cam or cam
-        meas = _g_meas or meas
-        mail = _g_mail or mail
+        return get_instances()
     except Exception:
-        pass
-
-    # 2) Try app.storage.general (works outside client context)
-    try:
-        if cam is None:
-            cam = app.storage.general.get('cvd.camera')  # type: ignore[assignment]
-        if meas is None:
-            meas = app.storage.general.get('cvd.measurement')  # type: ignore[assignment]
-        if mail is None:
-            mail = app.storage.general.get('cvd.email')  # type: ignore[assignment]
-    except Exception:
-        pass
-
-    # 3) Fallback: app.storage.user (only if previously written within client context)
-    try:
-        if cam is None:
-            cam = app.storage.user.get('cvd.camera')  # type: ignore[assignment]
-        if meas is None:
-            meas = app.storage.user.get('cvd.measurement')  # type: ignore[assignment]
-        if mail is None:
-            mail = app.storage.user.get('cvd.email')  # type: ignore[assignment]
-    except Exception:
-        pass
-
-    return cam, meas, mail
+        return None, None, None
 
 
 @ui.page('/settings')
@@ -112,6 +73,7 @@ def settings_page() -> None:
         ui.label('Quick Links').classes('text-bold pl-2 pt-2')
         # Anchor links to scroll to sections
         ui.link('Camera', '#camera').classes('cvd-quick-link block px-2 py-1 hover:bg-blue-200 rounded')
+        ui.link('Metadata', '#metadata').classes('cvd-quick-link block px-2 py-1 hover:bg-blue-200 rounded')
         ui.link('Motion Detection', '#motion').classes('cvd-quick-link block px-2 py-1 hover:bg-blue-200 rounded')
         ui.link('Measurement', '#measurement').classes('cvd-quick-link block px-2 py-1 hover:bg-blue-200 rounded')
         ui.link('E-Mail', '#email').classes('cvd-quick-link block px-2 py-1 hover:bg-blue-200 rounded')
@@ -142,7 +104,8 @@ def settings_page() -> None:
                 icon='arrow_upward',
                 on_click=lambda: ui.run_javascript('window.scrollTo({top:0, behavior:"smooth"})'),
             ).props('fab color=primary').tooltip('Back to top')
-            ui.button(on_click=lambda: None, icon='contact_support').props('fab').tooltip('Help / Contact')
+            ui.button(on_click=lambda: ui.navigate.to('/help'), icon='contact_support').props('fab')\
+                .tooltip('Help')
 
             # Reset UI Preferences (client storage) with confirmation
             reset_dialog = ui.dialog()
@@ -254,7 +217,8 @@ def settings_page() -> None:
                     pass
 
     # Main content: stacked sections similar to VS Code settings
-    with ui.column().classes('w-full gap-4 p-4'):
+    # Center the content and constrain to a comfortable reading width
+    with ui.column().classes('w-full max-w-[1400px] mx-auto gap-4 p-4 pb-24'):
         # Camera section: 2-column layout (lazy render)
         def _render_camera(_container):
             with ui.grid(columns=2).classes('w-full gap-4'):
@@ -271,11 +235,15 @@ def settings_page() -> None:
 
         measurement_card = _collapsible_card('measurement', 'Measurement')
         with measurement_card:
-            create_measurement_card(measurement_controller, camera, email_system)
+            create_measurement_card(measurement_controller=measurement_controller)
 
         email_card = _collapsible_card('email', 'E-Mail Notifications')
         with email_card:
             create_emailcard(email_system=email_system)
+
+        metadata_card = _collapsible_card('metadata', 'Metadata')
+        with metadata_card:
+            create_metadata_settings()
 
         config_card = _collapsible_card('config', 'Configuration')
         with config_card:

@@ -4,19 +4,21 @@ from fastapi.responses import JSONResponse
 import os
 from datetime import datetime
 import threading
+from typing import TYPE_CHECKING, Optional
 
 from src.measurement import MeasurementController
 from src.cam.camera import Camera
 from src.config import get_logger
-
 logger = get_logger('gui.motion_status')
+# Add: import favicon utilities
+from src.gui.util import set_tab_all, set_favicon_default_all, favicon_check_circle_green, favicon_highlight_off_red
 
-def create_motion_status_element(camera: Camera | None, measurement_controller: MeasurementController | None = None):
+def create_motion_status_element(camera: Camera | None, measurement_controller: Optional['MeasurementController'] = None):
     if camera is None:
         logger.warning("Camera not available - motion detection disabled")
-        # Fallback-UI ohne Kamera-Integration
-        with ui.card().classes('w-full h-full shadow-2 q-pa-md').style('align-self:stretch;'):
-            ui.label('Motion Detection Status').classes('text-h6 font-semibold mb-2')
+        # Fallback-UI ohne Kamera-Integration (kompakter)
+        with ui.card().classes('w-full shadow-2 q-pa-sm'):
+            ui.label('Motion Detection Status').classes('text-h6 font-semibold mb-1')
             ui.label('Camera not available - motion detection disabled').classes('text-warning')
         return
     
@@ -27,17 +29,30 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
     state_lock = threading.RLock()          # Schutz für gemeinsamen Zustand
 
     # ---------- UI ----------
-    with ui.card().classes('w-full h-full shadow-2 q-pa-md').style('align-self:stretch;'):
-        ui.label('Motion Detection Status').classes('text-h6 font-semibold mb-2')
-        # Karte mit fester, breiterem Layout ------------------------------
-        with ui.column().classes('w-full items-start q-gutter-y-md'):
+    # Kompaktere Karte: keine Vollhöhe, reduzierte Innenabstände
+    with ui.card().classes('w-full shadow-2 q-pa-sm'):
+        ui.label('Motion Detection Status').classes('text-h6 font-semibold mb-1')
+        # Schlankes Layout: geringere vertikale Abstände
+        with ui.column().classes('w-full items-start q-gutter-y-xs'):
             with ui.row().classes('items-center q-gutter-x-md')\
                         .style('white-space: nowrap'):
                 icon = ui.icon('highlight_off', color='red', size='2rem')
                 status_label = ui.label('No motion detected')\
                                 .classes('text-h6')
-            timestamp_label = ui.label('').classes('text-body2')\
+            timestamp_label = ui.label('').classes('text-caption')\
                                 .style('white-space: nowrap')
+
+    def _favicon_for_motion(is_motion: bool) -> str:
+        val = favicon_check_circle_green if is_motion else favicon_highlight_off_red
+        return val() if callable(val) else val  # support constant or factory
+
+    def _sync_favicon_if_session_active() -> None:
+        # Only change favicon while a measurement session is active
+        try:
+            if measurement_controller and getattr(measurement_controller, 'is_session_active', False):
+                set_tab_all(icon_url=_favicon_for_motion(motion_detected))
+        except Exception:
+            logger.exception("Failed to update favicon")
 
     def refresh_view() -> None:
         """Icon, Text und Zeitstempel aktualisieren (thread-sicher)."""
@@ -49,6 +64,7 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
                 icon.props('name=highlight_off color=red')
                 status_label.text = 'No motion detected'
             timestamp_label.text = f'Last changed: {last_changed.strftime("%Y-%m-%d %H:%M:%S")}'
+        _sync_favicon_if_session_active()
 
     def _motion_callback(frame, result):
         nonlocal motion_detected, last_changed
@@ -68,6 +84,8 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
 
     camera.enable_motion_detection(_motion_callback)
     logger.info("Motion detection callback registered")
+    # Initial sync (covers case where a session is already active when the UI opens)
+    refresh_view()
     # ---------- REST endpoint for analysis script -------------------
     @ui.page('/api/motion/update')
     async def update(request: Request):

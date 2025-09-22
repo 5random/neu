@@ -1,6 +1,5 @@
 from nicegui import ui, background_tasks
-from nicegui.events import GenericEventArguments
-from typing import Optional, Any, Callable, TypeVar
+from typing import Optional, Any
 import asyncio
 
 from src.cam.camera import Camera
@@ -17,8 +16,34 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
     
     logger.info("Creating UVC Card")
 
-    knob_refs = {}
-    debounce_tasks = {}
+    knob_refs: dict[str, Any] = {}
+    debounce_tasks: dict[str, Any] = {}
+
+    # Helpers to normalize camera values and update UI
+    def _set_label(lbl: Any, text: str) -> None:
+        try:
+            # NiceGUI labels provide set_text; it's more reliable than assigning .text
+            if hasattr(lbl, 'set_text'):
+                lbl.set_text(text)
+            else:
+                setattr(lbl, 'text', text)
+                if hasattr(lbl, 'update'):
+                    lbl.update()
+        except Exception:
+            # Best-effort; ignore UI update errors
+            pass
+
+    def _to_bool_auto_exposure(val: Any) -> bool:
+        """Interpret OpenCV auto-exposure flag across platforms.
+        Windows typically reports 0.75 (auto) / 0.25 (manual);
+        Linux often 3 (auto) / 1 (manual); sometimes 0/1.
+        """
+        try:
+            f = float(val)
+        except Exception:
+            return bool(val)
+        # Treat > 0.5 as auto, and explicit 3.0 as auto
+        return f > 0.5 or abs(f - 3.0) < 1e-6
     
     def make_handler(camera_setter, config_field: str, default_value):
         def handler(event):
@@ -42,6 +67,8 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                 try:
                     config = get_global_config()
                     if config:
+                        # Support nested dataclasses for exposure/white_balance
+                        # e.g. uvc_controls.white_balance.value / .auto
                         obj = config
                         fields = config_field.split('.')
                         for field in fields[:-1]:
@@ -134,10 +161,11 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                     'gain': int(updated_current.get('gain', updated_ranges.get('gain', {}).get('default', 10))),
                     'backlight_compensation': int(updated_current.get('backlight_compensation', updated_ranges.get('backlight_compensation', {}).get('default', 42))),
                     'hue': int(updated_current.get('hue', updated_ranges.get('hue', {}).get('default', 0))),
-                    'white_balance_auto': bool(updated_current.get('white_balance_auto', 1)),
-                    'white_balance_manual': int(updated_current.get('white_balance_manual', updated_ranges.get('white_balance_manual', {}).get('default', 4600))),
-                    'exposure_auto': bool(updated_current.get('exposure_auto', 1)),
-                    'exposure_manual': int(updated_current.get('exposure_manual', updated_ranges.get('exposure_manual', {}).get('default', -6)))
+                    # Use correct keys from Camera.get_uvc_current_values
+                    'white_balance_auto': bool(updated_current.get('auto_white_balance', 1)),
+                    'white_balance_manual': int(updated_current.get('white_balance', updated_ranges.get('white_balance', {}).get('default', 4600))),
+                    'exposure_auto': _to_bool_auto_exposure(updated_current.get('auto_exposure', 1)),
+                    'exposure_manual': int(updated_current.get('exposure', updated_ranges.get('exposure', {}).get('default', -6)))
                 }
                 
                 # UI-Controls aktualisieren (Sliders / Checkboxes)
@@ -166,16 +194,16 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
     # Render directly without wrapping in an extra Card; parent page will provide cards
     with ui.column().style("align-self:stretch; flex-direction:column; flex-wrap:wrap; justify-content:end; align-items:start; display:flex;").classes('gap-4'):
 
-            # ── Gruppe: Bildqualität ────────────────────────────────────────
-            ui.label('Image Quality')\
-                .style("align-self:flex-start; display:block;")\
-                .classes('text-h6 font-semibold mb-2')
+        # ── Gruppe: Bildqualität ────────────────────────────────────────
+        ui.label('Image Quality')\
+            .style("align-self:flex-start; display:block;")\
+            .classes('text-h6 font-semibold mb-2')
 
-            with ui.grid(columns=2, rows=2)\
-                    .style("grid-template-rows:repeat(2, minmax(0, 1fr));"
-                           "grid-template-columns:repeat(2, minmax(0, 1fr));"
-                           "align-self:stretch;")\
-                    .classes('gap-4 mb-4'):
+        with ui.grid(columns=2, rows=2)\
+                .style("grid-template-rows:repeat(2, minmax(0, 1fr));"
+                       "grid-template-columns:repeat(2, minmax(0, 1fr));"
+                       "align-self:stretch;")\
+                .classes('gap-4 mb-4'):
 
                 # Brightness
                 with ui.card().tight().classes('p-4 flex flex-col').style("align-items:stretch;"):
@@ -185,31 +213,37 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                     val_lbl = ui.label(str(brightness_value)).classes('self-end text-caption')
                     brightness_slider = ui.slider(min=brightness_range['min'], max=brightness_range['max'], step=1, value=brightness_value)
                     knob_refs['brightness'] = brightness_slider
-                    def _on_brightness(e):
+                    def _on_brightness_input(e):
                         v = int(getattr(e, 'value', brightness_slider.value))
-                        val_lbl.text = str(v)
+                        _set_label(val_lbl, str(v))
+                    def _on_brightness_change(e):
+                        v = int(getattr(e, 'value', brightness_slider.value))
+                        _set_label(val_lbl, str(v))
                         make_handler(camera.set_brightness, 'uvc_controls.brightness', 0)(v)
-                    brightness_slider.on('change', _on_brightness)
+                    brightness_slider.on('update:model-value', _on_brightness_input)
+                    brightness_slider.on('change', _on_brightness_change)
 
                 # Contrast
                 with ui.card().tight().classes('p-4 flex flex-col').style("align-items:stretch;"):
                     ui.label('Contrast:').classes('font-semibold mb-2 self-start')
-                    r = ranges.get('contrast', {'min': 0, 'max': 95, 'default': 16})
+                    r = ranges.get('contrast', {'min': 0, 'max': 64, 'default': 16})
                     v0 = int(current.get('contrast', r['default']))
                     lbl = ui.label(str(v0)).classes('self-end text-caption')
                     sld = ui.slider(min=r['min'], max=r['max'], step=1, value=v0)
                     knob_refs['contrast'] = sld
-                    sld.on('change', lambda e: (lbl.__setattr__('text', str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_contrast, 'uvc_controls.contrast', 16)(int(getattr(e, 'value', sld.value)))))
+                    sld.on('update:model-value', lambda e: _set_label(lbl, str(int(getattr(e, 'value', sld.value)))))
+                    sld.on('change', lambda e: (_set_label(lbl, str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_contrast, 'uvc_controls.contrast', 16)(int(getattr(e, 'value', sld.value)))))
 
                 # Saturation
                 with ui.card().tight().classes('p-4 flex flex-col').style("align-items:stretch;"):
                     ui.label('Saturation:').classes('font-semibold mb-2 self-start')
-                    r = ranges.get('saturation', {'min': 0, 'max': 255, 'default': 64})
+                    r = ranges.get('saturation', {'min': 0, 'max': 128, 'default': 64})
                     v0 = int(current.get('saturation', r['default']))
                     lbl = ui.label(str(v0)).classes('self-end text-caption')
                     sld = ui.slider(min=r['min'], max=r['max'], step=1, value=v0)
                     knob_refs['saturation'] = sld
-                    sld.on('change', lambda e: (lbl.__setattr__('text', str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_saturation, 'uvc_controls.saturation', 64)(int(getattr(e, 'value', sld.value)))))
+                    sld.on('update:model-value', lambda e: _set_label(lbl, str(int(getattr(e, 'value', sld.value)))))
+                    sld.on('change', lambda e: (_set_label(lbl, str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_saturation, 'uvc_controls.saturation', 64)(int(getattr(e, 'value', sld.value)))))
 
 
                 # Sharpness
@@ -220,7 +254,8 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                     lbl = ui.label(str(v0)).classes('self-end text-caption')
                     sld = ui.slider(min=r['min'], max=r['max'], step=1, value=v0)
                     knob_refs['sharpness'] = sld
-                    sld.on('change', lambda e: (lbl.__setattr__('text', str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_sharpness, 'uvc_controls.sharpness', 2)(int(getattr(e, 'value', sld.value)))))
+                    sld.on('update:model-value', lambda e: _set_label(lbl, str(int(getattr(e, 'value', sld.value)))))
+                    sld.on('change', lambda e: (_set_label(lbl, str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_sharpness, 'uvc_controls.sharpness', 2)(int(getattr(e, 'value', sld.value)))))
 
                 # Gamma
                 with ui.card().tight().classes('p-4 flex flex-col').style("align-items:stretch;"):
@@ -230,27 +265,30 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                     lbl = ui.label(str(v0)).classes('self-end text-caption')
                     sld = ui.slider(min=r['min'], max=r['max'], step=1, value=v0)
                     knob_refs['gamma'] = sld
-                    sld.on('change', lambda e: (lbl.__setattr__('text', str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_gamma, 'uvc_controls.gamma', 164)(int(getattr(e, 'value', sld.value)))))
+                    sld.on('update:model-value', lambda e: _set_label(lbl, str(int(getattr(e, 'value', sld.value)))))
+                    sld.on('change', lambda e: (_set_label(lbl, str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_gamma, 'uvc_controls.gamma', 164)(int(getattr(e, 'value', sld.value)))))
 
                 # Gain
                 with ui.card().tight().classes('p-4 flex flex-col').style("align-items:stretch;"):
                     ui.label('Gain:').classes('font-semibold mb-2 self-start')
-                    r = ranges.get('gain', {'min': 0, 'max': 127, 'default': 10})
+                    r = ranges.get('gain', {'min': 0, 'max': 100, 'default': 10})
                     v0 = int(current.get('gain', r['default']))
                     lbl = ui.label(str(v0)).classes('self-end text-caption')
                     sld = ui.slider(min=r['min'], max=r['max'], step=1, value=v0)
                     knob_refs['gain'] = sld
-                    sld.on('change', lambda e: (lbl.__setattr__('text', str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_gain, 'uvc_controls.gain', 10)(int(getattr(e, 'value', sld.value)))))
+                    sld.on('update:model-value', lambda e: _set_label(lbl, str(int(getattr(e, 'value', sld.value)))))
+                    sld.on('change', lambda e: (_set_label(lbl, str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_gain, 'uvc_controls.gain', 10)(int(getattr(e, 'value', sld.value)))))
 
                 # Backlight Compensation
                 with ui.card().tight().classes('p-4 flex flex-col').style("align-items:stretch;"):
                     ui.label('Backlight Compensation:').classes('font-semibold mb-2 self-start')
-                    r = ranges.get('backlight_compensation', {'min': 0, 'max': 255, 'default': 42})
+                    r = ranges.get('backlight_compensation', {'min': 0, 'max': 160, 'default': 42})
                     v0 = int(current.get('backlight_compensation', r['default']))
                     lbl = ui.label(str(v0)).classes('self-end text-caption')
                     sld = ui.slider(min=r['min'], max=r['max'], step=1, value=v0)
                     knob_refs['backlight_compensation'] = sld
-                    sld.on('change', lambda e: (lbl.__setattr__('text', str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_backlight_compensation, 'uvc_controls.backlight_compensation', 42)(int(getattr(e, 'value', sld.value)))))
+                    sld.on('update:model-value', lambda e: _set_label(lbl, str(int(getattr(e, 'value', sld.value)))))
+                    sld.on('change', lambda e: (_set_label(lbl, str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_backlight_compensation, 'uvc_controls.backlight_compensation', 42)(int(getattr(e, 'value', sld.value)))))
 
                 # Hue
                 with ui.card().tight().classes('p-4 flex flex-col').style("align-items:stretch;"):
@@ -260,25 +298,26 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                     lbl = ui.label(str(v0)).classes('self-end text-caption')
                     sld = ui.slider(min=r['min'], max=r['max'], step=1, value=v0)
                     knob_refs['hue'] = sld
-                    sld.on('change', lambda e: (lbl.__setattr__('text', str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_hue, 'uvc_controls.hue', 0)(int(getattr(e, 'value', sld.value)))))
+                    sld.on('update:model-value', lambda e: _set_label(lbl, str(int(getattr(e, 'value', sld.value)))))
+                    sld.on('change', lambda e: (_set_label(lbl, str(int(getattr(e, 'value', sld.value)))), make_handler(camera.set_hue, 'uvc_controls.hue', 0)(int(getattr(e, 'value', sld.value)))))
 
-            ui.separator()
+        ui.separator()
 
-            # ── Gruppe: Belichtung & Weißabgleich ───────────────────────────
+        # ── Gruppe: Belichtung & Weißabgleich ───────────────────────────
                 
-            # Zwei Cards nebeneinander (Weißabgleich | Belichtung)
-            with ui.grid(columns=2).classes('gap-4 w-full'):
+        # Zwei Cards nebeneinander (Weißabgleich | Belichtung)
+        with ui.grid(columns=2).classes('gap-4 w-full'):
 
                 # Weißabgleich ------------------------------------------------
                 with ui.card().tight()\
                         .style("align-self:stretch;")\
                         .classes('p-4 flex flex-col gap-2'):
                     ui.label('White Balance').classes('font-semibold mb-2')
-                    wb_auto_value = current.get('white_balance_auto', 1) == 1
+                    wb_auto_value = bool(current.get('auto_white_balance', 1))
                     wb_auto = ui.checkbox('white balance auto', value=wb_auto_value).tooltip('Enable automatic white balance adjustment')
                     
-                    wb_manual_range = ranges.get('white_balance_manual', {'min': 2800, 'max': 6500, 'default': 4600})
-                    wb_manual_value = current.get('white_balance_manual', wb_manual_range['default'])
+                    wb_manual_range = ranges.get('white_balance', {'min': 2800, 'max': 6500, 'default': 4600})
+                    wb_manual_value = current.get('white_balance', wb_manual_range['default'])
                     with ui.row().classes('items-center gap-2'):
                         ui.label('manual white balance:')
                         lbl = ui.label(str(int(wb_manual_value))).classes('text-caption')
@@ -291,8 +330,10 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                         )
                     
                     if camera:
-                        wb_auto.on('update:model-value', make_instant_handler(camera.set_auto_white_balance, 'uvc_controls.white_balance_auto', True))
-                        wb_manual.on('change', lambda e: (lbl.__setattr__('text', str(int(getattr(e, 'value', wb_manual.value)))), make_handler(camera.set_manual_white_balance, 'uvc_controls.white_balance_manual', 4600)(int(getattr(e, 'value', wb_manual.value)))))
+                        # Save into nested dataclass: uvc_controls.white_balance.auto/value
+                        wb_auto.on('update:model-value', make_instant_handler(camera.set_auto_white_balance, 'uvc_controls.white_balance.auto', True))
+                        wb_manual.on('update:model-value', lambda e: _set_label(lbl, str(int(getattr(e, 'value', wb_manual.value)))))
+                        wb_manual.on('change', lambda e: (_set_label(lbl, str(int(getattr(e, 'value', wb_manual.value)))), make_handler(camera.set_manual_white_balance, 'uvc_controls.white_balance.value', 4600)(int(getattr(e, 'value', wb_manual.value)))))
                         knob_refs['white_balance_auto'] = wb_auto
                         knob_refs['white_balance_manual'] = wb_manual
                 # Belichtung --------------------------------------------------
@@ -300,11 +341,11 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                         .style("align-self:stretch;")\
                         .classes('p-4 flex flex-col gap-2'):
                     ui.label('Exposure').classes('font-semibold mb-2')
-                    exp_auto_value = current.get('exposure_auto', 1) == 1
+                    exp_auto_value = _to_bool_auto_exposure(current.get('auto_exposure', 1))
                     exp_auto = ui.checkbox('exposure auto', value=exp_auto_value).tooltip('Enable automatic exposure adjustment')
 
-                    exp_manual_range = ranges.get('exposure_manual', {'min': -13, 'max': -1, 'default': -6})
-                    exp_manual_value = current.get('exposure_manual', exp_manual_range['default'])
+                    exp_manual_range = ranges.get('exposure', {'min': -13, 'max': -1, 'default': -6})
+                    exp_manual_value = current.get('exposure', exp_manual_range['default'])
 
                     with ui.row().classes('items-center gap-2'):
                         ui.label('manual exposure:')
@@ -318,12 +359,14 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                         )
                     
                     if camera:
-                        exp_auto.on('update:model-value', make_instant_handler(camera.set_auto_exposure, 'uvc_controls.exposure_auto', True))
-                        exp_manual.on('change', lambda e: (lbl.__setattr__('text', str(int(getattr(e, 'value', exp_manual.value)))), make_handler(camera.set_manual_exposure, 'uvc_controls.exposure_manual', -6)(int(getattr(e, 'value', exp_manual.value)))))
+                        # Save into nested dataclass: uvc_controls.exposure.auto/value
+                        exp_auto.on('update:model-value', make_instant_handler(camera.set_auto_exposure, 'uvc_controls.exposure.auto', True))
+                        exp_manual.on('update:model-value', lambda e: _set_label(lbl, str(int(getattr(e, 'value', exp_manual.value)))))
+                        exp_manual.on('change', lambda e: (_set_label(lbl, str(int(getattr(e, 'value', exp_manual.value)))), make_handler(camera.set_manual_exposure, 'uvc_controls.exposure.value', -6)(int(getattr(e, 'value', exp_manual.value)))))
                         knob_refs['exposure_auto'] = exp_auto
                         knob_refs['exposure_manual'] = exp_manual
 
-            ui.separator().style("align-self:stretch;")
+        ui.separator().style("align-self:stretch;")
 
     # Reset Button
     with ui.row().classes('gap-4'):

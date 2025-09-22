@@ -458,6 +458,21 @@ class EMailSystem:
             body = template.body.format(**params)
 
             recipients = self._get_effective_recipients()
+            # Apply per-recipient overrides for measurement lifecycle emails
+            try:
+                prefs = getattr(current_email_config, 'recipient_prefs', {}) or {}
+                if isinstance(prefs, dict) and recipients:
+                    filtered: list[str] = []
+                    for r in recipients:
+                        pr = prefs.get(r, {}) if isinstance(prefs.get(r, {}), dict) else {}
+                        # Default to global flag when recipient has no explicit pref
+                        allow = bool(pr.get(enabled_key, enabled))
+                        if allow:
+                            filtered.append(r)
+                    recipients = filtered
+            except Exception:
+                # On any error, fall back to unfiltered recipients
+                pass
             if not recipients:
                 self.logger.warning("No recipients configured; skipping measurement event email")
                 return False
@@ -868,20 +883,18 @@ class EMailSystem:
             self.logger.info(f"   Website URL: {current_email_config.website_url}")
             self.logger.info("=" * 50)
 
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            subject = f"Test email - {timestamp}"
-            # Beispielinhalt der Test-E-Mail erzeugen
-            test_message =(
-                    f"Motion has not been detected since {timestamp}!\n"
-                    f"Please check the website at: {current_email_config.website_url}\n\n"
-                    f"Details:\n"
-                    f"Session-ID: Test\n"
-                    f"Camera: Test\n"
-                    f"Sensitivity: Test\n"
-                    f"ROI active: currently not available\n"
-                    f"Last motion at: not available, as this is a test.\n"
-                    f"Attached is the current webcam image."
-                )
+            # Build subject/body from configured test template (includes metadata placeholders)
+            tpl = current_email_config.test_template()
+            params = self._build_common_template_params(
+                session_id='TEST',
+                last_motion_time=None,
+                start_time=None,
+                end_time=None,
+                duration='',
+                reason=''
+            )
+            subject = tpl.subject.format(**params)
+            test_message = tpl.body.format(**params)
             
             IMG_SRC = 'https://picsum.photos/id/325/720/405'
             try:
@@ -899,7 +912,7 @@ class EMailSystem:
             recipients = self._get_effective_recipients()
             msg = self._create_email_message(subject, test_message, recipients)
             if frame is not None:
-                self._attach_camera_image(msg, frame, timestamp)
+                self._attach_camera_image(msg, frame, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
             messages = [(r, msg) for r in recipients]
             success_count = self._send_emails_batch(messages)

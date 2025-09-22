@@ -127,10 +127,28 @@ def main() -> int:
         # Provide a storage_secret to enable app.storage.user access (used for sharing instances)
         storage_secret = os.environ.get('CVD_STORAGE_SECRET') or secrets.token_urlsafe(32)
 
+        # Compute browser window title from config (supports {cvd_id}/{cvd_name})
+        try:
+            meta = getattr(cfg, 'metadata', None)
+            params = {
+                'cvd_id': getattr(meta, 'cvd_id', ''),
+                'cvd_name': getattr(meta, 'cvd_name', ''),
+            }
+            gui_title_tpl = getattr(getattr(cfg, 'gui', None), 'title', 'CVD-TRACKER')
+            window_title = str(gui_title_tpl).format(**params)
+        except Exception:
+            window_title = 'CVD-TRACKER'
+
+        # Remember default favicon for later restore across clients
+        try:
+            app.storage.general['cvd.default_favicon'] = 'https://www.tuhh.de/favicon.ico'
+        except Exception:
+            pass
+
         ui.run(
             host='0.0.0.0',
             port=8080,
-            title='CVD-TRACKER',
+            title=window_title,
             favicon='https://www.tuhh.de/favicon.ico',
             reload=False,
             reconnect_timeout=100.0,

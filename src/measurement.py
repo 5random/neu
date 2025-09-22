@@ -24,6 +24,12 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Optional, Dict, Any, Callable
 
 from .config import MeasurementConfig, AppConfig, load_config, save_config, get_logger
+from .gui.util import (
+    set_tab_all,
+    set_favicon_default_all,
+    favicon_check_circle_green,
+    favicon_highlight_off_red,
+)
 from .notify import EMailSystem
 from .cam.motion import MotionResult
 from .cam.camera import Camera
@@ -91,12 +97,18 @@ class MeasurementController:
 
         
         # Anti-Spam-Mechanismus
-        self.alerts_sent_this_session: int = 0
-        self.max_alerts_per_session: int = 5  # Maximal 5 Alerts pro Session
+        self.alerts_sent_this_session = 0
+        # Von Config gesteuert (Fallback 5)
+        self.max_alerts_per_session = int(getattr(self.config, 'max_alerts_per_session', 5))
+        # Cooldown zwischen Alerts (Sekunden)
+        self.alert_cooldown_seconds = int(getattr(self.config, 'alert_cooldown_seconds', 300))
+        self.last_alert_sent_at = None
         
         # Alert-Timer-Präzision
-        self.alert_check_interval: float = 5.0  # Alle 5 Sekunden Alert-Status prüfen
-        self.last_alert_check: Optional[datetime] = None
+        self.alert_check_interval = float(getattr(self.config, 'alert_check_interval', 5.0))  # Alle 5 Sekunden Alert-Status prüfen
+        self.last_alert_check = None
+        # Snapshot-Option bei Alerts
+        self.alert_include_snapshot = bool(getattr(self.config, 'alert_include_snapshot', True))
         
         self.logger.info("MeasurementController initialized")
 
@@ -106,26 +118,28 @@ class MeasurementController:
         self._camera_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="camera_executor")  # Executor für Kamera-Operationen
 
         # Asymmetrische Hysterese (Frames)
-        self.debounce_on_frames: int = max(1, int(getattr(self.config, 'motion_log_debounce_on_frames', 3)))
-        self.debounce_off_frames: int = max(1, int(getattr(self.config, 'motion_log_debounce_off_frames', 10)))
+        self.debounce_on_frames = max(1, int(getattr(self.config, 'motion_log_debounce_on_frames', 3)))
+        self.debounce_off_frames = max(1, int(getattr(self.config, 'motion_log_debounce_off_frames', 10)))
 
         # Mindestdauer eines Motion-Events (Sekunden)
-        self.min_event_duration_s: float = max(0.0, float(getattr(self.config, 'motion_log_min_event_seconds', 3.0)))
+        self.min_event_duration_s = max(0.0, float(getattr(self.config, 'motion_log_min_event_seconds', 3.0)))
 
         # Periodische Summary (Sekunden)
-        self._summary_interval_s: float = max(1.0, float(getattr(self.config, 'motion_log_summary_interval_seconds', 60.0)))
-        self._last_summary_at: datetime = datetime.now()
+        # Bewegungs-Summary-Steuerung (Konfigurierbar)
+        self._summary_interval_s = max(1.0, float(getattr(self.config, 'motion_summary_interval_seconds', getattr(self.config, 'motion_log_summary_interval_seconds', 60.0))))
+        self.enable_motion_summary_logs = bool(getattr(self.config, 'enable_motion_summary_logs', True))
+        self._last_summary_at = datetime.now()
 
         # Debounced State und Zähler
-        self.debounced_motion: bool = False
-        self._stable_on_count: int = 0
-        self._stable_off_count: int = 0
+        self.debounced_motion = False
+        self._stable_on_count = 0
+        self._stable_off_count = 0
 
         # Laufende Event-Akkumulatoren
-        self._event_open_time: Optional[datetime] = None
-        self._event_area_sum: float = 0.0
-        self._event_area_max: float = 0.0
-        self._event_frames: int = 0
+        self._event_open_time = None
+        self._event_area_sum = 0.0
+        self._event_area_max = 0.0
+        self._event_frames = 0
     # === Session-Management ===
     def _reset_debounce_state(self) -> None:
         """Setzt alle Debounce-/Event-Zustände zurück, um saubere Session-Grenzen zu garantieren."""
@@ -179,6 +193,11 @@ class MeasurementController:
             # Debounce-/Event-State zurücksetzen, damit keine offenen Events übernommen werden
             self._reset_debounce_state()
             self.logger.info(f"Session started at: {self.session_id}")
+            # Initial favicon state for all clients (red = active but no motion yet)
+            try:
+                set_tab_all(icon_url=favicon_highlight_off_red())
+            except Exception:
+                pass
             # Fire optional start notification (non-blocking)
             try:
                 if self.email_system:
@@ -222,6 +241,12 @@ class MeasurementController:
             self.logger.info(f"Session stopped: {sess_id} "
                            f"(Duration: {session_duration})")
 
+            # Restore default favicon for all clients when a session ends
+            try:
+                set_favicon_default_all()
+            except Exception:
+                pass
+
             # Fire optional end/stop notification (non-blocking)
             try:
                 if self.email_system and start_time:
@@ -238,6 +263,8 @@ class MeasurementController:
                 self.logger.error(f"Error scheduling end notification: {exc}")
 
             self.session_id = None
+            # Alert-Zustände zurücksetzen
+            self.last_alert_sent_at = None
 
             return True
             
@@ -354,6 +381,11 @@ class MeasurementController:
                     area,
                     getattr(mr, 'roi_used', False),
                 )
+                # Update favicon to green for all clients while session is active
+                try:
+                    set_tab_all(icon_url=favicon_check_circle_green())
+                except Exception:
+                    pass
 
         else:
             self._stable_off_count += 1
@@ -390,9 +422,25 @@ class MeasurementController:
                 self._event_area_sum = 0.0
                 self._event_area_max = 0.0
                 self._event_frames = 0
+                # Update favicon to red for all clients while session is active
+                try:
+                    if self.is_session_active:
+                        set_tab_all(icon_url=favicon_highlight_off_red())
+                except Exception:
+                    pass
 
     def _maybe_log_motion_summary(self) -> None:
         """Schreibt periodisch eine verdichtete Motion‑Zusammenfassung."""
+        # Einstellungen dynamisch aus Config übernehmen
+        try:
+            self._summary_interval_s = max(1.0, float(getattr(self.config, 'motion_summary_interval_seconds', self._summary_interval_s)))
+            self.enable_motion_summary_logs = bool(getattr(self.config, 'enable_motion_summary_logs', self.enable_motion_summary_logs))
+        except Exception:
+            pass
+
+        if not self.enable_motion_summary_logs:
+            return
+
         now = datetime.now()
         if (now - self._last_summary_at).total_seconds() < self._summary_interval_s:
             return
@@ -402,7 +450,7 @@ class MeasurementController:
             ratio = (sum(self.motion_history) / size) if size >= 1 else 0.0
 
         self.logger.info(
-            "MotionSummary session=%s active=%s recent_ratio=%.2f history=%d",
+            "MotionSummary: session=%s | debounced_motion_active=%s | recent_motion_ratio=%.2f | history_entries=%d",
             self.session_id,
             self.debounced_motion,
             ratio,
@@ -423,6 +471,15 @@ class MeasurementController:
         if not self.is_session_active or self.alert_triggered:
             return
         
+        # Aktuelle Limits aus Config ziehen, falls zur Laufzeit geändert
+        try:
+            self.max_alerts_per_session = int(getattr(self.config, 'max_alerts_per_session', self.max_alerts_per_session))
+            self.alert_check_interval = float(getattr(self.config, 'alert_check_interval', self.alert_check_interval))
+            self.alert_cooldown_seconds = int(getattr(self.config, 'alert_cooldown_seconds', self.alert_cooldown_seconds))
+            self.alert_include_snapshot = bool(getattr(self.config, 'alert_include_snapshot', self.alert_include_snapshot))
+        except Exception:
+            pass
+
         if self.alerts_sent_this_session >= self.max_alerts_per_session:
             self.logger.warning("Max alerts per session reached - skipping alert check")
             return
@@ -434,6 +491,12 @@ class MeasurementController:
             return
         
         self.last_alert_check = now
+        # Cooldown beachten
+        if self.last_alert_sent_at is not None:
+            since_last = (now - self.last_alert_sent_at).total_seconds()
+            if since_last < self.alert_cooldown_seconds:
+                # Noch im Cooldown
+                return
         camera_active = self._is_camera_active()
 
         # Motion-Historie analysieren: Gab es kürzlich noch Bewegung?
@@ -490,7 +553,7 @@ class MeasurementController:
         
         try:
             camera_frame = None
-            if self.camera:
+            if self.camera and self.alert_include_snapshot:
                 try:
                     # Timeout mit concurrent.futures statt signal (thread-sicher)
 
@@ -514,6 +577,7 @@ class MeasurementController:
             if success:
                 self.alert_triggered = True
                 self.alert_trigger_time = datetime.now()
+                self.last_alert_sent_at = self.alert_trigger_time
                 self.logger.info("Alert triggered successfully (sync)")
                 return True
             else:

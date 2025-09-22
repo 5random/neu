@@ -169,13 +169,33 @@ class MeasurementConfig:
     image_format: str
     image_quality: int
     alert_delay_seconds: int
+    # New alert/runtime tuning parameters (optional with safe defaults)
+    max_alerts_per_session: int = 5
+    alert_check_interval: float = 5.0
+    alert_cooldown_seconds: int = 300
+    alert_include_snapshot: bool = True
+    # Session inactivity timeout separate from hard session limit (0 = disabled)
+    inactivity_timeout_minutes: int = 60
+    # Motion summary logging controls
+    motion_summary_interval_seconds: int = 60
+    enable_motion_summary_logs: bool = True
 
     def validate(self) -> List[str]:
         errors: List[str] = []
-        if self.alert_delay_seconds < 60:
-            errors.append("alert_delay_seconds < 60")
-        if self.session_timeout_minutes < 1:
-            errors.append("session_timeout_minutes < 1")
+        if self.alert_delay_seconds < 30:
+            errors.append("alert_delay_seconds < 30")
+        if self.session_timeout_minutes < 0:
+            errors.append("session_timeout_minutes < 0")
+        if self.max_alerts_per_session < 1:
+            errors.append("max_alerts_per_session must be ≥ 1")
+        if self.alert_check_interval <= 0:
+            errors.append("alert_check_interval must be > 0")
+        if self.alert_cooldown_seconds < 0:
+            errors.append("alert_cooldown_seconds must be ≥ 0")
+        if self.inactivity_timeout_minutes < 0:
+            errors.append("inactivity_timeout_minutes must be ≥ 0 (0 disables)")
+        if self.motion_summary_interval_seconds < 5:
+            errors.append("motion_summary_interval_seconds must be ≥ 5")
         img_fmt = self.image_format.lower()
         if img_fmt in ("jpg", "jpeg") and not 1 <= self.image_quality <= 100:
             errors.append("image_quality außerhalb [1, 100]")
@@ -206,6 +226,9 @@ class EmailConfig:
     active_groups: List[str] = field(default_factory=list)
     # Measurement notification toggles
     notifications: Dict[str, bool] = field(default_factory=dict)
+    # Per-recipient notification preferences (overrides global notifications)
+    # Mapping: email -> { 'on_start': bool, 'on_end': bool, 'on_stop': bool }
+    recipient_prefs: Dict[str, Dict[str, bool]] = field(default_factory=dict)
 
     EMAIL_RE = re.compile(r"^[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}$")
 
@@ -246,6 +269,22 @@ class EmailConfig:
             if not isinstance(v, bool):
                 raise TypeError(f"EmailConfig.notifications['{k}'] must be bool, got {type(v).__name__}: {v!r}")
 
+        # recipient_prefs
+        if not isinstance(self.recipient_prefs, dict):
+            raise TypeError(
+                f"EmailConfig.recipient_prefs must be Dict[str, Dict[str, bool]], got {type(self.recipient_prefs).__name__}: {self.recipient_prefs!r}"
+            )
+        for email, prefs in self.recipient_prefs.items():
+            if not isinstance(email, str):
+                raise TypeError(f"EmailConfig.recipient_prefs keys must be str (email), got {type(email).__name__}: {email!r}")
+            if not isinstance(prefs, dict):
+                raise TypeError(f"EmailConfig.recipient_prefs['{email}'] must be Dict[str, bool], got {type(prefs).__name__}: {prefs!r}")
+            for k, v in prefs.items():
+                if not isinstance(k, str):
+                    raise TypeError(f"EmailConfig.recipient_prefs['{email}'] keys must be str, got {type(k).__name__}: {k!r}")
+                if not isinstance(v, bool):
+                    raise TypeError(f"EmailConfig.recipient_prefs['{email}']['{k}'] must be bool, got {type(v).__name__}: {v!r}")
+
     def validate(self) -> List[str]:
         errors: List[str] = []
         # Base emails
@@ -273,6 +312,17 @@ class EmailConfig:
             for k, v in self.notifications.items():
                 if not isinstance(v, bool):
                     errors.append(f"notification flag '{k}' must be a bool, got {type(v).__name__}")
+        # recipient_prefs validation (ensure keys are emails and values are bools)
+        if self.recipient_prefs is not None and isinstance(self.recipient_prefs, dict):
+            for email, prefs in self.recipient_prefs.items():
+                if not isinstance(email, str) or not self.EMAIL_RE.match(email):
+                    errors.append(f"recipient_prefs has invalid email key: {email!r}")
+                if not isinstance(prefs, dict):
+                    errors.append(f"recipient_prefs['{email}'] must be dict, got {type(prefs).__name__}")
+                    continue
+                for k, v in prefs.items():
+                    if not isinstance(v, bool):
+                        errors.append(f"recipient_prefs['{email}']['{k}'] must be bool, got {type(v).__name__}")
         # SMTP
         if not 1 <= self.smtp_port <= 65535:
             errors.append("smtp_port must be between [1, 65535]")
@@ -732,7 +782,14 @@ def _create_default_config() -> AppConfig:
         measurement=MeasurementConfig(
             auto_start=False, session_timeout_minutes=60, save_alert_images=True,
             image_save_path="./alerts/", image_format="jpg", image_quality=85,
-            alert_delay_seconds=300
+            alert_delay_seconds=300,
+            max_alerts_per_session=5,
+            alert_check_interval=5.0,
+            alert_cooldown_seconds=300,
+            alert_include_snapshot=True,
+            inactivity_timeout_minutes=60,
+            motion_summary_interval_seconds=60,
+            enable_motion_summary_logs=True
         ),
         email=EmailConfig(
             website_url="http://134.28.91.48:8080",
@@ -742,11 +799,13 @@ def _create_default_config() -> AppConfig:
             sender_email="sender@example.com",
             templates={
                 "alert": {
-                    "subject": "CVD-TRACKER-Alert: no motion detected - {timestamp}",
+                    "subject": "CVD-TRACKER{cvd_id}-{cvd_name}-Alert: no motion detected - {timestamp}",
                     "body": (
                         "Movement has not been detected since {timestamp}!"
                         "\nPlease check the issue via the web application at: {website_url}."
                         "\n\nDetails:"
+                        "\nCVD-ID: {cvd_id}"
+                        "\nCVD-Name: {cvd_name}"
                         "\nSession-ID: {session_id}"
                         "\nLast motion at: {last_motion_time}"
                         "\nCamera: Index {camera_index}"
@@ -756,27 +815,50 @@ def _create_default_config() -> AppConfig:
                     )
                 },
                 "measurement_start": {
-                    "subject": "CVD-Tracker: Measurement started - {timestamp}",
+                    "subject": "CVD-TRACKER{cvd_id}-{cvd_name}: Measurement started - {timestamp}",
                     "body": (
-                        "Measurement session started at {timestamp}.\n"
-                        "Session-ID: {session_id}\n"
-                        "Website: {website_url}\n"
+                        "CVD-Tracker{cvd_id}-{cvd_name} Measurement Started\n"
+                        "A new measurement session has started at {timestamp}.\n\n"
+                        "You can monitor the session via the web application at: {website_url}.\n\n"
+                        "Details:\n"
+                        "   CVD-ID:         {cvd_id}\n"
+                        "   CVD-Name:       {cvd_name}\n"
+                        "   Website URL:    {website_url}\n\n"
+                        "   Session-ID:     {session_id}\n"
+                        "   Last motion at: {last_motion_time}\n"
+                        "   Start:          {start_time}\n"
+                        "   End:            {end_time}\n"
+                        "   Duration:       {duration}\n"
+                        "   Reason:         {reason}\n\n"
+                        "   Camera: Index   {camera_index}\n"
+                        "   Sensitivity:    {sensitivity}\n"
+                        "   ROI enabled:    {roi_enabled}\n\n"
                     )
                 },
                 "measurement_end": {
-                    "subject": "CVD-Tracker: Measurement ended - {timestamp}",
+                    "subject": "CVD-TRACKER{cvd_id}-{cvd_name}: Measurement ended - {timestamp}",
                     "body": (
-                        "Measurement session ended at {timestamp}.\n"
-                        "Session-ID: {session_id}\n"
-                        "Start: {start_time}\n"
-                        "End: {end_time}\n"
-                        "Duration: {duration}\n"
-                        "Reason: {reason}\n"
-                        "Website: {website_url}\n"
+                        "CVD-Tracker{cvd_id}-{cvd_name} Measurement Ended\n"
+                        "The measurement session has ended at {timestamp}.\n\n"
+                        "You can monitor the session via the web application at: {website_url}.\n\n"
+                        "Details:\n"
+                        "   CVD-ID:         {cvd_id}\n"
+                        "   CVD-Name:       {cvd_name}\n"
+                        "   Website URL:    {website_url}\n\n"
+                        "   Session-ID:     {session_id}\n"
+                        "   Last motion at: {last_motion_time}\n"
+                        "   Start:          {start_time}\n"
+                        "   End:            {end_time}\n"
+                        "   Duration:       {duration}\n"
+                        "   Reason:         {reason}\n\n"
+                        "   Camera: Index   {camera_index}\n"
+                        "   Sensitivity:    {sensitivity}\n"
+                        "   ROI enabled:    {roi_enabled}\n\n"
                     )
                 }
             },
-            notifications={"on_start": False, "on_end": False}
+            notifications={"on_start": False, "on_end": False},
+            recipient_prefs={}
         ),
         gui=GUIConfig(
             title="CVD-Tracker", host="localhost", port=8080,

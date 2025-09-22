@@ -1,17 +1,21 @@
+from __future__ import annotations
 from datetime import datetime, timedelta
 import asyncio
 from nicegui import ui, background_tasks
 
 from src.notify import EMailSystem
 from src.config import get_global_config, save_global_config, get_logger
-from src.measurement import MeasurementController
 from src.cam.camera import Camera
 from src.gui.util import schedule_bg
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from src.measurement import MeasurementController
 
 logger = get_logger('gui.measurement')
 
 def create_measurement_card(
-    measurement_controller: MeasurementController | None = None,
+    measurement_controller: Optional['MeasurementController'] = None,
     camera: Camera | None = None,
     email_system: EMailSystem | None = None,
     **kwargs,
@@ -169,7 +173,8 @@ def create_measurement_card(
 
 
     # -------------------------- UI ------------------------------
-    with ui.card().classes('w-full h-full').style('align-self:stretch;'):
+    # Make the measurement card expand to use available vertical space in its column
+    with ui.card().classes('w-full flex-1').style('align-self:stretch; min-height:0;'):
         ui.label('Measurement Monitoring').classes('text-h6 font-semibold mb-2')
 
         with ui.row().classes('items-center q-gutter-sm q-mb-sm'):

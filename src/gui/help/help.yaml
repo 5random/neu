@@ -1,0 +1,235 @@
+# Help documentation for the Application
+help:
+  title: "Application Help"
+  sections:
+    - title: "Getting Started"
+      link: "/"
+      content: |
+        Welcome to the Application! This guide will help you get started with the basic features and functionalities.
+        
+        ## Initial Setup
+        To set up the application, follow these steps:
+        1. Download the installer from the official website.
+        2. Run the installer and follow the on-screen instructions.
+        
+        ## First Steps
+        After setup, launch the application and create a new account or log in with your existing credentials.
+
+    - title: "Camera Settings"
+      link: "/settings#camera"
+      content: |
+        The Camera Settings allow you to configure the camera parameters for optimal performance.
+
+        ## How to Access Camera Settings
+        1. Navigate to the 'Settings' menu at the top right corner of the home screen.
+        2. Select 'Camera Settings' from the dropdown menu.
+        3. Adjust the settings as needed and click 'Save' to apply changes.
+
+        ## How to Adjust Camera Settings for Optimal Performance
+        - **Resolution**: Choose a resolution that balances quality and performance based on your hardware capabilities. 720p is recommended for most users.
+        - **Frame Rate**: Set the frame rate to 30fps for smooth video. Higher frame rates may require more processing power.
+        - **Backlight Compensation**: Find a balance that enhances visibility without overexposing the image. Default settings usually work well.
+        - **White Balance**: Use 'Auto' for general use. For specific lighting conditions, manually adjust the white balance to achieve accurate colors.
+        - **Exposure**: Set to 'Auto' for most scenarios. For low-light conditions, manually increase exposure slightly to brighten the image without introducing too much noise.
+        - **Brightness and Contrast**: Adjust these settings to improve image clarity. Start with default values and tweak as necessary based on your environment.
+        - **Gain**: Control gain settings to manage low-light performance. Higher gain can introduce noise, so use it judiciously.
+        - **Gamma**: Modify gamma settings to adjust the midtones of the image.
+        - **Sharpness**: Adjust sharpness to enhance details. Be careful not to overdo it, as this can introduce artifacts.
+        - **Saturation**: Increase saturation for more vibrant colors or decrease it for a more muted look. This has usually no effect on motion detection performance.
+        - **Hue**: Adjust hue to correct color tones. This is particularly useful in environments with unusual lighting. This has usually no effect on motion detection performance.
+
+        ## Save and Reset
+        - After making adjustments, click 'Save' to apply the new settings.
+        - To revert to default settings, click the 'Reset to Default' button.
+
+        ## Tips
+        - You can always return to default settings if you are unsure about the changes made. Feel free to experiment with different settings to find what works best for your case.
+        - Iterate through settings adjustments and test the camera output to achieve the desired quality.
+
+        For more detailed information on each feature, refer to the user manual available in the Help menu.
+
+        ## Frequently Asked Questions (FAQ)
+        - **Q: How do I know if my camera settings are optimal?**
+          A: Test the camera output in various lighting conditions and adjust settings as needed for the best performance.
+        - **Q: Can I save multiple camera profiles?**
+          A: Currently, the application supports only one set of camera settings. You can manually adjust them as needed.
+        - **Q: What should I do if the camera feed is lagging?**
+          A: Lower the resolution and frame rate in the Camera Settings to improve performance.
+        - **Q: How do I reset the camera settings to default?**
+          A: Navigate to the Camera Settings and click the 'Reset to Default' button at the bottom of the camera settings panel.
+        - **Q: Will changing the camera settings affect motion detection?**
+          A: Some settings like saturation and hue usually do not affect motion detection performance. However, extreme changes in brightness or contrast may impact it.
+        - **Q: Where can I find more help if I encounter issues?**
+          A: Refer to the 'Troubleshooting' section in the help section.
+
+    - title: "Motion Detection Settings"
+      link: "/settings#motion"
+      content: |
+        Motion Detection Settings allow you to configure how the application detects motion in the camera feed.
+
+        ## How to Access Motion Detection Settings
+        To configure motion detection settings, follow these steps:
+        1. Navigate to the 'Settings' menu at the top right corner of the home screen.
+        2. Select 'Camera Settings' from the dropdown menu.
+        3. Adjust the sensitivity slider to set the motion detection sensitivity.
+        4. Define the motion detection area by drawing a rectangle on the video feed.
+        5. Click 'Save' to apply the changes.
+
+        ## How to Adjust Motion Detection Settings for Optimal Performance
+        - **ROI**: Define the Region of Interest (ROI) by drawing a rectangle on the video feed. This helps focus motion detection on specific areas, reducing false alarms.
+        - **Sensitivity**: Adjust the sensitivity slider to set how easily motion is detected. Higher sensitivity may detect smaller movements but can also increase false positives.
+        - **Save Settings**: After making adjustments, click 'Save' to apply the new settings. 
+
+        ### How to Adjust the Region of Interest (ROI)
+        - Click two times on the video feed to draw a rectangle around the area you want to monitor for motion.
+        - Resize or move the rectangle as needed to cover the desired area by adjusting the Pixel values below the camera feed.
+        - You can redraw the rectangle by simply clicking again or use the reset button to clear the current ROI.
+        - Make sure to select an appropriate area that captures the most relevant motion while avoiding unnecessary background activity.
+        - To remove the ROI, click the 'Clear ROI' button.
+        - After defining the ROI, click 'Save' to apply the changes.
+
+        ## Save and Reset
+        - After making adjustments, click 'Save' to apply the new settings.
+        - To revert to default settings, click the 'Reset to Default' button.
+        - Motion detection sensitivity is saved and applied automatically.
+
+        ## Tips
+        - Test the motion detection settings by moving within the defined ROI to ensure it captures motion effectively
+        - Adjust sensitivity based on the environment; higher sensitivity may be needed in low-activity areas.
+
+        ## Frequently Asked Questions (FAQ)
+        - **Q: How do I know if my motion detection settings are optimal?**
+          A: Test the motion detection by moving within the defined ROI and adjust sensitivity as needed for the best performance.
+        - **Q: Can I define multiple ROIs?**
+          A: Currently, the application supports only one ROI. You can manually adjust it as needed.
+        - **Q: What should I do if I receive too many false alarms?**
+          A: Lower the sensitivity in the Motion Detection Settings or adjust the ROI to exclude areas with frequent movement.
+        - **Q: How do I reset the motion detection settings to default?**
+          A: Navigate to the Motion Detection Settings and click the 'Reset to Default' button at the bottom of the settings panel.
+        - **Q: Will changing the motion detection settings affect camera performance?**
+          A: Adjusting sensitivity and ROI do not impact camera performance, but extreme settings may affect responsiveness.
+        
+    - title: "E-Mail-Notifications"
+      link: "/settings#email"
+      content: |
+        E-Mail Notifications allow you to receive alerts when measuring motion.
+
+        ## How to Access E-Mail Notification Settings
+        To configure E-Mail notification settings, follow these steps:
+        1. Navigate to the 'Settings' menu at the top right corner of the home screen.
+        2. Select 'E-Mail Notifications' from the dropdown menu.
+        3. Enter your SMTP server details, including server address, port, username/used email address for sending notifications.
+        4. Specify the recipient email address where notifications should be sent.
+        5. Specify recipient groups for sending notificaitions to a subset of recipients.
+        6. Test the configuration by clicking the 'Send Test Email' button.
+        7. Click 'Save' to apply the changes.
+
+        ## How to Configure E-Mail Notifications
+        - **SMTP Server**: Enter the address of your SMTP server (for TUHH it's SMTP Server: mail.tuhh.de).
+        - **Port**: Specify the port number used by your SMTP server (for TUHH it's Port 25).
+        - **Username and Password**: Username and Password are not required for sending emails via TUHH's SMTP server as long as the sender is using the TUHHs intranet.
+        - **Recipient Email**: Enter the email address where you want to receive motion detection alerts.
+        - **Recipient Groups**: Select recipient groups to send notifications to a subset of recipients. You can choose from predefined groups or create custom groups as needed.
+        - **Test Configuration**: Use the 'Send Test Email' button to verify that your settings are correct and that you (and your recipients) can receive emails. Also check for an attached image in the test email.
+
+        ## Save and Reset
+        - After making adjustments, click 'Save' to apply the new settings.
+        - To revert to default settings, click the 'Reset to Default' button.
+
+        ## Tips
+        - Ensure that your SMTP server allows sending emails from third-party applications.
+        - Check your spam folder if you do not receive test emails.
+
+        ## Frequently Asked Questions (FAQ)
+        - **Q: What should I do if I do not receive test emails?**
+          A: Verify your SMTP settings and ensure that your email provider allows sending emails through third-party applications.
+        - **Q: Can I use a free email service for notifications?**
+          A: Yes, but ensure that you have the correct SMTP settings and that your provider supports this feature.
+        - **Q: How often will I receive email notifications?**
+          A: You will receive an email on each time motion is detected according to your measurement settings and selected recipient groups.
+        - **Q: How do I reset the email notification settings to default?**
+          A: Navigate to the E-Mail Notification Settings and click the 'Reset to Default' button at the bottom of the settings panel.
+
+    - title: "Configuration"
+      link: "/settings#config"
+      content: |
+        You can download the current configuration of the application.
+
+        ## How to Access Configuration Settings
+        To access configuration settings, follow these steps:
+        1. Navigate to the 'Settings' menu at the top right corner of the home screen.
+        2. Select 'Configuration' from the dropdown menu.
+        3. Click the download button to download the current configuration.
+
+        ## Frequently Asked Questions (FAQ)
+        - **Q: Can I upload or load different configurations?**
+          A: Unfortunately, loading different configurations is not supported at the moment.
+        - **Q: What if the downloaded configuration file is not working?**
+          A: If you encounter problems downloading the configuration, refresh or close the website and try again. If the problem persists, try restarting the application.
+
+    - title: "Update"
+      link: "/settings#update"
+      content: |
+        You can check for updates and install the latest version of the application.
+
+        ## How to Access Update Settings
+        To access update settings, follow these steps:
+        1. Navigate to the 'Settings' menu at the top right corner of the home screen.
+        2. Select 'Update' from the dropdown menu.
+        3. Click the 'Check & Update' button to see if a new version is available.
+        4. If an update is available, follow the on-screen instructions to download and install it.
+
+        ## Frequently Asked Questions (FAQ)
+        - **Q: How often should I check for updates?**
+          A: It's recommended to check for updates regularly to ensure you have the latest features and security patches.
+        - **Q: What if the update process fails?**
+          A: If you encounter issues during the update process, try restarting the application and checking for updates again. If problems persist, try to install the application manually from gitlab (see installation instructions).
+        - **Q: Will I lose my settings after updating?**
+          A: No, your settings will be preserved during the update process.
+    
+    - title: "Logs"
+      link: "/settings#logs"
+      content: |
+        You can view and download the application logs for troubleshooting purposes.
+
+        ## How to Access Logs
+        To access the logs, follow these steps:
+        1. Navigate to the 'Settings' menu at the top right corner of the home screen.
+        2. Select 'Logs' from the dropdown menu.
+        3. View the logs directly in the application or click the download button to save them to your device.
+
+        ### Downloading Logs
+        - Click the download button to save the logs as a text file on your device.
+        - The logs will be saved in a location specified by your browser's download settings.
+        - You can open the log file with any text editor to review the contents.
+        - The log files also contain update logs.
+
+        ### Log Levels
+        The application supports different log levels to control the verbosity of the logs:
+        - **DEBUG**: Detailed information, typically of interest only when diagnosing problems.
+        - **INFO**: Confirmation that things are working as expected.
+        - **WARNING**: An indication that something unexpected happened, or indicative of some problem in the application.
+        - **ERROR**: Due to a more serious problem, the software has not been able to perform some function.
+        - **CRITICAL**: A serious error, indicating that the program itself may be unable to continue running.
+
+
+        ## Frequently Asked Questions (FAQ)
+        - **Q: What information is contained in the logs?**
+          A: The logs contain detailed information about application events, errors, and other relevant data that can help diagnose issues.
+        - **Q: How often should I check the logs?**
+          A: Check the logs if you encounter any issues.
+        - **Q: Can I clear the logs?**
+          A: You can clear the viewport logs by clicking the "Clear" button in the Logs settings. However, the log file itself cannot be cleared from within the application.
+        - **Q: What if I need help interpreting the logs?**
+          A: If you need assistance interpreting the logs, see the "Troubleshooting" section.
+
+    - title: "Troubleshooting"
+      link: "/settings#logs"
+      content: |
+        If you encounter any issues while using the Application, try the following troubleshooting steps:
+        
+        1. Restart the application.
+        2. Check for updates and install the latest version.
+        3. Consult the FAQ section in the Help menu.
+
+        If problems persist, contact our support team at support@example.com

@@ -25,6 +25,7 @@ from src.measurement import create_measurement_controller_from_config, Measureme
 from src.notify import create_email_system_from_config, EMailSystem
 from src.config import load_config, set_global_config, get_global_config, save_global_config, AppConfig, get_logger
 from src.update import check_update, perform_update, get_local_commit_short, restart_self
+from .help.help import help_page  # noqa: F401  # register route via import side effect
 
 
 # Globales Kamerahandle, wird erst in ``main`` erzeugt
@@ -110,9 +111,9 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
         try:
             logger.info("Initializing measurement controller...")
             controller = global_measurement_controller
-            global_camera.enable_motion_detection(
-                lambda frame, motion_result: controller.on_motion_detected(motion_result)
-            )
+            # global_camera.enable_motion_detection(
+            #     lambda frame, motion_result: controller.on_motion_detected(motion_result)
+            # )
             logger.info("Measurement controller initialized successfully")            
         except Exception as e:
             logger.error(f'Failed to enable motion detection: {e}')
@@ -121,19 +122,11 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     else:
         logger.warning("Motion detection not available - missing camera or measurement controller")
 
-    # Expose core instances for other pages (e.g., /settings) without tight coupling
+    # Register core instances in a non-persistent in-memory registry instead of app.storage
+    # to avoid JSON serialization attempts on complex objects like Camera.
     try:
-        app.storage.user['cvd.camera'] = global_camera
-        app.storage.user['cvd.measurement'] = global_measurement_controller
-        app.storage.user['cvd.email'] = global_email_system
-    except Exception:
-        pass
-
-    # Also publish to app-wide general storage to avoid per-user scoping issues
-    try:
-        app.storage.general['cvd.camera'] = global_camera
-        app.storage.general['cvd.measurement'] = global_measurement_controller
-        app.storage.general['cvd.email'] = global_email_system
+        from .instances import set_instances
+        set_instances(global_camera, global_measurement_controller, global_email_system)
     except Exception:
         pass
 
@@ -149,6 +142,16 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
         app.add_static_files('/logs', 'logs')
     except Exception:
         logger.warning("Failed to mount /logs static files directory")
+        pass
+
+    # Ensure no unserializable objects remain in persistent storages
+    try:
+        for store in (getattr(app, 'storage').user, getattr(app, 'storage').general):
+            for key in ('cvd.camera', 'cvd.measurement', 'cvd.email'):
+                if key in store:
+                    store.pop(key, None)
+    except Exception:
+        # Best-effort cleanup only
         pass
 
     # Per-client last visited route: if client previously used /settings, redirect there
@@ -226,6 +229,28 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
             ui.timer(0.1, drain_progress)
             ui.timer(0.05, run_update, once=True)
 
+    def _compute_title() -> str:
+        """Compute UI title from config.gui.title template and metadata.
+
+        Fallbacks to a generic title if config or fields are missing.
+        """
+        try:
+            cfg = get_global_config() or global_config
+            if cfg and getattr(cfg, 'gui', None):
+                tpl = getattr(cfg.gui, 'title', '') or 'CVD-TRACKER'
+                meta = getattr(cfg, 'metadata', None)
+                params = {
+                    'cvd_id': getattr(meta, 'cvd_id', ''),
+                    'cvd_name': getattr(meta, 'cvd_name', ''),
+                }
+                try:
+                    return str(tpl).format(**params)
+                except Exception:
+                    return str(tpl)
+        except Exception:
+            pass
+        return 'CVD-TRACKER'
+
     def build_header() -> None:
         with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
             # Per-client dark mode binding with immediate initialization from client storage
@@ -234,6 +259,12 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 _stored_dark = app.storage.client.get('cvd.dark_mode')
                 if _stored_dark is not None:
                     dark.value = bool(_stored_dark)
+            except Exception:
+                pass
+            # Ensure per-client title value is initialized for bindings below
+            try:
+                if not app.storage.client.get('cvd.gui_title'):
+                    app.storage.client['cvd.gui_title'] = _compute_title()
             except Exception:
                 pass
             # --- Linke Seite -------------------------------------------
@@ -259,8 +290,14 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
 
                 ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_shutdown_dialog).props('flat').style('max-height:72px; width:auto').tooltip('Shutdown the server and close the application')
 
-                ui.label('CVD-TRACKER').classes(
+                # Dynamic title from metadata: bind to per-client storage key
+                title_label = ui.label().props('id=cvd-header-title').classes(
                     'text-xl font-semibold tracking-wider text-gray-100')
+                try:
+                    title_label.bind_text_from(app.storage.client, 'cvd.gui_title')
+                except Exception:
+                    # Fallback static text if binding not available
+                    title_label.text = _compute_title()
 
             # --- Rechte Seite ------------------------------------------
             def toggle_dark():
@@ -274,6 +311,9 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                         pass
 
             with ui.row().classes('items-center gap-4'):
+                # Help button navigates to /help
+                ui.button(icon='help', on_click=lambda: ui.navigate.to('/help'))\
+                    .props('flat round dense').classes('text-xl').tooltip('Help')
                 btn= (ui.button(
                     icon='light_mode' if dark.value else 'dark_mode',
                     on_click=toggle_dark,
@@ -304,23 +344,24 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     # Build header for root page
     build_header()
 
-    with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
+    with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4 items-stretch"):
+        # Linke Spalte: nur der Camfeed
         with ui.column().classes("gap-4"):
             create_camfeed_content()
-            with ui.grid(columns="1fr 2fr").classes("gap-4 w-full").style("grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); align-items: stretch;"):
-                with ui.column().classes("h-full"):
-                    create_motion_status_element(global_camera, global_measurement_controller)
-                with ui.column().classes("h-full"):
-                    create_measurement_card(global_measurement_controller, global_camera, email_system=global_email_system)
 
+        # Rechte Spalte: oben Motion-Status, darunter Measurement
         with ui.column().classes("gap-4"):
-            # Settings moved to /settings page
-            pass
+            create_motion_status_element(global_camera, global_measurement_controller)
+            create_measurement_card(global_measurement_controller, global_camera, email_system=global_email_system)
     
     def build_footer() -> None:
         with ui.footer(fixed=False).classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
             with ui.row().classes('items-center justify-between px-4 py-2'):
-                ui.label('CVD-TRACKER').classes('text-white text-sm')
+                footer_label = ui.label().props('id=cvd-footer-title').classes('text-white text-sm')
+                try:
+                    footer_label.bind_text_from(app.storage.client, 'cvd.gui_title')
+                except Exception:
+                    footer_label.text = _compute_title()
                 ui.label('© 2025 TUHH KVWEB').classes('text-white text-sm')
 
     # Build footer for root page

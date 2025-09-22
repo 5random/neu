@@ -15,6 +15,9 @@ logger = get_logger('gui.email')
 # Reuse the central email regex from EmailConfig for consistency
 EMAIL_RE = _EmailConfig.EMAIL_RE
 
+# Hard limit for group names (not configurable via GUI)
+GROUP_NAME_MAX_LEN = 20
+
 # --- helpers (module-level) -------------------------------------------------
 def sanitize_group_addresses(addresses: list[str]) -> list[str]:
     """Return addresses filtered to valid emails, preserving order and de-duplicated.
@@ -108,6 +111,16 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                             ", ".join(removed),
                         )
         state["groups"] = sanitized_groups
+        # Warn for legacy group names exceeding max length (do not auto-rename)
+        try:
+            too_long = [g for g in sanitized_groups.keys() if len(str(g)) > GROUP_NAME_MAX_LEN]
+            if too_long:
+                logger.warning(
+                    "Found %d group name(s) exceeding max length %d: %s",
+                    len(too_long), GROUP_NAME_MAX_LEN, ", ".join(too_long[:5]) + (" ..." if len(too_long) > 5 else "")
+                )
+        except Exception:
+            logger.debug("Group length check failed during init", exc_info=True)
     except Exception:  # noqa: BLE001
         # Don't break UI init if sanitization fails unexpectedly
         logger.exception("Failed to sanitize groups on init; continuing with raw data")
@@ -115,8 +128,9 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
     recipient_list: Optional[ui.list] = None
     eff_recipient_list: Optional[ui.list] = None
     table: Optional[ui.table] = None
-    group_table: Optional[ui.table] = None
+    group_table: Optional[ui.table] = None  # deprecated: groups now use main recipients table selection
     active_groups_select: Optional[ui.select] = None
+    group_select: Optional[ui.select] = None
     active_groups_apply_btn: Optional[ui.button] = None
     email_inp: Optional[ui.input] = None
     smtp_labels: dict[str, ui.label] = {}
@@ -127,6 +141,8 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
     notifications_apply_btn: Optional[ui.button] = None
     notify_start_cb: Optional[ui.checkbox] = None
     notify_end_cb: Optional[ui.checkbox] = None
+    # Per-recipient notification preferences (from config)
+    recipient_prefs: dict[str, dict[str, bool]] = dict(getattr(config.email, 'recipient_prefs', {}) or {})
 
     if email_system is None:
         logger.error("Email system is not initialized, email functionality will be disabled.")
@@ -170,6 +186,17 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             # notifications
             if hasattr(config.email, 'notifications'):
                 config.email.notifications = dict(state.get("notifications", {}))
+            # per-recipient prefs (store only for current recipients)
+            if hasattr(config.email, 'recipient_prefs'):
+                valid: dict[str, dict[str, bool]] = {}
+                for addr in state.get('recipients', []):
+                    p = recipient_prefs.get(addr, {}) or {}
+                    valid[addr] = {
+                        'on_start': bool(p.get('on_start', False)),
+                        'on_end': bool(p.get('on_end', False)),
+                        'on_stop': bool(p.get('on_stop', False)),
+                    }
+                config.email.recipient_prefs = valid
             if save_global_config():
                 if email_system:
                     email_system.refresh_config()
@@ -322,9 +349,62 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                     notifications_apply_btn.disable()
             except Exception:
                 pass
+
+    # Centralized group selection application helper
+    def apply_group_selection(name: Optional[str]) -> None:
+        try:
+            if name and name in (state.get("groups") or {}):
+                state["current_group"] = name
+                if 'group_name_inp' in locals():
+                    pass  # placeholder for linter
+                if group_name_inp is not None:
+                    group_name_inp.value = name
+                if table is not None:
+                    target = set(state["groups"].get(name, []) or [])
+                    table.selected = [r for r in (table.rows or []) if r.get("address") in target]
+                    table.update()
+                if group_select is not None and getattr(group_select, 'value', None) != name:
+                    group_select.value = name
+                    group_select.update()
+            else:
+                state["current_group"] = None
+                if group_name_inp is not None:
+                    group_name_inp.value = ""
+                if table is not None:
+                    table.selected = []
+                    table.update()
+                if group_select is not None and getattr(group_select, 'value', None) is not None:
+                    group_select.value = None
+                    group_select.update()
+        except Exception:
+            logger.exception('Failed to apply group selection')
+    def _groups_for(addr: str) -> list[str]:
+        """Return sorted list of groups containing the given address."""
+        try:
+            result: list[str] = []
+            for gname, addrs in (state.get("groups") or {}).items():
+                if addr in (addrs or []):
+                    result.append(gname)
+            return sorted(result)
+        except Exception:
+            logger.exception('Failed to compute groups for %s', addr)
+            return []
+
+    def _row_for(addr: str) -> dict:
+        p = recipient_prefs.get(addr, {}) or {}
+        g_list = _groups_for(addr)
+        return {
+            "address": addr,
+            "on_start": bool(p.get("on_start", False)),
+            "on_end": bool(p.get("on_end", False)),
+            "on_stop": bool(p.get("on_stop", False)),
+            "groups": ", ".join(g_list) if g_list else "—",
+            "groups_list": g_list,
+        }
+
     def refresh_table() -> None:
         if table is not None:
-            table.rows = [{"address": addr} for addr in state["recipients"]]
+            table.rows = [_row_for(addr) for addr in state["recipients"]]
             table.update()
             update_status_icon()
 
@@ -421,14 +501,16 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
         # Also remove from all groups
         for gname, addrs in list(state["groups"].items()):
             state["groups"][gname] = [a for a in addrs if a not in selected_addresses]
+        # Remove per-recipient preferences
+        try:
+            for addr in selected_addresses:
+                recipient_prefs.pop(addr, None)
+        except Exception:
+            logger.exception('Failed to cleanup recipient prefs during delete')
         if persist_state():
             refresh_table()
             table.selected = []
             refresh_overview()
-            if group_table is not None:
-                group_table.rows = [{"address": addr} for addr in state["recipients"]]
-                group_table.selected = []
-                group_table.update()
             if email_system:
                 email_system.refresh_config()
             ui.notify(f"{len(selected_addresses)} address(es) deleted", color="positive", position='bottom-right')
@@ -479,21 +561,19 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             refresh_table()
             return
 
-        # Apply change and persist
+        # Apply change and persist; migrate stored preferences if present
         state['recipients'][idx] = new_addr
+        try:
+            if old_addr in recipient_prefs:
+                recipient_prefs[new_addr] = recipient_prefs.pop(old_addr)
+        except Exception:
+            logger.exception('Failed to migrate recipient prefs on rename')
         # Update groups memberships
         for gname, addrs in list(state["groups"].items()):
             state["groups"][gname] = [new_addr if a == old_addr else a for a in addrs]
         if persist_state():
             refresh_table()
             refresh_overview()
-            if group_table is not None:
-                group_table.rows = [{"address": addr} for addr in state["recipients"]]
-                # re-apply selection for current group
-                if state["current_group"] in state["groups"]:
-                    tgt = set(state["groups"][state["current_group"]])
-                    group_table.selected = [r for r in group_table.rows if r["address"] in tgt]
-                group_table.update()
             if email_system:
                 email_system.refresh_config()
             logger.info('Recipient updated: %s -> %s', old_addr, new_addr)
@@ -509,230 +589,286 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
     logger.info("Creating email settings (list layout)")
     ui.label("Overview").classes("text-subtitle2 text-grey-7 mt-1")
     with ui.column().classes("gap-2"):
-        with ui.row().style("align-self:flex-start; flex-direction:row; justify-content:flex-start; align-items:center; flex-wrap:wrap; gap:12px;"):
-            ui.label("Configured recipients").classes("text-subtitle2 text-grey-7 mt-1")
-            overview_counts_base = ui.label("").classes("text-caption text-grey-5")
-            ui.label("Effective recipients").classes("text-subtitle2 text-grey-7 mt-1 ml-4")
-            overview_counts_eff = ui.label("").classes("text-caption text-grey-5")
+        # Top row: counts on the left, send test email on the right
+        with ui.row().classes("items-center justify-between w-full gap-3 flex-wrap"):
+            with ui.row().classes("items-center gap-4 flex-wrap"):
+                with ui.row().classes("items-baseline gap-2"):
+                    ui.label("Configured recipients").classes("text-subtitle2 text-grey-7")
+                    overview_counts_base = ui.label("").classes("text-caption text-grey-5")
+                with ui.row().classes("items-baseline gap-2"):
+                    ui.label("Effective recipients").classes("text-subtitle2 text-grey-7")
+                    overview_counts_eff = ui.label("").classes("text-caption text-grey-5")
+            ui.button("Send test email", icon="send", color="info", on_click=lambda _: send_test_email()).props("unelevated")
 
-        recipient_list = ui.list().props("dense").classes("pl-2")
-        refresh_recipient_list()
+        # Lists
+        with ui.grid(columns=2).classes("w-full gap-4"):
+            with ui.column().classes("gap-2"):
+                ui.label("Configured recipients").classes("text-caption text-grey-7")
+                recipient_list = ui.list().props("dense bordered").classes("pl-2")
+                refresh_recipient_list()
+            with ui.column().classes("gap-2"):
+                ui.label("Effective recipients (used for sending)").classes("text-caption text-grey-7")
+                eff_recipient_list = ui.list().props("dense bordered").classes("pl-2")
+                refresh_effective_list()
 
-        ui.separator()
-
-        ui.label("Effective recipients (used for sending)").classes("text-subtitle2 text-grey-7")
-        eff_recipient_list = ui.list().props("dense").classes("pl-2")
-        refresh_effective_list()
-
-        ui.separator()
-
-        ui.label("Notification emails").classes("text-subtitle2 text-grey-7")
-        with ui.row().classes("items-center gap-4"):
+        # Summary of notification flags and SMTP snapshot
+        with ui.row().classes("items-center gap-4 flex-wrap"):
+            ui.label("Notification emails").classes("text-subtitle2 text-grey-7")
             ui.label("On start:").classes("text-grey-6")
             notif_labels['start'] = ui.label("").classes("text-caption text-grey")
-            ui.label("On end:").classes("text-grey-6 ml-4")
+            ui.label("On end:").classes("text-grey-6 ml-2")
             notif_labels['end'] = ui.label("").classes("text-caption text-grey")
-
-        ui.separator()
-
-        ui.label("SMTP Settings").classes("text-subtitle2 text-grey-7")
-        with ui.row().classes("items-center"):
+        with ui.row().classes("items-center gap-4 flex-wrap"):
+            ui.label("SMTP Settings").classes("text-subtitle2 text-grey-7")
             for key, label_txt in [("sender", "Sender"), ("server", "Server"), ("port", "Port")]:
-                ui.label(f"{label_txt}:").classes("w-24 text-right text-grey-6")
-                smtp_labels[key] = ui.label(str(state["smtp"][key])).classes("flex-grow")
+                ui.label(f"{label_txt}:").classes("text-grey-6")
+                smtp_labels[key] = ui.label(str(state["smtp"][key])).classes("text-caption")
 
     ui.separator()
 
-    ui.button(
-        icon="send",
-        color="info",
-        on_click=lambda _: send_test_email(),
-    ).props("round").tooltip("Send test email to all recipients")
+    # ---------------------- Recipients & Groups (two columns) --- #
+    with ui.row().classes("w-full gap-4 items-start flex-wrap"):
+        # Left column: email input + add/delete
+        with ui.column().classes("gap-2 min-w-[320px] flex-1"):
+            ui.label("Recipients").classes("text-subtitle2 text-grey-7")
+            email_inp = (
+                ui.input("New Email")
+                .props("dense outlined stack-label")
+                .classes("min-w-[260px] sm:w-[360px] md:w-[420px]")
+                .on("keyup.enter", lambda _: add_recipient())
+            ).tooltip("Enter email address and press Enter to add or click Add")
+            with ui.row().classes("gap-2"):
+                ui.button("Add", icon="add_circle", color="primary", on_click=lambda _: add_recipient())\
+                    .bind_enabled_from(email_inp, "value", is_valid_email)
+                ui.button("Delete selected", icon="delete", color="negative", on_click=lambda _: delete_selected())\
+                    .bind_enabled_from(lambda: table, "selected", lambda s: bool(s))
 
-    ui.separator()
-
-    # ---------------------- Recipients --------------------------- #
-    ui.label("Recipients").classes("text-subtitle2 text-grey-7 mt-3")
-    with ui.row().classes("items-center gap-2"):
-        email_inp = (
-            ui.input("New Email")
-            .classes("w-64")
-            .on("keyup.enter", lambda _: add_recipient())
-        ).tooltip(
-            "Enter email address and press Enter to add "
-            "or click the add button"
-        )
-
-        with ui.button(
-            icon="add_circle",
-            color="primary",
-            on_click=lambda _: add_recipient(),
-        ).bind_enabled_from(email_inp, "value", is_valid_email).props("round"):
-            ui.tooltip("Add email address")
-
-    ui.separator()
-
-    table = ui.table(
-        columns=[{"name": "address", "label": "Address", "field": "address"}],
-        rows=[],
-        row_key="address",
-        selection="multiple",
-    ).classes("w-full")
-
-    # Inline editing for 'address' cell while keeping selection checkboxes
-    table.add_slot('body-cell-address', r'''
-        <q-td :props="props">
-            {{ props.value }}
-            <q-popup-edit v-model="props.row.address" v-slot="scope"
-                          @save="(val) => $parent.$emit('rename', { old: scope.initialValue, address: val })">
-                <q-input v-model="scope.value" dense autofocus counter @keyup.enter="scope.set" />
-            </q-popup-edit>
-        </q-td>
-    ''')
-
-    table.on('rename', rename_recipient)
-
-    with ui.row().classes("w-full items-center gap-2 mt-2"):
-        with ui.button(
-            icon="delete",
-            color="negative",
-            on_click=lambda _: delete_selected(),
-        ).bind_enabled_from(table, "selected", lambda s: bool(s)).props("round"):
-            ui.tooltip("Delete selected email addresses")
-
-    ui.separator()
-
-    # ---------------------- Groups ---------------------------------- #
-    ui.label("Groups").classes("text-subtitle2 text-grey-7 mt-3")
-
-    with ui.row().classes("items-center gap-2 q-mb-sm"):
-        group_name_inp = ui.input("Group name").classes("w-64")
-
-        def new_group() -> None:
-            state["current_group"] = None
-            group_name_inp.value = ""
-            if group_table:
-                group_table.selected = []
-        ui.button(icon="create_new_folder", color="accent", on_click=lambda _: new_group()).props("round").tooltip("Create new group")
-
-        def save_group() -> None:
-            name = (group_name_inp.value or "").strip()
-            if not name:
-                ui.notify("Please enter a group name", color="warning", position='bottom-right'); return
-            # Collect selected recipients
-            selected = [r["address"] for r in (group_table.selected or [])] if group_table else []
-            if not selected:
-                ui.notify("Please select at least one recipient", color="warning", position='bottom-right'); return
-            # Sanitize addresses once before storing
-            sanitized = sanitize_group_addresses(selected)
-            if len(sanitized) != len(selected):
-                removed = [a for a in selected if a not in sanitized]
-                logger.warning("Group '%s': removed invalid/duplicate address(es): %s", name, ", ".join(removed))
-                ui.notify(
-                    f"Ignored invalid/duplicate addresses: {', '.join(removed)}",
-                    color="warning",
-                    position='bottom-right',
+        # Right column: group select + name (same row) + save/delete
+        with ui.column().classes("gap-2 min-w-[320px] flex-1"):
+            ui.label("Recipient Groups").classes("text-subtitle2 text-grey-7")
+            # Keep inputs aligned and prevent label-floating layout shifts
+            with ui.row().classes("items-end gap-2 w-full flex-wrap"):
+                group_select = ui.select(
+                    options=list(state["groups"].keys()),
+                    value=None,
+                    label="Select group to edit",
+                    clearable=True,
+                ).props("dense outlined stack-label").classes("min-w-[260px] sm:w-[360px] md:w-[420px]")
+                group_select.on('update:model-value', lambda _=None: apply_group_selection(group_select.value))
+                group_name_inp = (
+                    ui.input("Group name")
+                    .props(f"maxlength={GROUP_NAME_MAX_LEN} counter dense outlined stack-label")
+                    .tooltip(f"Max {GROUP_NAME_MAX_LEN} characters")
+                    .classes("min-w-[260px] sm:w-[360px] md:w-[420px]")
                 )
-            # Explicit apply
-            state["groups"][name] = sanitized
-            state["current_group"] = name
-            if persist_state():
-                refresh_groups_ui()
-                ui.notify(f"Group '{name}' saved", color="positive", position='bottom-right')
-        ui.button(icon="save", color="primary", on_click=lambda _: save_group()).props("round").tooltip("Save group with selected recipients")
 
-        # Confirmation dialog for group deletion
-        confirm_dialog = ui.dialog()
-        with confirm_dialog, ui.card():
-            ui.label("Delete group?").classes("text-subtitle2")
-            confirm_text = ui.label("")
-            with ui.row().classes("justify-end gap-2 mt-2"):
-                ui.button("Cancel", on_click=confirm_dialog.close)
-                def _confirm_delete(name: str) -> None:
-                    if not name or name not in state["groups"]:
-                        ui.notify("Select a valid group to delete", color="warning", position='bottom-right'); return
-                    state["groups"].pop(name, None)
-                    state["active_groups"] = [g for g in state["active_groups"] if g != name]
-                    state["current_group"] = None
-                    group_name_inp.value = ""
-                    if group_table:
-                        group_table.selected = []
-                    if persist_state():
-                        refresh_groups_ui()
-                        refresh_overview()
-                        ui.notify(f"Group '{name}' deleted", color="positive", position='bottom-right')
-                    confirm_dialog.close()
-                # Single confirm handler refers to pending name in state to avoid stacking handlers
-                confirm_btn = ui.button("Delete", color="negative", on_click=lambda _: _confirm_delete(state.get("pending_delete_group", "")))
+            def _validate_group_name(name: str) -> bool:
+                n = (name or "").strip()
+                if not n:
+                    ui.notify("Please enter a group name", color="warning", position='bottom-right')
+                    return False
+                if len(n) > GROUP_NAME_MAX_LEN:
+                    ui.notify(f"Group name too long (max {GROUP_NAME_MAX_LEN} characters)", color="negative", position='bottom-right')
+                    return False
+                return True
 
-        def delete_group() -> None:
-            name = (group_name_inp.value or "").strip()
-            if not name:
-                ui.notify("Select a valid group to delete", color="warning", position='bottom-right'); return
-            confirm_text.text = f"Group '{name}' will be deleted. This cannot be undone."
-            state["pending_delete_group"] = name
-            confirm_dialog.open()
-        ui.button(icon="delete", color="negative", on_click=lambda _: delete_group()).props("round").tooltip("Delete the currently loaded group")
-
-    with ui.row().classes("items-start gap-4 w-full"):
-        # Existing groups list
-        with ui.column().classes("w-1/3"):
-            ui.label("Existing groups").classes("text-caption text-grey-7")
-            groups_list = ui.list().props("bordered dense")
-
-            def load_group(name: str) -> None:
+            def save_group() -> None:
+                name = (group_name_inp.value or "").strip()
+                if not _validate_group_name(name):
+                    return
+                selected = [r["address"] for r in (table.selected or [])] if table else []
+                if not selected:
+                    ui.notify("Please select at least one recipient", color="warning", position='bottom-right'); return
+                sanitized = sanitize_group_addresses(selected)
+                if len(sanitized) != len(selected):
+                    removed = [a for a in selected if a not in sanitized]
+                    logger.warning("Group '%s': removed invalid/duplicate address(es): %s", name, ", ".join(removed))
+                    ui.notify(
+                        f"Ignored invalid/duplicate addresses: {', '.join(removed)}",
+                        color="warning",
+                        position='bottom-right',
+                    )
+                state["groups"][name] = sanitized
                 state["current_group"] = name
-                group_name_inp.value = name
-                if group_table:
-                    target = set(state["groups"].get(name, []) or [])
-                    group_table.selected = [r for r in group_table.rows if r["address"] in target]
-                    group_table.update()
+                if persist_state():
+                    refresh_groups_ui()
+                    refresh_table()
+                    if group_select is not None:
+                        group_select.value = name
+                        group_select.update()
+                    ui.notify(f"Group '{name}' saved", color="positive", position='bottom-right')
+            with ui.row().classes("gap-2"):
+                ui.button("Save group", icon="save", color="primary", on_click=lambda _: save_group())
 
-            def refresh_groups_ui() -> None:
-                groups_list.clear()
-                with groups_list:
-                    for gname, addrs in sorted(state["groups"].items()):
-                        with ui.item(on_click=lambda _=None, name=gname: load_group(name)).classes("cursor-pointer"):
-                            ui.item_section(gname)
-                            ui.item_section().classes("text-grey-6").text = f"({len(addrs)} recipients)"
-                # Ensure group table reflects recipients
-                if group_table:
-                    refresh_group_table_rows()
-                # Update active groups select options and selection
-                if active_groups_select is not None:
-                    active_groups_select.options = list(state["groups"].keys())
-                    active_groups_select.value = list(state["active_groups"])
-                    active_groups_select.update()
+                # Delete group (with confirmation)
+                confirm_dialog = ui.dialog()
+                with confirm_dialog, ui.card():
+                    ui.label("Delete group?").classes("text-subtitle2")
+                    confirm_text = ui.label("")
+                    with ui.row().classes("justify-end gap-2 mt-2"):
+                        ui.button("Cancel", on_click=confirm_dialog.close)
+                        def _confirm_delete(name: str) -> None:
+                            if not name or name not in state["groups"]:
+                                ui.notify("Select a valid group to delete", color="warning", position='bottom-right'); return
+                            state["groups"].pop(name, None)
+                            state["active_groups"] = [g for g in state["active_groups"] if g != name]
+                            apply_group_selection(None)
+                            if persist_state():
+                                refresh_groups_ui()
+                                refresh_table()
+                                refresh_overview()
+                                ui.notify(f"Group '{name}' deleted", color="positive", position='bottom-right')
+                            confirm_dialog.close()
+                        confirm_btn = ui.button("Delete", color="negative", on_click=lambda _: _confirm_delete(state.get("pending_delete_group", "")))
 
-        # Recipients selection for group
-        with ui.column().classes("w-2/3"):
-            ui.label("Select recipients for this group").classes("text-caption text-grey-7")
-            group_table = ui.table(
-                columns=[{"name": "address", "label": "Address", "field": "address"}],
-                rows=[{"address": addr} for addr in state["recipients"]],
-                row_key="address",
-                selection="multiple",
-            ).classes("w-full")
+                def delete_group() -> None:
+                    name = (group_name_inp.value or "").strip()
+                    if not name:
+                        ui.notify("Select a valid group to delete", color="warning", position='bottom-right'); return
+                    confirm_text.text = f"Group '{name}' will be deleted. This cannot be undone."
+                    state["pending_delete_group"] = name
+                    confirm_dialog.open()
+                ui.button("Delete group", icon="delete", color="negative", on_click=lambda _: delete_group())
 
-            def refresh_group_table_rows() -> None:
-                group_table.rows = [{"address": addr} for addr in state["recipients"]]
-                group_table.update()
+        # The recipients table (full width)
+        table = ui.table(
+            columns=[
+                {"name": "address", "label": "Address", "field": "address"},
+                {"name": "groups", "label": "Groups", "field": "groups"},
+                {"name": "on_start", "label": "On start", "field": "on_start"},
+                {"name": "on_end", "label": "On end", "field": "on_end"},
+                {"name": "on_stop", "label": "On stop", "field": "on_stop"},
+            ],
+            rows=[],
+            row_key="address",
+            selection="multiple",
+        ).classes("w-full")
+
+        # Inline editing for 'address' cell while keeping selection checkboxes
+        table.add_slot('body-cell-address', r'''
+            <q-td :props="props">
+                {{ props.value }}
+                <q-popup-edit v-model="props.row.address" v-slot="scope"
+                              @save="(val) => $parent.$emit('rename', { old: scope.initialValue, address: val })">
+                    <q-input v-model="scope.value" dense autofocus counter @keyup.enter="scope.set" />
+                </q-popup-edit>
+            </q-td>
+        ''')
+        table.on('rename', rename_recipient)
+
+        # Per-recipient preference toggles
+        def _on_toggle_pref(e: events.GenericEventArguments) -> None:
+            try:
+                payload = e.args or {}
+                addr = (payload.get('address') or '').strip()
+                key = (payload.get('key') or '').strip()
+                val = bool(payload.get('value', False))
+                if not addr or key not in ('on_start', 'on_end', 'on_stop'):
+                    return
+                if addr not in state['recipients']:
+                    return
+                rp = recipient_prefs.get(addr, {}) or {}
+                rp[key] = val
+                recipient_prefs[addr] = rp
+                persist_state()
+                refresh_table()
+            except Exception:
+                logger.exception('Failed to toggle recipient pref')
+
+        table.add_slot('body-cell-on_start', r'''
+            <q-td :props="props">
+                <q-checkbox size="sm" :model-value="props.row.on_start"
+                            @update:model-value="(val) => $parent.$emit('toggle_pref', { address: props.row.address, key: 'on_start', value: val })"/>
+            </q-td>
+        ''')
+        table.add_slot('body-cell-on_end', r'''
+            <q-td :props="props">
+                <q-checkbox size="sm" :model-value="props.row.on_end"
+                            @update:model-value="(val) => $parent.$emit('toggle_pref', { address: props.row.address, key: 'on_end', value: val })"/>
+            </q-td>
+        ''')
+        table.add_slot('body-cell-on_stop', r'''
+            <q-td :props="props">
+                <q-checkbox size="sm" :model-value="props.row.on_stop"
+                            @update:model-value="(val) => $parent.$emit('toggle_pref', { address: props.row.address, key: 'on_stop', value: val })"/>
+            </q-td>
+        ''')
+        table.on('toggle_pref', _on_toggle_pref)
+
+        # Groups display with popup for full list
+        table.add_slot('body-cell-groups', r'''
+            <q-td :props="props">
+                <div class="cursor-pointer text-primary" style="white-space: normal; word-break: break-word;">
+                    {{ props.row.groups || '—' }}
+                    <q-popup-proxy transition-show="scale" transition-hide="scale">
+                        <q-card style="min-width: 280px; max-width: 520px;">
+                            <q-card-section>
+                                <div class="text-subtitle2">Groups for {{ props.row.address }}</div>
+                            </q-card-section>
+                            <q-separator />
+                            <q-card-section>
+                                <div v-if="props.row.groups_list && props.row.groups_list.length" class="q-gutter-xs">
+                                    <q-chip v-for="g in props.row.groups_list" :key="g" color="primary" text-color="white" dense>{{ g }}</q-chip>
+                                </div>
+                                <div v-else class="text-grey">No groups</div>
+                            </q-card-section>
+                            <q-separator />
+                            <q-card-actions align="right">
+                                <q-btn flat label="Close" v-close-popup />
+                            </q-card-actions>
+                        </q-card>
+                    </q-popup-proxy>
+                </div>
+            </q-td>
+        ''')
+
+        # Existing groups list (below table)
+        ui.separator()
+        ui.label("Existing groups").classes("text-caption text-grey-7 mt-1")
+        groups_list = ui.list().props("bordered dense")
+
+        def load_group(name: str) -> None:
+            # Toggle behavior: clicking the same group again clears the current selection/state
+            if state.get("current_group") == name:
+                apply_group_selection(None)
+            else:
+                apply_group_selection(name)
+
+        def refresh_groups_ui() -> None:
+            groups_list.clear()
+            with groups_list:
+                with ui.row().classes("q-gutter-xs flex-wrap"):
+                    for gname in sorted(state["groups"].keys()):
+                        selected = state.get("current_group") == gname
+                        icon = "close" if selected else "radio_button_unchecked"
+                        (
+                            ui.chip(gname)
+                            .props(f"color=primary text-color=white dense clickable icon={icon}")
+                            .classes("cursor-pointer")
+                            .on_click(lambda _=None, name=gname: load_group(name))
+                        )
+            if group_select is not None:
+                group_select.options = list(state["groups"].keys())
+                group_select.value = state.get("current_group")
+                group_select.update()
+            if active_groups_select is not None:
+                active_groups_select.options = list(state["groups"].keys())
+                active_groups_select.value = list(state["active_groups"])
+                active_groups_select.update()
 
     ui.separator()
 
     # Active groups selection
-    ui.label("Active groups (used for sending)").classes("text-subtitle2 text-grey-7")
-    with ui.row().classes("items-center gap-2"):
+    with ui.row().classes("items-center w-full gap-3"):
+        ui.label("Active groups (used for sending)").classes("text-subtitle2 text-grey-7")
+        ui.space()
         active_groups_select = ui.select(
             options=list(state["groups"].keys()),
             value=list(state["active_groups"]),
             multiple=True,
             label="Active groups",
         ).classes("min-w-[280px]")
-
-        # Keep Apply button state in sync on selection changes
         active_groups_select.on('update:model-value', lambda _=None: _update_active_groups_apply_state())
-
         def apply_active_groups() -> None:
             selected = active_groups_select.value or []
             state["active_groups"] = list(selected)
@@ -743,18 +879,16 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                     position='bottom-right',
                 )
                 refresh_overview()
-            # After applying, selection equals state; disable button again
             _update_active_groups_apply_state()
-        active_groups_apply_btn = ui.button(icon="done", color="primary").props("round").tooltip("Apply active groups for sending")
+        active_groups_apply_btn = ui.button("Apply", icon="done", color="primary")
         active_groups_apply_btn.on('click', lambda _=None: apply_active_groups())
-        # Initialize button state
         _update_active_groups_apply_state()
 
     ui.separator()
 
     # Measurement notifications toggles
-    ui.label("Measurement notifications").classes("text-subtitle2 text-grey-7")
-    with ui.row().classes("items-center gap-2"):
+    with ui.row().classes("items-center w-full gap-3"):
+        ui.label("Measurement notifications").classes("text-subtitle2 text-grey-7")
         notify_start_cb = ui.checkbox(
             'Send email on measurement start',
             value=bool(state["notifications"].get("on_start", False))
@@ -763,44 +897,42 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             'Send email on measurement end',
             value=bool(state["notifications"].get("on_end", False))
         )
-
-        # Update Apply state when user toggles checkboxes
-        notify_start_cb.on('update:model-value', lambda _=None: _update_notifications_apply_state())
-        notify_end_cb.on('update:model-value', lambda _=None: _update_notifications_apply_state())
-
+        ui.space()
         def apply_notifications() -> None:
             state["notifications"]["on_start"] = bool(notify_start_cb.value)
             state["notifications"]["on_end"] = bool(notify_end_cb.value)
             if persist_state():
                 ui.notify("Notification settings applied", color="positive", position='bottom-right')
                 refresh_overview()
-            # After applying, disable button until next change
             _update_notifications_apply_state()
-        notifications_apply_btn = ui.button(icon="done", color="primary").props("round").tooltip("Apply notification settings")
+        notifications_apply_btn = ui.button("Apply", icon="done", color="primary")
         notifications_apply_btn.on('click', lambda _=None: apply_notifications())
-        # Initialize button state
+        notify_start_cb.on('update:model-value', lambda _=None: _update_notifications_apply_state())
+        notify_end_cb.on('update:model-value', lambda _=None: _update_notifications_apply_state())
         _update_notifications_apply_state()
 
     ui.separator()
 
     # ---------------------- SMTP ---------------------------------- #
     ui.label("SMTP").classes("text-subtitle2 text-grey-7 mt-3")
-
-    with ui.row().classes("items-center gap-2"):
+    with ui.row().classes("items-center gap-2 w-full flex-wrap"):
         sender_inp = (
             ui.input("Sender")
             .bind_value(state["smtp"], "sender")
             .tooltip("Email address of the sender")
+            .classes("min-w-[220px]")
         )
         server_inp = (
             ui.input("Server")
             .bind_value(state["smtp"], "server")
             .tooltip("SMTP server address")
+            .classes("min-w-[220px]")
         )
         port_inp = (
             ui.number("Port", min=1, max=65535)
             .bind_value(state["smtp"], "port", forward=int)
             .tooltip("Port must be between 1 and 65535.")
+            .classes("w-28")
         )
         with ui.icon("check_circle").props("size=md").classes("ml-auto") as status_icon:
             status_tt = ui.tooltip("")
@@ -831,11 +963,8 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
 
     update_status_icon()
 
-    ui.button(
-        icon="save",
-        color="primary",
-        on_click=manual_save,
-    ).props("round").tooltip("Save SMTP settings")
+    with ui.row().classes("w-full justify-end mt-1"):
+        ui.button("Save SMTP", icon="save", color="primary", on_click=manual_save)
 
     # Initialize groups UI after controls are created
     def _init_groups():

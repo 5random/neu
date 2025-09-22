@@ -296,6 +296,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                         os.unlink(zip_path)
 
             ui.button(icon='download', on_click=lambda: download_logs_as_zip()).props('flat round dense').classes('text-xl').tooltip('Download log file')
+            ui.button(icon='help', on_click=lambda: ui.navigate.to('/help')).props('flat round dense').classes('text-xl').tooltip('Help')
 
             # Update moved to Settings > Update section
 
