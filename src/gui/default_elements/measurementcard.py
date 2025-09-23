@@ -175,7 +175,11 @@ def create_measurement_card(
     # -------------------------- UI ------------------------------
     # Make the measurement card expand to use available vertical space in its column
     with ui.card().classes('w-full flex-1').style('align-self:stretch; min-height:0;'):
-        ui.label('Measurement Monitoring').classes('text-h6 font-semibold mb-2')
+        with ui.row().classes('items-center justify-between w-full'):
+            ui.label('Measurement Monitoring').classes('text-h6 font-semibold mb-2')
+            # Quick link to measurement settings
+            ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings#measurement')) \
+                .props('flat round dense').tooltip('Open measurement settings')
 
         # Compact top controls row
         with ui.row().classes('items-center q-gutter-xs q-mb-sm'):
@@ -256,6 +260,7 @@ def create_measurement_card(
         with ui.row().classes('items-center q-gutter-sm q-mb-sm') as groups_row:
             ui.label('Active recipient groups:').classes('text-caption text-grey')
             loading_lbl = ui.label('Loading groups...').classes('text-caption text-grey')
+            # Quick link to e-mail settings next to group selection (added after Apply below)
 
             async def _build_groups_ui():
                 nonlocal groups_select, _last_groups_opts, apply_btn
@@ -336,6 +341,11 @@ def create_measurement_card(
                             apply_btn.on('click', apply_groups)
                             # Initialize button state after building controls
                             _update_apply_groups_state()
+                            # Place the settings shortcut AFTER the Apply button in the same row
+                            ui.button(
+                                icon='settings',
+                                on_click=lambda: ui.navigate.to('/settings#email')
+                            ).props('flat round dense').tooltip('Open e-mail settings')
                     except Exception as exc:
                         # Surface errors to logs and UI, but don't crash the page
                         logger.error('Failed to build groups UI: %s', exc, exc_info=True)

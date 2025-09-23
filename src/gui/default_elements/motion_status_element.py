@@ -16,7 +16,10 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
         logger.warning("Camera not available - motion detection disabled")
         # Fallback-UI ohne Kamera-Integration (kompakter)
         with ui.card().classes('w-full shadow-2 q-pa-sm'):
-            ui.label('Motion Detection Status').classes('text-h6 font-semibold mb-1')
+            with ui.row().classes('items-center justify-between w-full'):
+                ui.label('Motion Detection Status').classes('text-h6 font-semibold mb-1')
+                ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings#camera')) \
+                    .props('flat round dense').tooltip('Open camera & motion settings')
             ui.label('Camera not available - motion detection disabled').classes('text-warning')
         return
     
@@ -29,7 +32,10 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
     # ---------- UI ----------
     # Kompaktere Karte: keine Vollhöhe, reduzierte Innenabstände
     with ui.card().classes('w-full shadow-2 q-pa-sm'):
-        ui.label('Motion Detection Status').classes('text-h6 font-semibold mb-1')
+        with ui.row().classes('items-center justify-between w-full'):
+            ui.label('Motion Detection Status').classes('text-h6 font-semibold mb-1')
+            ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings#camera')) \
+                .props('flat round dense').tooltip('Open camera & motion settings')
         # Schlankes Layout: geringere vertikale Abstände
         with ui.column().classes('w-full items-start q-gutter-y-xs'):
             with ui.row().classes('items-center q-gutter-x-md')\

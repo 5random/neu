@@ -128,6 +128,7 @@ email:
   notifications:
     on_start: true
     on_end: true
+  recipient_prefs: {}
 
 # ---------------------------------------------------------------------------
 # GUI

@@ -13,7 +13,11 @@ def create_camfeed_content():
         # Kamera initialisieren
         logger.info("Creating camera feed")
         with ui.card().style("align-self:stretch; justify-content:center; align-items:start;"):
-                ui.label('Camera Feed').classes('text-h6 font-semibold mb-2')
+                # Header with quick link to related settings
+                with ui.row().classes('items-center justify-between w-full'):
+                    ui.label('Camera Feed').classes('text-h6 font-semibold mb-2')
+                    ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings#camera')) \
+                        .props('flat round dense').tooltip('Open camera settings')
                 # Preserve natural aspect ratio to avoid distortion
                 videoimage = (
                         ui.interactive_image()
