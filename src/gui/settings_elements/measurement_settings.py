@@ -46,14 +46,14 @@ def create_measurement_card(
 
     ui.label('Measurement Settings').classes('text-h6 font-semibold mb-2')
 
-    # Inputs in a responsive grid (optional header label + help)
+    # Compact field wrapper: rely on control tooltips, avoid extra help labels to save space
     def _field(label: Optional[str], control: ui.element, help_text: str = '') -> None:
-        with ui.column().classes('gap-1 min-w-[220px]'):
+        with ui.column().classes('gap-0 min-w-[180px]'):
             if label:
                 ui.label(label).classes('text-caption text-grey-8')
+            # Controls already have stack-label + tooltip; keep them full width inside the grid cell
             control.classes('w-full')
-            if help_text:
-                ui.label(help_text).classes('text-caption text-grey')
+            # Intentionally omit extra help text label for a more compact layout
 
     def _on_change(_=None) -> None:
         # Enable apply if any value differs from config
@@ -130,38 +130,38 @@ def create_measurement_card(
     # Build controls with inline labels and tooltips for clarity
     alert_delay_inp = (
         ui.number(value=state['alert_delay_seconds'], min=30, format='%.0f')
-        .props('dense outlined stack-label label="Alert delay" suffix="s"')
+        .props('dense outlined stack-label hide-bottom-space label="Alert delay" suffix="s"')
         .tooltip('Seconds without motion before the first alert is sent')
     )
     max_alerts_inp = (
         ui.number(value=state['max_alerts_per_session'], min=1, format='%.0f')
-        .props('dense outlined stack-label label="Max alerts per session"')
+        .props('dense outlined stack-label hide-bottom-space label="Max alerts per session"')
         .tooltip('Upper bound on alerts within a single session (spam protection)')
     )
     check_interval_inp = (
         ui.number(value=state['alert_check_interval'], min=0.5, step=0.5)
-        .props('dense outlined stack-label label="Check interval" suffix="s"')
+        .props('dense outlined stack-label hide-bottom-space label="Check interval" suffix="s"')
         .tooltip('How often the controller evaluates alert conditions')
     )
     cooldown_inp = (
         ui.number(value=state['alert_cooldown_seconds'], min=0, format='%.0f')
-        .props('dense outlined stack-label label="Alert cooldown" suffix="s"')
+        .props('dense outlined stack-label hide-bottom-space label="Alert cooldown" suffix="s"')
         .tooltip('Minimum time between two alerts')
     )
     include_snapshot_cb = ui.checkbox('Include snapshot in alert', value=state['alert_include_snapshot'])
     inactivity_inp = (
         ui.number(value=state['inactivity_timeout_minutes'], min=0, format='%.0f')
-        .props('dense outlined stack-label label="Inactivity timeout" suffix="min"')
+        .props('dense outlined stack-label hide-bottom-space label="Inactivity timeout" suffix="min"')
         .tooltip('Stop session after prolonged inactivity (0 = disabled)')
     )
     summary_interval_inp = (
         ui.number(value=state['motion_summary_interval_seconds'], min=5, format='%.0f')
-        .props('dense outlined stack-label label="Summary interval" suffix="s"')
+        .props('dense outlined stack-label hide-bottom-space label="Summary interval" suffix="s"')
         .tooltip('Period for motion summary logs (>= 5 seconds)')
     )
     enable_summary_cb = ui.checkbox('Enable motion summary logs', value=state['enable_motion_summary_logs'])
 
-    with ui.grid(columns=2).classes('w-full gap-4'):
+    with ui.grid(columns=2).classes('w-full gap-3'):
         _field(None, alert_delay_inp, 'Time without motion before sending an alert')
         _field(None, max_alerts_inp, 'Spam protection; minimum 1')
         _field(None, check_interval_inp, 'How often to evaluate alert conditions')
@@ -172,7 +172,7 @@ def create_measurement_card(
         _field(None, enable_summary_cb, 'Master switch for motion summary logging')
 
     # Apply bar
-    with ui.row().classes('items-center q-gutter-sm q-mt-md justify-end'):
+    with ui.row().classes('items-center q-gutter-sm q-mt-sm justify-end'):
         apply_btn = ui.button('Apply', on_click=lambda _: _persist()).props('color=primary')
         apply_btn.disable()
 

@@ -36,6 +36,25 @@ _cleanup_completed = threading.Event()
 
 logger = get_logger("default_page")
 
+def _compute_title() -> str:
+    """Compute UI title from config.gui.title template and metadata."""
+    try:
+        cfg = get_global_config()
+        if cfg and getattr(cfg, 'gui', None):
+            tpl = getattr(cfg.gui, 'title', '') or 'CVD-TRACKER'
+            meta = getattr(cfg, 'metadata', None)
+            params = {
+                'cvd_id': getattr(meta, 'cvd_id', ''),
+                'cvd_name': getattr(meta, 'cvd_name', ''),
+            }
+            try:
+                return str(tpl).format(**params)
+            except Exception:
+                return str(tpl)
+    except Exception:
+        pass
+    return 'CVD-TRACKER'
+
 def init_camera(config: AppConfig) -> Camera | None:
     """Initialisiere Kamera und starte die Bilderfassung.
 
@@ -205,6 +224,12 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
                 dark.value = bool(_stored_dark)
         except Exception:
             pass
+        # Initialize per-client GUI title if missing (no dynamic tab update)
+        try:
+            if not app.storage.client.get('cvd.gui_title'):
+                app.storage.client['cvd.gui_title'] = _compute_title()
+        except Exception:
+            pass
         # --- Linke Seite -------------------------------------------
         with ui.row().classes('items-center gap-3'):
             # Favicon per URL
@@ -228,8 +253,13 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
 
             ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_shutdown_dialog).props('flat').style('max-height:72px; width:auto').tooltip('Shutdown the server and close the application')
 
-            ui.label('CVD-TRACKER').classes(
+            # Replace static label with binding to per-client storage
+            title_label = ui.label().props('id=cvd-header-title').classes(
                 'text-xl font-semibold tracking-wider text-gray-100')
+            try:
+                title_label.bind_text_from(app.storage.client, 'cvd.gui_title')
+            except Exception:
+                title_label.text = _compute_title()
 
         # --- Rechte Seite ------------------------------------------
         def toggle_dark():
@@ -341,7 +371,12 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     
     with ui.footer(fixed=False).classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
         with ui.row().classes('items-center justify-between px-4 py-2'):
-            ui.label('CVD-TRACKER').classes('text-white text-sm')
+            # Replace static footer label with binding as well
+            footer_label = ui.label().props('id=cvd-footer-title').classes('text-white text-sm')
+            try:
+                footer_label.bind_text_from(app.storage.client, 'cvd.gui_title')
+            except Exception:
+                footer_label.text = _compute_title()
             ui.label('© 2025 TUHH KVWEB').classes('text-white text-sm')
 
 async def cleanup_camera_async():

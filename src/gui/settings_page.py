@@ -49,6 +49,9 @@ def settings_page() -> None:
     except Exception:
         pass
 
+    # Hinweis: Der Browser-Tab-Titel wird ausschließlich beim Start über ui.run gesetzt.
+    # Auf der Settings-Seite erfolgt keine dynamische Anpassung mehr.
+
     # Gemeinsamen Header/Footer der App verwenden
     try:
         from .gui_ import build_header, build_footer  # type: ignore

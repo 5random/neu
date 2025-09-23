@@ -10,8 +10,6 @@ from src.measurement import MeasurementController
 from src.cam.camera import Camera
 from src.config import get_logger
 logger = get_logger('gui.motion_status')
-# Add: import favicon utilities
-from src.gui.util import set_tab_all, set_favicon_default_all, favicon_check_circle_green, favicon_highlight_off_red
 
 def create_motion_status_element(camera: Camera | None, measurement_controller: Optional['MeasurementController'] = None):
     if camera is None:
@@ -42,18 +40,6 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
             timestamp_label = ui.label('').classes('text-caption')\
                                 .style('white-space: nowrap')
 
-    def _favicon_for_motion(is_motion: bool) -> str:
-        val = favicon_check_circle_green if is_motion else favicon_highlight_off_red
-        return val() if callable(val) else val  # support constant or factory
-
-    def _sync_favicon_if_session_active() -> None:
-        # Only change favicon while a measurement session is active
-        try:
-            if measurement_controller and getattr(measurement_controller, 'is_session_active', False):
-                set_tab_all(icon_url=_favicon_for_motion(motion_detected))
-        except Exception:
-            logger.exception("Failed to update favicon")
-
     def refresh_view() -> None:
         """Icon, Text und Zeitstempel aktualisieren (thread-sicher)."""
         with state_lock:
@@ -64,7 +50,6 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
                 icon.props('name=highlight_off color=red')
                 status_label.text = 'No motion detected'
             timestamp_label.text = f'Last changed: {last_changed.strftime("%Y-%m-%d %H:%M:%S")}'
-        _sync_favicon_if_session_active()
 
     def _motion_callback(frame, result):
         nonlocal motion_detected, last_changed

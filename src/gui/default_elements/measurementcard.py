@@ -177,7 +177,8 @@ def create_measurement_card(
     with ui.card().classes('w-full flex-1').style('align-self:stretch; min-height:0;'):
         ui.label('Measurement Monitoring').classes('text-h6 font-semibold mb-2')
 
-        with ui.row().classes('items-center q-gutter-sm q-mb-sm'):
+        # Compact top controls row
+        with ui.row().classes('items-center q-gutter-xs q-mb-sm'):
             start_stop_btn = ui.button(icon='play_arrow', color='positive').props('round') \
                 .tooltip('Start or stop the measurement session')
             
@@ -187,42 +188,40 @@ def create_measurement_card(
                 'max. Duration', value=config.measurement.session_timeout_minutes > 0
             ).tooltip('toggle maximum measurement duration')
 
-            duration_input = ui.number(
-                label='Duration',
-                value=(
-                    config.measurement.session_timeout_minutes * 60
-                    if config.measurement.session_timeout_minutes > 0
-                    else 60
-                ),
-                min=MIN_BASE_SEC,  # Minimum 5 Minuten
-                format='%.0f',
-            ).props('dense outlined').style('min-width:80px;').tooltip(
-                'Min. duration of the measurement is 5 minutes (300 seconds).'
-            )
+            # Group duration input and unit select side by side and prevent wrapping
+            with ui.row().classes('items-center q-gutter-xs').style('flex-wrap:nowrap; align-items:center; gap:6px;'):
+                duration_input = ui.number(
+                    label='Duration',
+                    value=(
+                        config.measurement.session_timeout_minutes * 60
+                        if config.measurement.session_timeout_minutes > 0
+                        else 60
+                    ),
+                    min=MIN_BASE_SEC,  # Minimum 5 Minuten
+                    format='%.0f',
+                ).props('dense outlined hide-bottom-space').style('min-width:88px; max-width:120px; width:120px;').tooltip(
+                    'Min. duration of the measurement is dependent on session timeout configurable in settings.'
+                )
 
+                duration_unit = ui.select(
+                    options=['s', 'min', 'h'],
+                    value='s',
+                    label='Unit',
+                ).props('dense outlined').style('min-width:64px; width:72px;').tooltip(
+                    'Select the unit for the duration with seconds (s), minutes (min), or hours (h).'
+                )
+
+            # Respect enable/disable state after creating the controls
             if enable_limit.value:
                 duration_input.enable()
+                duration_unit.enable()
             else:
                 duration_input.disable()
-            
-            duration_unit = ui.select(
-                options=['s', 'min', 'h'],
-                value='s',
-                label='Unit',
-            ).props('dense outlined').style('min-width:80px;').tooltip(
-                'Select the unit for the duration with seconds (s), minutes (min), or hours (h).'
-            )
+                duration_unit.disable()
 
             update_duration_ui()
 
-            if enable_limit.value:
-                duration_unit.enable()
-            else:
-                duration_unit.disable()
-
-        timer_label = ui.label('-').classes('text-subtitle1 q-mb-xs')
-
-        # --- Active recipient groups selection ---
+    # --- Active recipient groups selection ---
         groups_select = None  # will be created after async fetch
         _last_groups_opts: list[str] = []  # initial empty snapshot
         groups_build_lock = asyncio.Lock()  # prevent concurrent UI builds
@@ -377,6 +376,9 @@ def create_measurement_card(
                 # Return True to indicate handled error and allow timer to continue
                 return True
         ui.timer(5.0, _refresh_groups_ui)
+
+        # Move the timer label below the groups selection
+        timer_label = ui.label('-').classes('text-subtitle1 q-mb-xs')
 
         # Fortschrittsbalken und Prozent
         with ui.row().classes('w-full flex-nowrap').style("align-self:flex-start; flex-direction:row; display:flex; flex-wrap:nowrap; gap:8px;") as progress_row:

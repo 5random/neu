@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from nicegui import ui, app
-import json
 
 from src.config import get_global_config, save_global_config, get_logger
 
@@ -93,24 +92,7 @@ def create_metadata_settings() -> None:
 					cfg.metadata.cvd_name = str(cvd_name_inp.value or '').strip()
 
 					if save_global_config():
-						ui.notify('Metadata saved', type='positive', position='bottom-right')
-						# Compute new title and update per-client storage and browser tab title
-						try:
-							tpl = getattr(getattr(cfg, 'gui', None), 'title', 'CVD-TRACKER')
-							try:
-								new_title = str(tpl).format(
-									cvd_id=getattr(cfg.metadata, 'cvd_id', ''),
-									cvd_name=getattr(cfg.metadata, 'cvd_name', ''),
-								)
-							except Exception:
-								new_title = str(tpl)
-							try:
-								app.storage.client['cvd.gui_title'] = new_title
-							except Exception:
-								pass
-							ui.run_javascript(f"document.title = {json.dumps(new_title)};")
-						except Exception:
-							pass
+						ui.notify('Metadata saved. Please restart the application to apply.', type='positive', position='bottom-right')
 						logger.info('Metadata updated: id=%s, name=%s', cfg.metadata.cvd_id, cfg.metadata.cvd_name)
 						_update_ui_from_inputs()
 					else:
@@ -140,6 +122,6 @@ def create_metadata_settings() -> None:
 			except Exception:
 				pass
 
-		# Initialize preview text and button state now that everything exists
+	# Initialize preview text and button state now that everything exists
 		_update_ui_from_inputs()
 

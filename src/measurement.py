@@ -24,12 +24,7 @@ from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Optional, Dict, Any, Callable
 
 from .config import MeasurementConfig, AppConfig, load_config, save_config, get_logger
-from .gui.util import (
-    set_tab_all,
-    set_favicon_default_all,
-    favicon_check_circle_green,
-    favicon_highlight_off_red,
-)
+# Removed dynamic tab title/favicon utilities to avoid runtime tab/icon changes
 from .notify import EMailSystem
 from .cam.motion import MotionResult
 from .cam.camera import Camera
@@ -193,11 +188,7 @@ class MeasurementController:
             # Debounce-/Event-State zurücksetzen, damit keine offenen Events übernommen werden
             self._reset_debounce_state()
             self.logger.info(f"Session started at: {self.session_id}")
-            # Initial favicon state for all clients (red = active but no motion yet)
-            try:
-                set_tab_all(icon_url=favicon_highlight_off_red())
-            except Exception:
-                pass
+            # Removed: dynamic favicon updates on session start
             # Fire optional start notification (non-blocking)
             try:
                 if self.email_system:
@@ -241,11 +232,7 @@ class MeasurementController:
             self.logger.info(f"Session stopped: {sess_id} "
                            f"(Duration: {session_duration})")
 
-            # Restore default favicon for all clients when a session ends
-            try:
-                set_favicon_default_all()
-            except Exception:
-                pass
+            # Removed: restore default favicon on session end
 
             # Fire optional end/stop notification (non-blocking)
             try:
@@ -381,11 +368,7 @@ class MeasurementController:
                     area,
                     getattr(mr, 'roi_used', False),
                 )
-                # Update favicon to green for all clients while session is active
-                try:
-                    set_tab_all(icon_url=favicon_check_circle_green())
-                except Exception:
-                    pass
+                # Removed: dynamic favicon update on motion start
 
         else:
             self._stable_off_count += 1
@@ -422,12 +405,7 @@ class MeasurementController:
                 self._event_area_sum = 0.0
                 self._event_area_max = 0.0
                 self._event_frames = 0
-                # Update favicon to red for all clients while session is active
-                try:
-                    if self.is_session_active:
-                        set_tab_all(icon_url=favicon_highlight_off_red())
-                except Exception:
-                    pass
+                # Removed: dynamic favicon update on motion end
 
     def _maybe_log_motion_summary(self) -> None:
         """Schreibt periodisch eine verdichtete Motion‑Zusammenfassung."""
