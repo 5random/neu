@@ -215,120 +215,15 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
             ui.timer(0.1, drain_progress)
             ui.timer(0.05, run_update, once=True)
 
-    with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
-        # Per-client dark mode binding
-        dark = ui.dark_mode()
-        try:
-            _stored_dark = app.storage.client.get('cvd.dark_mode')
-            if _stored_dark is not None:
-                dark.value = bool(_stored_dark)
-        except Exception:
-            pass
-        # Initialize per-client GUI title if missing (no dynamic tab update)
-        try:
-            if not app.storage.client.get('cvd.gui_title'):
-                app.storage.client['cvd.gui_title'] = _compute_title()
-        except Exception:
-            pass
-        # --- Linke Seite -------------------------------------------
-        with ui.row().classes('items-center gap-3'):
-            # Favicon per URL
-            shutdown_dialog = ui.dialog().classes('items-center justify-center')
+    # Use shared header
+    try:
+        from .gui_ import build_header, build_footer
+    except Exception:
+        build_header = None  # type: ignore
+        build_footer = None  # type: ignore
 
-            with shutdown_dialog:
-                with ui.card().classes('items-center justify-center'):
-                    ui.label('Shutdown the server?').classes('text-h6')
-                    
-                    async def do_shutdown() -> None:
-                        ui.navigate.to('/shutdown', new_tab=False)
-                        await asyncio.sleep(2)
-                        app.shutdown()
-
-                    with ui.row().classes('gap-2 items-center justify-center'):
-                        ui.button('Yes', on_click=do_shutdown).props('color=negative').tooltip('Shutdown the server and close the application')
-                        ui.button('No', on_click=shutdown_dialog.close).props('color=positive').tooltip('Cancel shutdown')
-
-            def show_shutdown_dialog() -> None:
-                shutdown_dialog.open()
-
-            ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_shutdown_dialog).props('flat').style('max-height:72px; width:auto').tooltip('Shutdown the server and close the application')
-
-            # Replace static label with binding to per-client storage
-            title_label = ui.label().props('id=cvd-header-title').classes(
-                'text-xl font-semibold tracking-wider text-gray-100')
-            try:
-                title_label.bind_text_from(app.storage.client, 'cvd.gui_title')
-            except Exception:
-                title_label.text = _compute_title()
-
-        # --- Rechte Seite ------------------------------------------
-        def toggle_dark():
-                dark.toggle()
-                new_icon = 'light_mode' if dark.value else 'dark_mode'
-                btn.props(f'icon={new_icon}')
-                try:
-                    app.storage.client['cvd.dark_mode'] = bool(dark.value)
-                except Exception:
-                    pass
-
-        with ui.row().classes('items-center gap-4'):
-            btn= (ui.button(
-                icon='light_mode' if dark.value else 'dark_mode',
-                on_click=toggle_dark,
-            ).props('flat round dense').classes('text-xl')).tooltip('Toggle dark mode')
-
-
-            def download_logs_as_zip():
-                """Erstellt ZIP-Archiv aller Log-Dateien und lädt es herunter."""
-                import zipfile
-                import tempfile
-                from pathlib import Path
-                import os
-                
-                logs_dir = Path('logs')
-                if not logs_dir.exists():
-                    ui.notify('No log directory found', type='warning', position='bottom-right')
-                    return
-                
-                # Temporäre ZIP-Datei erstellen
-                with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_file:
-                    zip_path = tmp_file.name
-                
-                try:
-                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                        log_files_found = 0
-                        
-                        # Alle Log-Dateien hinzufügen
-                        for log_file in logs_dir.glob('cvd_tracker.log*'):
-                            if log_file.is_file():
-                                zipf.write(log_file, log_file.name)
-                                log_files_found += 1
-                                logger.debug(f'Added {log_file.name} to ZIP archive')
-                    
-                    if log_files_found > 0:
-                        # ZIP-Datei über temporären statischen Pfad verfügbar machen
-                        import shutil
-                        final_zip_path = logs_dir / 'cvd_tracker_logs.zip'
-                        shutil.move(zip_path, final_zip_path)
-                        
-                        ui.download.from_url('/logs/cvd_tracker_logs.zip')
-                        ui.notify(f'{log_files_found} log files packaged and downloaded', type='positive', position='bottom-right')
-                        logger.info(f'Created ZIP archive with {log_files_found} log files')
-                    else:
-                        ui.notify('No log files found', type='warning', position='bottom-right')
-                        
-                except Exception as e:
-                    logger.error(f'Error creating log ZIP archive: {e}')
-                    ui.notify('Error creating log archive', type='negative', position='bottom-right')
-                finally:
-                    # Temporäre Datei bereinigen falls noch vorhanden
-                    if os.path.exists(zip_path):
-                        os.unlink(zip_path)
-
-            ui.button(icon='download', on_click=lambda: download_logs_as_zip()).props('flat round dense').classes('text-xl').tooltip('Download log file')
-            ui.button(icon='help', on_click=lambda: ui.navigate.to('/help')).props('flat round dense').classes('text-xl').tooltip('Help')
-
-            # Update moved to Settings > Update section
+    if build_header:
+        build_header()
 
     # Neuaufbau-/Lazy-Mechanismus: schwere Bereiche verzögert erstellen
     with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
@@ -369,15 +264,20 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
         ui.timer(0.01, _build_left, once=True)
         ui.timer(0.05, _build_right, once=True)
     
-    with ui.footer(fixed=False).classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
-        with ui.row().classes('items-center justify-between px-4 py-2'):
-            # Replace static footer label with binding as well
-            footer_label = ui.label().props('id=cvd-footer-title').classes('text-white text-sm')
-            try:
-                footer_label.bind_text_from(app.storage.client, 'cvd.gui_title')
-            except Exception:
-                footer_label.text = _compute_title()
-            ui.label('© 2025 TUHH KVWEB').classes('text-white text-sm')
+    # Replace local footer with shared footer
+    if build_footer:
+        build_footer()
+    else:
+        # fallback to existing footer if import fails
+        with ui.footer(fixed=False).classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
+            with ui.row().classes('items-center justify-between px-4 py-2'):
+                # Replace static footer label with binding as well
+                footer_label = ui.label().props('id=cvd-footer-title').classes('text-white text-sm')
+                try:
+                    footer_label.bind_text_from(app.storage.client, 'cvd.gui_title')
+                except Exception:
+                    footer_label.text = _compute_title()
+                ui.label('© 2025 TUHH KVWEB').classes('text-white text-sm')
 
 async def cleanup_camera_async():
     """Asynchrone Kamera-Cleanup-Routine."""
