@@ -132,6 +132,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
     active_groups_select: Optional[ui.select] = None
     group_select: Optional[ui.select] = None
     active_groups_apply_btn: Optional[ui.button] = None
+    delete_btn: Optional[ui.button] = None
     email_inp: Optional[ui.input] = None
     smtp_labels: dict[str, ui.label] = {}
     overview_counts_base: Optional[ui.label] = None
@@ -640,8 +641,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             with ui.row().classes("gap-2"):
                 ui.button("Add", icon="add_circle", color="primary", on_click=lambda _: add_recipient())\
                     .bind_enabled_from(email_inp, "value", is_valid_email)
-                ui.button("Delete selected", icon="delete", color="negative", on_click=lambda _: delete_selected())\
-                    .bind_enabled_from(lambda: table, "selected", lambda s: bool(s))
+                delete_btn = ui.button("Delete selected", icon="delete", color="negative", on_click=lambda _: delete_selected())
 
         # Right column: group select + name (same row) + save/delete
         with ui.column().classes("gap-2 min-w-[320px] flex-1"):
@@ -743,6 +743,9 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             row_key="address",
             selection="multiple",
         ).classes("w-full")
+
+        if delete_btn is not None:
+            delete_btn.bind_enabled_from(table, "selected", lambda s: bool(s))
 
         # Inline editing for 'address' cell while keeping selection checkboxes
         table.add_slot('body-cell-address', r'''

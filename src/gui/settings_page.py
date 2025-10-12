@@ -155,7 +155,10 @@ def settings_page() -> None:
         with ui.card().classes('w-full').props('flat bordered'):
             # Header with ID (for anchor/IntersectionObserver) and toggle
             with ui.row().classes('items-center justify-between'):
-                ui.html(f'<div id="{section_id}" class="text-h6 font-semibold mb-2">{title}</div>')
+                ui.html(
+                    f'<div id="{section_id}" class="text-h6 font-semibold mb-2">{title}</div>',
+                    sanitize=False,
+                )
 
                 def _toggle():
                     nonlocal collapsed
@@ -185,7 +188,10 @@ def settings_page() -> None:
         rendered = False
         with ui.card().classes('w-full').props('flat bordered'):
             with ui.row().classes('items-center justify-between'):
-                ui.html(f'<div id="{section_id}" class="text-h6 font-semibold mb-2">{title}</div>')
+                ui.html(
+                    f'<div id="{section_id}" class="text-h6 font-semibold mb-2">{title}</div>',
+                    sanitize=False,
+                )
 
                 def _toggle():
                     nonlocal collapsed, rendered

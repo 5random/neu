@@ -51,12 +51,12 @@ uvc_controls:
   contrast: 16
   saturation: 64
   sharpness: 2
-  gamma: 164
+  gamma: 0
   white_balance:
     auto: true
     value: 4000
   gain: 50
-  backlight_compensation: 42
+  backlight_compensation: 0
   exposure:
     auto: true
     value: -6
@@ -71,7 +71,7 @@ motion_detection:
     y: 48
     width: 433
     height: 240
-  sensitivity: 0.2
+  sensitivity: 0.55
   background_learning_rate: 0.005
   min_contour_area: 252
 

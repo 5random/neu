@@ -149,7 +149,7 @@ html { scroll-behavior: smooth; }
 
             with ui.card().classes('w-full'):
                 # Anchor element for smooth scrolling to this section
-                ui.html(f'<span id="{sid}"></span>')
+                ui.html(f'<span id="{sid}"></span>', sanitize=False)
                 with ui.expansion(stitle, value=True, icon='article').props('expand-separator'):
                     if isinstance(route, str) and route.strip():
                         ui.link('Open related section in app', route.strip()).classes('text-primary text-caption q-mb-xs')
