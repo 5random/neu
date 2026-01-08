@@ -1,4 +1,4 @@
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Callable, Any
 
 from nicegui import ui, app
 
@@ -54,12 +54,12 @@ def settings_page() -> None:
 
     # Gemeinsamen Header/Footer der App verwenden
     try:
-        from .gui_ import build_header, build_footer  # type: ignore
+        from .gui_ import build_header, build_footer
     except Exception:
         build_header = None  # type: ignore
         build_footer = None  # type: ignore
 
-    if build_header:
+    if build_header is not None:
         build_header()
 
     # Determine initial drawer state from per-client storage (default: open)
@@ -89,7 +89,7 @@ def settings_page() -> None:
         # Track state locally to ensure we persist correct value
         _drawer_state = _initial_drawer_open
 
-        def _toggle_drawer():
+        def _toggle_drawer() -> None:
             nonlocal _drawer_state
             left_drawer.toggle()
             _drawer_state = not _drawer_state
@@ -117,7 +117,7 @@ def settings_page() -> None:
                     ui.label('Reset UI Preferences?').classes('text-h6')
                     ui.label('This will clear per-client preferences like dark mode, last visited page, drawer state, and collapsed sections for this browser.').classes('text-body2')
                     with ui.row().classes('gap-2'):
-                        def _confirm_reset():
+                        def _confirm_reset() -> None:
                             try:
                                 # Clear known client-scoped keys
                                 for key in ['cvd.dark_mode', 'cvd.last_route', 'cvd.settings.drawer_open', 'cvd.settings.collapse']:
@@ -146,21 +146,30 @@ def settings_page() -> None:
     except Exception:
         collapse_state = {}
 
-    def _collapsible_card(section_id: str, title: str, default_collapsed: bool = False):
+    def _collapsible_card(section_id: str, title: str, default_collapsed: bool = False) -> ui.column:
         """Create a collapsible card with persistent (per client) state.
 
         Returns the content container to populate inside the card.
         """
         collapsed = bool(collapse_state.get(section_id, default_collapsed))
+        
+        # Issue #7 fix: Validate section_id and escape title
+        import re
+        import html
+        if not re.match(r'^[a-zA-Z0-9_-]+$', section_id):
+            logger.warning(f"Invalid section_id '{section_id}', using 'section'")
+            section_id = 'section'
+        title_escaped = html.escape(title)
+
         with ui.card().classes('w-full').props('flat bordered'):
             # Header with ID (for anchor/IntersectionObserver) and toggle
             with ui.row().classes('items-center justify-between'):
                 ui.html(
-                    f'<div id="{section_id}" class="text-h6 font-semibold mb-2">{title}</div>',
+                    f'<div id="{section_id}" class="text-h6 font-semibold mb-2">{title_escaped}</div>',
                     sanitize=False,
                 )
 
-                def _toggle():
+                def _toggle() -> None:
                     nonlocal collapsed
                     collapsed = not collapsed
                     collapse_state[section_id] = collapsed
@@ -179,7 +188,7 @@ def settings_page() -> None:
             content.visible = not collapsed
         return content
 
-    def _collapsible_lazy_card(section_id: str, title: str, render_fn, default_collapsed: bool = False):
+    def _collapsible_lazy_card(section_id: str, title: str, render_fn: Callable[[Any], None], default_collapsed: bool = False) -> ui.column:
         """Create a collapsible card that renders its content lazily on first expand.
 
         render_fn receives a NiceGUI container to populate when needed.
@@ -193,7 +202,7 @@ def settings_page() -> None:
                     sanitize=False,
                 )
 
-                def _toggle():
+                def _toggle() -> None:
                     nonlocal collapsed, rendered
                     collapsed = not collapsed
                     collapse_state[section_id] = collapsed
@@ -224,12 +233,13 @@ def settings_page() -> None:
                     rendered = True
                 except Exception:
                     pass
+            return content
 
     # Main content: stacked sections similar to VS Code settings
     # Center the content and constrain to a comfortable reading width
     with ui.column().classes('w-full max-w-[1400px] mx-auto gap-4 p-4 pb-24'):
         # Camera section: 2-column layout (lazy render)
-        def _render_camera(_container):
+        def _render_camera(_container: Any) -> None:
             with ui.grid(columns=2).classes('w-full gap-4'):
                 with ui.column().classes('gap-3'):
                     create_camfeed_content(camera)
@@ -262,13 +272,13 @@ def settings_page() -> None:
         with update_card:
             create_update_settings()
 
-        def _render_logs(_container):
+        def _render_logs(_container: Any) -> None:
             create_log_settings()
         # Logs can be heavy; default to collapsed
         _collapsible_lazy_card('logs', 'Logs', _render_logs, default_collapsed=True)
 
     # No local footer: global footer is used
-    if build_footer:
+    if build_footer is not None:
         build_footer()
     
     # Smooth scrolling and active link highlighting for quick links
@@ -353,21 +363,6 @@ body .q-tooltip, .q-tooltip { z-index: 11000 !important; }
     except Exception:
         pass
 
-    # Also clear UI preferences on client disconnect for this page/session
-    try:
-        client = ui.context.client
-        def _reset_prefs_on_disconnect() -> None:
-            try:
-                for key in ['cvd.dark_mode', 'cvd.last_route', 'cvd.settings.drawer_open', 'cvd.settings.collapse']:
-                    try:
-                        if key in app.storage.client:
-                            del app.storage.client[key]
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-        client.on_disconnect(_reset_prefs_on_disconnect)
-    except Exception:
-        pass
+    # Issue #8 fix: Removed disconnect cleanup - preferences should persist
 
 

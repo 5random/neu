@@ -14,7 +14,7 @@ import numpy as np
 import time
 import logging
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 from ..config import MotionDetectionConfig, ROI, get_logger
 
@@ -86,11 +86,10 @@ class MotionDetector:
         # ROI Setup
         try:
             self.roi = config.get_roi()
-        except Exception as exc:
+        except (ValueError, AttributeError) as exc:
             self.logger.warning(f"ROI-Setup failed: {exc}, using fallback ROI")
             # Fallback: ROI deaktiviert
-            from types import SimpleNamespace
-            self.roi = SimpleNamespace(enabled=False, x=0, y=0, width=0, height=0)
+            self.roi = ROI(enabled=False, x=0, y=0, width=0, height=0)
         
         # Learning-Phase für Background-Model
         self.is_learning = True
@@ -101,11 +100,12 @@ class MotionDetector:
         self.noise_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         self.cleanup_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
-        # Memory-Pool für wiederverwendbare Arrays
-        self._frame_pool = {}
+        # Memory-Pool für wiederverwendbare Arrays (with size limit to prevent leaks)
+        self._frame_pool: Dict[Tuple[Tuple[int, int], Any], np.ndarray] = {}
+        self._max_pool_entries = 5  # Limit pool size to prevent memory leaks
 
         # Tracking für Alert-System
-        self.last_motion_time = None
+        self.last_motion_time: Optional[float] = None
         if self.roi.enabled:
             self.logger.info(f"MotionDetector initialized - Sensitivity: {self.sensitivity}, ROI enabled: {self.roi.x}, {self.roi.y}, {self.roi.width}, {self.roi.height}")
         else:
@@ -194,21 +194,21 @@ class MotionDetector:
         Aktualisiert die Sensitivität zur Laufzeit.
         
         Args:
-            new_sensitivity: Neue Sensitivität (0.1-1.0)
+            new_sensitivity: Neue Sensitivität (0.01-1.0)
             
         Returns:
-            True wenn erfolgreich aktualisiert
+            True wenn erfolgreich aktualisiert oder geclampt
         """
         if not 0.01 <= new_sensitivity <= 1.0:
             self.logger.warning(f"Invalid sensitivity: {new_sensitivity}")
-            # Clamp sensitivity into valid range instead of rejecting it
+            # Clamp sensitivity into valid range
             if new_sensitivity < 0.01:
                 self.logger.warning(f"Sensitivity {new_sensitivity} below minimum; clamping to 0.01")
                 new_sensitivity = 0.01
             elif new_sensitivity > 1.0:
                 self.logger.warning(f"Sensitivity {new_sensitivity} above maximum; clamping to 1.0")
                 new_sensitivity = 1.0
-            return False
+            # Weiter mit geclamptem Wert - KEIN return False mehr
         
         self.sensitivity = new_sensitivity
         # Sensitivität beeinflusst minimale Konturgröße
@@ -218,7 +218,7 @@ class MotionDetector:
         )
 
         self.logger.info(f"Sensitivity changed to {new_sensitivity}")
-        return True
+        return True  # Immer True wenn die Änderung angewendet wurde
     
     def reset_background_model(self) -> None:
         """Setzt das Background-Model zurück (z.B. bei Lichtwechsel)."""
@@ -231,14 +231,23 @@ class MotionDetector:
         """Gibt Zeitstempel der letzten Bewegung zurück (für Alert-System)."""
         return self.last_motion_time
     
-    def _get_working_array(self, shape: Tuple[int, int], dtype=np.uint8) -> np.ndarray:
+    def _get_working_array(self, shape: Tuple[int, int], dtype: Any = np.uint8) -> np.ndarray:
         """
         Wiederverwendbare Arrays aus Pool.
         
         Returns a zeroed array from the pool to prevent stale data usage.
+        Pool size is limited to prevent memory leaks.
         """
         key = (shape, dtype)
         if key not in self._frame_pool:
+            # Evict oldest entries if pool is full (simple FIFO-style eviction)
+            if len(self._frame_pool) >= self._max_pool_entries:
+                # Remove first (oldest) entry
+                try:
+                    oldest_key = next(iter(self._frame_pool))
+                    del self._frame_pool[oldest_key]
+                except (StopIteration, KeyError):
+                    pass
             self._frame_pool[key] = np.empty(shape, dtype=dtype)
         
         # Zero out the array to prevent stale data usage
@@ -288,13 +297,40 @@ class MotionDetector:
                 roi_frame = gray_frame
                 roi_used = False
 
-            # Adaptive Gaussian blur kernel size
-            kernel_size = min(5, roi_frame.shape[0]//3, roi_frame.shape[1]//3)
+            # --- Downscaling Optimization ---
+            # Process on a smaller frame if the ROI is large (e.g. > 640px width)
+            # This significantly reduces CPU usage on Raspberry Pi
+            target_width = 640
+            scale_factor = 1.0
+            processing_frame = roi_frame
+            
+            # Guard against division by zero
+            roi_width = roi_frame.shape[1]
+            if roi_width > target_width and roi_width > 0:
+                scale_factor = target_width / roi_width
+                # Keep aspect ratio
+                new_width = target_width
+                new_height = max(1, int(roi_frame.shape[0] * scale_factor))  # Ensure >= 1
+                
+                # Zusätzliche Sicherheitsprüfung
+                if new_width < 1 or new_height < 1:
+                    self.logger.warning(f"Invalid scaled dimensions: {new_width}x{new_height}, using original")
+                    processing_frame = roi_frame
+                    scale_factor = 1.0
+                else:
+                    processing_frame = cv2.resize(roi_frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+            
+            # Adjust min_contour_area for the scaled frame
+            # Area scales with square of linear scale
+            effective_min_area = self.min_contour_area * (scale_factor * scale_factor)
+
+            # Adaptive Gaussian blur kernel size (based on processing frame)
+            kernel_size = min(5, processing_frame.shape[0]//3, processing_frame.shape[1]//3)
             kernel_size = max(3, kernel_size)  # Minimum size 3
             if kernel_size % 2 == 0:
                 kernel_size += 1  # Ensure odd number
 
-            blurred = cv2.GaussianBlur(roi_frame, (kernel_size, kernel_size), 0)
+            blurred = cv2.GaussianBlur(processing_frame, (kernel_size, kernel_size), 0)
 
             # Learning-Phase verwalten
             if self.is_learning:
@@ -318,10 +354,15 @@ class MotionDetector:
             num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(fg_mask)
 
             # Gesamtfläche berechnen basierend auf Komponentenstats
-            total_area = 0.0
+            total_area_scaled = 0.0
             if num_labels > 1:
                 areas = stats[1:, cv2.CC_STAT_AREA]  # Hintergrund ausschließen
-                total_area = float(np.sum(areas[areas >= self.min_contour_area]))
+                # Filter with scaled threshold
+                valid_areas = areas[areas >= effective_min_area]
+                total_area_scaled = float(np.sum(valid_areas))
+            
+            # Scale area back to original resolution for consistency
+            total_area = total_area_scaled / (scale_factor * scale_factor)
             
             # Bewegungsentscheidung
             motion_detected = not self.is_learning and total_area > 0
@@ -359,6 +400,43 @@ class MotionDetector:
         
         h, w = gray_frame.shape[:2]
 
+        # --- Polygon ROI Support ---
+        if hasattr(self.roi, 'points') and self.roi.points and len(self.roi.points) >= 3:
+            try:
+                pts = np.array(self.roi.points, dtype=np.int32)
+                
+                # 1. Compute bounding box for cropping (Performance optimization)
+                x, y, w_rect, h_rect = cv2.boundingRect(pts)
+                
+                # Clamp bounding box to frame
+                x = max(0, min(x, w - 1))
+                y = max(0, min(y, h - 1))
+                w_rect = max(1, min(w_rect, w - x))
+                h_rect = max(1, min(h_rect, h - y))
+                
+                # 2. Create mask on the cropped area
+                # We create a mask of the size of the bounding rect to save memory/cpu
+                mask = np.zeros((h_rect, w_rect), dtype=np.uint8)
+                
+                # Offset points to be relative to the bounding rect
+                pts_offset = pts - np.array([x, y])
+                
+                cv2.fillPoly(mask, [pts_offset], 255)
+                
+                # 3. Crop the frame
+                cropped_frame = gray_frame[y:y+h_rect, x:x+w_rect]
+                
+                # 4. Apply mask
+                masked_frame = cv2.bitwise_and(cropped_frame, cropped_frame, mask=mask)
+                
+                return masked_frame
+                
+            except Exception as e:
+                self.logger.error(f"Error applying Polygon ROI: {e}")
+                # Fallback to full frame or rectangle if possible
+                return gray_frame
+
+        # --- Rectangle ROI Fallback ---
         # Normalize ROI to frame bounds (min size 1 pixel)
         nx, ny, nw, nh = MotionDetector.normalize_roi(self.roi.x, self.roi.y, self.roi.width, self.roi.height, w, h, min_size=1)
 

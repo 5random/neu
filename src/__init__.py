@@ -5,6 +5,7 @@ objects to break import cycles.
 """
 
 import importlib
+from typing import Any
 
 from .notify import (
     EMailSystem,
@@ -50,7 +51,7 @@ __all__ = [
     "create_motion_detector_from_config",
 ]
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     # Lazy-load measurement symbols on demand to break cycles
     if name in ("MeasurementController", "create_measurement_controller_from_config"):
         mod = importlib.import_module(".measurement", __name__)

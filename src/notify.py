@@ -527,7 +527,7 @@ class EMailSystem:
                         timeout=self._connection_timeout,
                     ) as smtp:
                         success_count = 0
-                        failed_total = {}
+                        failed_total: Dict[str, Any] = {}
                         for r, m in messages:
                             try:
                                 failed = smtp.sendmail(
@@ -973,7 +973,7 @@ class EMailSystem:
     
     def health_check(self) -> Dict[str, Any]:
         """Comprehensive health check of the EMailSystem"""
-        health = {
+        health: Dict[str, Any] = {
             'status': 'healthy',
             'checks': {},
             'timestamp': datetime.now().isoformat()
@@ -1071,7 +1071,7 @@ def create_alert_system_from_config(
     return create_email_system_from_config(config, logger)
 
 # Test-Code zur Verifikation
-def test_template_rendering():
+def test_template_rendering() -> bool:
     """Testet ob Template-Rendering funktioniert"""
     import sys
     from pathlib import Path

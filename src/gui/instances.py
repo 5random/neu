@@ -17,6 +17,8 @@ __all__ = [
     'get_camera',
     'get_measurement',
     'get_email',
+    'get_measurement_controller',
+    'get_email_system',
 ]
 
 _camera: Optional[Camera] = None
@@ -64,3 +66,8 @@ def get_measurement() -> Optional[MeasurementController]:
 
 def get_email() -> Optional[EMailSystem]:
     return _email
+
+
+# Aliases for convenience and clearer naming
+get_measurement_controller = get_measurement
+get_email_system = get_email

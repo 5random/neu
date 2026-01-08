@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional, Tuple, TypedDict, cast
+from typing import Optional, Tuple, TypedDict, cast, Any
 import cv2
 import base64
 import numpy as np
@@ -40,15 +40,13 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
 
     # ---------- Zustand ------------------------------------------------------
     class ROIState(TypedDict):
-        p1: Optional[Tuple[int, int]]
-        p2: Optional[Tuple[int, int]]
+        points: list[Tuple[int, int]]
 
-    state: ROIState = {'p1': None, 'p2': None}
+    state: ROIState = {'points': []}
 
     # UI-Referenzen
     image: Optional[InteractiveImage] = None
-    tl_label: Optional[Label] = None
-    br_label: Optional[Label] = None
+    points_label: Optional[Label] = None
     roi_enabled_checkbox: Optional[ui.checkbox] = None
     label_roi: Optional[Label] = None
     coords_label: Optional[Label] = None
@@ -65,7 +63,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         if camera is None or camera.motion_detector is None:
             return
             
-        cam = cast(Camera, camera)
+        cam = camera
         md = cast(MotionDetector, cam.motion_detector)
         
         # ROI-Status setzen
@@ -92,38 +90,33 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
         logger.info(f'ROI {status}')
 
     # ---------- SVG-Hilfsfunktionen -----------------------------------------
-    def svg_cross(x: int, y: int, s: int = 14, col: str = 'deepskyblue') -> str:
-        dis_scale = 300 / IMG_H if IMG_H > 300 else 1.0
-        h = int(s / dis_scale) // 2 # Höhe des Kreuzes skaliert
-
-        return (
-            f'<line x1="{x-h}" y1="{y}" x2="{x+h}" y2="{y}" '
-            f'stroke="{col}" stroke-width="3" stroke-linecap="round" '
-             'pointer-events="none" vector-effect="non-scaling-stroke" />'
-            f'<line x1="{x}" y1="{y-h}" x2="{x}" y2="{y+h}" '
-            f'stroke="{col}" stroke-width="3" stroke-linecap="round" '
-             'pointer-events="none" vector-effect="non-scaling-stroke" />'
-        )
-
-    def svg_circle(x: int, y: int, r: int = 8, col: str = 'gold') -> str:
+    def svg_circle(x: int, y: int, r: int = 4, col: str = 'gold') -> str:
         dis_scale = 300 / IMG_H if IMG_H > 300 else 1.0
         r = int(r / dis_scale)
         return (
             f'<circle cx="{x}" cy="{y}" r="{r}" '
-            f'stroke="{col}" stroke-width="3" fill="none" '
-             'pointer-events="none" vector-effect="non-scaling-stroke" />'
+            f'stroke="{col}" stroke-width="2" fill="{col}" fill-opacity="0.5" '
+            'pointer-events="none" vector-effect="non-scaling-stroke" />'
         )
     
+    def svg_polygon(points: list[Tuple[int, int]], col: str = 'lime') -> str:
+        if not points:
+            return ""
+        pts_str = " ".join([f"{x},{y}" for x, y in points])
+        return (
+            f'<polygon points="{pts_str}" '
+            f'stroke="{col}" stroke-width="2" fill="{col}" fill-opacity="0.2" '
+            'pointer-events="none" vector-effect="non-scaling-stroke" />'
+        )
 
+    def svg_line(p1: Tuple[int, int], p2: Tuple[int, int], col: str = 'cyan') -> str:
+        return (
+            f'<line x1="{p1[0]}" y1="{p1[1]}" x2="{p2[0]}" y2="{p2[1]}" '
+            f'stroke="{col}" stroke-width="2" stroke-dasharray="5,5" '
+            'pointer-events="none" vector-effect="non-scaling-stroke" />'
+        )
 
     # ---------- ROI-Logik ----------------------------------------------------
-    def roi_bounds() -> Optional[Tuple[int, int, int, int]]:
-        if state['p1'] and state['p2']:
-            x0, y0 = map(min, zip(state['p1'], state['p2']))
-            x1, y1 = map(max, zip(state['p1'], state['p2']))
-            return x0, y0, x1, y1
-        return None
-
     def roi_text() -> str:
         if roi_enabled_checkbox is not None:
             enabled = roi_enabled_checkbox.value
@@ -133,13 +126,8 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             if not enabled:
                 return 'ROI: not active (disabled)'
             
-        b = roi_bounds()
-        if b:
-            x0, y0, x1, y1 = b
-            return f'ROI: ({x0}, {y0}) - ({x1}, {y1})'
-        elif state['p1']:
-            x, y = state['p1']
-            return f'ROI: ({x}, {y}) - (…)'
+        if state['points']:
+            return f'ROI: {len(state["points"])} points defined'
         return 'ROI: enabled, no Area selected'
 
     # ---------- UI-Updates ---------------------------------------------------
@@ -149,32 +137,34 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             return
 
         parts: list[str] = []
-        if state['p1']:
-            parts.append(svg_cross(*state['p1']))
-        if state['p2']:
-            parts.append(svg_cross(*state['p2']))
-        if (b := roi_bounds()):
-            x0, y0, x1, y1 = b
-            parts.append(
-                f'<rect x="{x0}" y="{y0}" width="{x1-x0}" height="{y1-y0}" '
-                'stroke="lime" stroke-width="3" fill="none" pointer-events="none" vector-effect="non-scaling-stroke" />'
-            )
-            parts.extend([svg_circle(x0, y0), svg_circle(x1, y1)])
+        points = state['points']
+        
+        # Draw Polygon if 3+ points
+        if len(points) >= 3:
+            parts.append(svg_polygon(points))
+        
+        # Draw lines between points
+        if len(points) > 1:
+            for i in range(len(points) - 1):
+                parts.append(svg_line(points[i], points[i+1]))
+            # Close loop preview if > 2 points
+            if len(points) > 2:
+                parts.append(svg_line(points[-1], points[0], col='lime'))
+
+        # Draw vertices
+        for pt in points:
+            parts.append(svg_circle(pt[0], pt[1]))
 
         image.content = ''.join(parts)
 
     def update_labels() -> None:
-        if tl_label is None or br_label is None:
+        if points_label is None:
             return
-        if (b := roi_bounds()):
-            x0, y0, x1, y1 = b
-            tl_label.text = f'({x0}, {y0})'
-            br_label.text = f'({x1}, {y1})'
-        elif state['p1']:
-            tl_label.text = f'({state["p1"][0]}, {state["p1"][1]})'
-            br_label.text = '-'
+        points = state['points']
+        if points:
+            points_label.text = f'{len(points)} Points: {points}'
         else:
-            tl_label.text = br_label.text = '-'
+            points_label.text = 'No points selected'
 
     def refresh_ui() -> None:
         update_overlay()
@@ -187,21 +177,25 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
     def initialize_from_config() -> None:
         if camera is None or camera.motion_detector is None:
             return
-        cam = cast(Camera, camera)
+        cam = camera
         md = cast(MotionDetector, cam.motion_detector)
         roi = md.roi
         
         if roi_enabled_checkbox is not None:
             roi_enabled_checkbox.set_value(getattr(roi, 'enabled', False))
 
-        if roi and getattr(roi, 'enabled', False):
-            x0, y0 = roi.x, roi.y
-            x1, y1 = roi.x + roi.width, roi.y + roi.height
-            state['p1'] = (x0, y0)
-            state['p2'] = (x1, y1)
-            logger.debug(f"ROI initialized from config: {state['p1']} - {state['p2']}")
+        # Load points from config if available
+        if hasattr(roi, 'points') and roi.points:
+             # Convert list of lists to list of tuples
+            state['points'] = [tuple(pt) for pt in roi.points] # type: ignore
+            logger.debug(f"ROI initialized from config with {len(state['points'])} points")
+        elif roi and getattr(roi, 'enabled', False):
+            # Fallback: Convert rectangle to 4 points
+            x, y, w, h = roi.x, roi.y, roi.width, roi.height
+            state['points'] = [(x, y), (x+w, y), (x+w, y+h), (x, y+h)]
+            logger.debug(f"ROI initialized from rectangle: {state['points']}")
         else:
-            state['p1'] = state['p2'] = None
+            state['points'] = []
             logger.debug("No ROI found")
         
         if sensitivity_knob is not None and hasattr(cam.motion_detector, 'sensitivity'):
@@ -214,12 +208,12 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
 
         if camera is None or camera.motion_detector is None:
             return
-        cam = cast(Camera, camera)
+        cam = camera
         md = cast(MotionDetector, cam.motion_detector)
         # Sensitivität in Prozent (0-100)
         sens_value = max(0.01, value / 100.0)  # mind. 1%
         md.update_sensitivity(sens_value)
-        async def save_config_delayed():
+        async def save_config_delayed() -> None:
             await asyncio.sleep(0.5)
             if cam.motion_detector and config:
                 config.motion_detection.sensitivity = sens_value
@@ -249,24 +243,18 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
 
     # ---------- Event-Handler ------------------------------------------------
     def reset_roi() -> None:
-        state['p1'] = state['p2'] = None
+        state['points'] = []
         refresh_snapshot()
         refresh_ui()
 
-    def _handle_click(e: MouseEventArguments) -> None:
-        
-        x, y = int(e.image_x), int(e.image_y)
+    def undo_last_point() -> None:
+        if state['points']:
+            state['points'].pop()
+            refresh_ui()
 
-        target = (
-            'p1' if state['p1'] is None
-            else ('p2' if state['p2'] is None else None)
-        )
-        if target:
-            state[target] = (x, y)
-        else:  # dritter Klick → neue Auswahl
-            reset_roi()
-            _handle_click(e)
-            return
+    def _handle_click(e: MouseEventArguments) -> None:
+        x, y = int(e.image_x), int(e.image_y)
+        state['points'].append((x, y))
         refresh_ui()
 
     def handle_mouse(e: MouseEventArguments) -> None:
@@ -281,110 +269,79 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             _handle_click(e)
 
     def save_roi() -> None:
-        if (b := roi_bounds()):
-            x0, y0, x1, y1 = b
-            roi_enabled = roi_enabled_checkbox.value if roi_enabled_checkbox else True
-            # Ensure ROI is within image bounds
-            x0 = max(0, min(x0, IMG_W - 1))
-            y0 = max(0, min(y0, IMG_H - 1))
-            x1 = max(x0 + 1, min(x1, IMG_W))
-            y1 = max(y0 + 1, min(y1, IMG_H))
-            roi_width = x1 - x0
-            roi_height = y1 - y0
+        points = state['points']
+        if len(points) < 3:
+            ui.notify('Please select at least 3 points for a polygon!', type='warning', position='bottom-right')
+            return
 
-            if camera is None:
-                ui.notify('Camera not available!', type='warning',
-                          position='bottom-right')
+        roi_enabled = roi_enabled_checkbox.value if roi_enabled_checkbox else True
+        
+        # Calculate bounding box for backward compatibility
+        pts_np = np.array(points, dtype=np.int32)
+        x, y, w, h = cv2.boundingRect(pts_np)
+        
+        if camera is None:
+            ui.notify('Camera not available!', type='warning', position='bottom-right')
+            return
+            
+        cam = camera
+        if cam is not None and cam.motion_detector is not None:
+            md = cam.motion_detector
+            roi = md.roi
+            
+            # Update runtime object
+            roi.x = x
+            roi.y = y
+            roi.width = w
+            roi.height = h
+            roi.enabled = roi_enabled
+            if hasattr(roi, 'points'):
+                roi.points = [list(p) for p in points] # Store as list of lists
+            
+            md.reset_background_model()
+
+            roi_data = {
+                'enabled': roi_enabled,
+                'x': x,
+                'y': y,
+                'width': w,
+                'height': h,
+                'points': [list(p) for p in points]
+            }
+
+            try:
+                if config:
+                    config.motion_detection.region_of_interest = roi_data
+                    save_global_config()
+                    logger.info('ROI config saved to config')
+                else:
+                    ui.notify('ROI config could not be saved to config!', type='warning',
+                                position='bottom-right')
+                    logger.warning('ROI config could not be saved to config!')
+            except Exception as e:
+                ui.notify(f'Error saving config: {e}', type='warning',
+                            position='bottom-right')
+                logger.error(f'Error saving config: {e}')
+                
+            try:
+                if cam:
+                    cam.app_config.motion_detection.region_of_interest = roi_data
+                    cam.save_uvc_config()
+                    logger.info('Camera ROI config saved and applied')
+                else:
+                    ui.notify('Camera ROI config could not be saved!', type='warning',
+                                position='bottom-right')
+                    logger.warning('Camera ROI config could not be saved!')
+            except Exception as e:
+                ui.notify(f'Error saving camera config: {e}', type='warning',
+                            position='bottom-right')
+                logger.error(f'Error saving camera config: {e}')
                 return
             
-            # Check minimum size and if needed, adjust ROI to ensure minimum size
-            min_size = 30
-            if roi_width < min_size or roi_height < min_size:
-                logger.warning(f"ROI too small: {roi_width}x{roi_height}, expanding for stability")
-
-                # Zentrum der aktuellen ROI beibehalten
-                center_x = (x0 + x1) // 2
-                center_y = (y0 + y1) // 2
-                
-                # Neue ROI um Zentrum berechnen
-                new_x0 = max(0, center_x - min_size // 2)
-                new_y0 = max(0, center_y - min_size // 2)
-                new_x1 = min(IMG_W, new_x0 + min_size)
-                new_y1 = min(IMG_H, new_y0 + min_size)
-
-                # Falls an Bildrand: ROI entsprechend verschieben
-                if new_x1 - new_x0 < min_size and new_x0 > 0:
-                    new_x0 = max(0, new_x1 - min_size)
-                if new_y1 - new_y0 < min_size and new_y0 > 0:
-                    new_y0 = max(0, new_y1 - min_size)
-
-                x0, y0, x1, y1 = new_x0, new_y0, new_x1, new_y1
-                roi_width = x1 - x0
-                roi_height = y1 - y0
-                logger.info(f"ROI expanded to: ({x0}, {y0}) - ({x1}, {y1})")
-                ui.notify(
-                    f'ROI expanded to minimum size: ({x0}, {y0}) - ({x1}, {y1})',
-                    type='warning', position='bottom-right'
-                )
-                
-            cam = cast(Camera, camera)
-            if cam is not None and cam.motion_detector is not None:
-                md = cast(MotionDetector, cam.motion_detector)
-                roi = md.roi
-                roi.x = x0
-                roi.y = y0
-                roi.width = roi_width
-                roi.height = roi_height
-                roi.enabled = roi_enabled
-                md.reset_background_model()
-
-            
-                roi_data = {
-                    'enabled': roi_enabled,
-                    'x': x0,
-                    'y': y0,
-                    'width': roi_width,
-                    'height': roi_height
-                }
-
-                try:
-                    if config:
-                        config.motion_detection.region_of_interest = roi_data
-                        save_global_config()
-                        logger.info('ROI config saved to config')
-                    else:
-                        ui.notify('ROI config could not be saved to config!', type='warning',
-                                  position='bottom-right')
-                        logger.warning('ROI config could not be saved to config!')
-                except Exception as e:
-                    ui.notify(f'Error saving config: {e}', type='warning',
-                              position='bottom-right')
-                    logger.error(f'Error saving config: {e}')
-                    
-                try:
-                    if cam:
-                        cam.app_config.motion_detection.region_of_interest = roi_data
-                        cam.save_uvc_config()
-                        logger.info('Camera ROI config saved and applied')
-                    else:
-                        ui.notify('Camera ROI config could not be saved!', type='warning',
-                                  position='bottom-right')
-                        logger.warning('Camera ROI config could not be saved!')
-                except Exception as e:
-                    ui.notify(f'Error saving camera config: {e}', type='warning',
-                              position='bottom-right')
-                    logger.error(f'Error saving camera config: {e}')
-                    return
-                
-                state['p1'] = (x0, y0)
-                state['p2'] = (x1, y1)
-                refresh_ui()
-                ui.notify(f'ROI saved and applied: {roi_data}', type='positive',
-                        position='bottom-right')
-                logger.info(f'ROI saved: {roi_data}')
-        else:
-            ui.notify('Please select both corners first!',
-                      type='warning', position='bottom-right')
+            refresh_ui()
+            ui.notify(f'Polygon ROI saved: {len(points)} points', type='positive',
+                    position='bottom-right')
+            logger.info(f'ROI saved: {roi_data}')
     
     def refresh_snapshot() -> None:
         """Aktualisiert das Snapshot-Bild im Editor."""
@@ -396,7 +353,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             if frame is not None:
                 success, buffer = cv2.imencode('.jpg', frame)
                 if success:
-                    src = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode()}"
+                    src = f"data:image/jpeg;base64,{base64.b64encode(buffer.tobytes()).decode()}"
                     h, w = (frame.shape[:2] if frame is not None else (IMG_H, IMG_W))
                     IMG_H, IMG_W = h, w
                     ratio_style = (
@@ -435,9 +392,9 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                     sensitivity_knob = ui.knob(
                         min=0, max=100, value=10, step=1, show_value=True
                     ).tooltip('Adjust motion detection sensitivity (0-100%)')
-                    def _bind_sensitivity():
+                    def _bind_sensitivity() -> None:
                         if sensitivity_knob:
-                            def _on_change(e):
+                            def _on_change(e: Any) -> None:
                                 # Read value only from the generic args dict to satisfy type checker
                                 val = None
                                 try:
@@ -465,9 +422,9 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                     # Kopfzeile mit Titel und Edit-Button
                     # Bind ROI toggle handler after loop is ready to prevent early invocation
                     roi_enabled_checkbox = ui.checkbox('ROI enabled', value=True).tooltip('Enable/disable Region of Interest')
-                    def _bind_roi_toggle():
+                    def _bind_roi_toggle() -> None:
                         if roi_enabled_checkbox:
-                            def _on_roi_change(e):
+                            def _on_roi_change(e: Any) -> None:
                                 val = None
                                 try:
                                     args = getattr(e, 'args', None)
@@ -506,7 +463,8 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                     roi_editor_container = ui.column().classes('gap-4')
                     with roi_editor_container:
 
-                        ui.label('ROI Editor:').classes('font-semibold mb-2 self-start')
+                        ui.label('ROI Editor (Polygon):').classes('font-semibold mb-2 self-start')
+                        ui.label('Click to add points. At least 3 points required.').classes('text-sm text-gray-500')
 
                         frame: np.ndarray | None = None
                         image_src = IMG_SRC
@@ -517,7 +475,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                                     success, buffer = cv2.imencode('.jpg', frame)
                                     if success:
                                         image_src = (
-                                            f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
+                                            f"data:image/jpeg;base64,{base64.b64encode(buffer.tobytes()).decode('utf-8')}"
                                         )
                             except Exception as e:
                                 ui.notify(f"Snapshot error: {e}", type="warning")
@@ -540,10 +498,7 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
 
                         # ROI-Koordinaten-Labels
                         with ui.row().classes('items-center gap-4 text-sm'):
-                            ui.label('upper left corner:')
-                            tl_label = ui.label('-').classes('font-mono')
-                            ui.label('bottom right corner:')
-                            br_label = ui.label('-').classes('font-mono')
+                            points_label = ui.label('No points selected').classes('font-mono text-xs')
 
                         # Live-Mauskoordinaten (rechtsbündig, grau)
                         with ui.row().classes('justify-end'):
@@ -553,9 +508,11 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                         # Aktions-Buttons
                         with ui.row().classes('gap-2'):
                             ui.button(icon='save', color='primary', on_click=save_roi)\
-                                .classes('flex-grow').props('round').tooltip('save')
+                                .classes('flex-grow').props('round').tooltip('save polygon')
+                            ui.button(icon='undo', color='warning', on_click=undo_last_point)\
+                                .classes('flex-grow').props('round').tooltip('undo last point')
                             ui.button(icon='restart_alt', color='secondary', on_click=reset_roi)\
-                                .classes('flex-grow').props('round').tooltip('reset ROI')
+                                .classes('flex-grow').props('round').tooltip('clear all')
                             ui.button(icon='close', color='negative', on_click=toggle_roi_editor)\
                                 .classes('flex-grow').props('round').tooltip('close')
 

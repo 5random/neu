@@ -18,6 +18,7 @@ from enum import Enum
 _configured_loggers: set[str] = set()
 _configured_loggers_lock = threading.Lock()
 
+
 # ---------------------------------------------------------------------------
 # Metadaten
 # ---------------------------------------------------------------------------
@@ -121,19 +122,38 @@ class ROI:
     y: int
     width: int
     height: int
+    points: List[List[int]] = field(default_factory=list)  # List of [x, y] coordinates
 
     def validate(self, frame_w: int, frame_h: int) -> List[str]:
         if not self.enabled:
             return []
         errors: List[str] = []
-        if self.x < 0 or self.y < 0:
-            errors.append("ROI coordinates must not be negative")
-        if self.width <= 0 or self.height <= 0:
-            errors.append("ROI size must be positive")
-        if self.x + self.width > frame_w:
-            errors.append("ROI exceeds frame width")
-        if self.y + self.height > frame_h:
-            errors.append("ROI exceeds frame height")
+        
+        # Validate Polygon Points if present
+        if self.points:
+            if len(self.points) < 3:
+                errors.append("Polygon ROI must have at least 3 points")
+            for i, pt in enumerate(self.points):
+                if len(pt) != 2:
+                    errors.append(f"Point {i} must have 2 coordinates")
+                    continue
+                px, py = pt
+                if px < 0 or py < 0:
+                    errors.append(f"Point {i} coordinates must not be negative")
+                if px > frame_w:
+                    errors.append(f"Point {i} x={px} exceeds frame width {frame_w}")
+                if py > frame_h:
+                    errors.append(f"Point {i} y={py} exceeds frame height {frame_h}")
+        else:
+            # Fallback to Rectangle validation
+            if self.x < 0 or self.y < 0:
+                errors.append("ROI coordinates must not be negative")
+            if self.width <= 0 or self.height <= 0:
+                errors.append("ROI size must be positive")
+            if self.x + self.width > frame_w:
+                errors.append("ROI exceeds frame width")
+            if self.y + self.height > frame_h:
+                errors.append("ROI exceeds frame height")
         return errors
 
 @dataclass
@@ -179,6 +199,8 @@ class MeasurementConfig:
     # Motion summary logging controls
     motion_summary_interval_seconds: int = 60
     enable_motion_summary_logs: bool = True
+    # History path for alert events (Issue #10)
+    history_path: str = "data/history"
 
     def validate(self) -> List[str]:
         errors: List[str] = []
@@ -249,7 +271,8 @@ class EmailConfig:
                 raise TypeError(f"EmailConfig.groups keys must be str, got {type(k).__name__}: {k!r}")
             if not isinstance(v, list):
                 raise TypeError(f"EmailConfig.groups['{k}'] must be List[str], got {type(v).__name__}: {v!r}")
-            for idx, item in enumerate(v):
+            group_members = v
+            for idx, item in enumerate(group_members):
                 if not isinstance(item, str):
                     raise TypeError(f"EmailConfig.groups['{k}'][{idx}] must be str, got {type(item).__name__}: {item!r}")
 
@@ -263,11 +286,11 @@ class EmailConfig:
         # notifications
         if not isinstance(self.notifications, dict):
             raise TypeError(f"EmailConfig.notifications must be Dict[str, bool], got {type(self.notifications).__name__}: {self.notifications!r}")
-        for k, v in self.notifications.items():
+        for k, notif_enabled in self.notifications.items():
             if not isinstance(k, str):
                 raise TypeError(f"EmailConfig.notifications keys must be str, got {type(k).__name__}: {k!r}")
-            if not isinstance(v, bool):
-                raise TypeError(f"EmailConfig.notifications['{k}'] must be bool, got {type(v).__name__}: {v!r}")
+            if not isinstance(notif_enabled, bool):
+                raise TypeError(f"EmailConfig.notifications['{k}'] must be bool, got {type(notif_enabled).__name__}: {notif_enabled!r}")
 
         # recipient_prefs
         if not isinstance(self.recipient_prefs, dict):
@@ -279,11 +302,11 @@ class EmailConfig:
                 raise TypeError(f"EmailConfig.recipient_prefs keys must be str (email), got {type(email).__name__}: {email!r}")
             if not isinstance(prefs, dict):
                 raise TypeError(f"EmailConfig.recipient_prefs['{email}'] must be Dict[str, bool], got {type(prefs).__name__}: {prefs!r}")
-            for k, v in prefs.items():
+            for k, pref_value in prefs.items():
                 if not isinstance(k, str):
                     raise TypeError(f"EmailConfig.recipient_prefs['{email}'] keys must be str, got {type(k).__name__}: {k!r}")
-                if not isinstance(v, bool):
-                    raise TypeError(f"EmailConfig.recipient_prefs['{email}']['{k}'] must be bool, got {type(v).__name__}: {v!r}")
+                if not isinstance(pref_value, bool):
+                    raise TypeError(f"EmailConfig.recipient_prefs['{email}']['{k}'] must be bool, got {type(pref_value).__name__}: {pref_value!r}")
 
     def validate(self) -> List[str]:
         errors: List[str] = []
@@ -600,7 +623,7 @@ class LoggingConfig:
         logger.info(
             f"🚀 Logging initialized: {self.file} (max: {self.max_file_size_mb}MB, backups: {self.backup_count})"
         )
-        _initialized_logger = True
+
         return logger
 
 # ---------------------------------------------------------------------------
@@ -715,8 +738,8 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
     )
     if errs := cfg.validate_all():
         logger.warning("⚠️ Config warnings:")
-        for section, e in errs.items():
-            for msg in e:
+        for section, err_list in errs.items():
+            for msg in err_list:
                 logger.warning("  %s: %s", section, msg)
     cfg.measurement.ensure_save_path()
     return cfg
@@ -921,21 +944,21 @@ def get_logger(name: str = "cvd_tracker") -> logging.Logger:
     
 class ReadableDumper(yaml.SafeDumper):
     # Keine YAML‑Anker (&id001) bei wiederverwendeten Werten
-    def ignore_aliases(self, data):
+    def ignore_aliases(self, data: Any) -> bool:
         return True
 
     # Sorgt dafür, dass Listenelemente eingerückt unter dem Schlüssel stehen
-    def increase_indent(self, flow=False, indentless=False):
+    def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:
         return super().increase_indent(flow, False)
 
-def _repr_str_literal(dumper: yaml.SafeDumper, data: str):
+def _repr_str_literal(dumper: yaml.SafeDumper, data: str) -> yaml.nodes.ScalarNode:
     # Mehrzeilige Strings im Literal-Block-Stil '|'
     style = '|' if '\n' in data else None
     return dumper.represent_scalar('tag:yaml.org,2002:str', data, style=style)
 
 ReadableDumper.add_representer(str, _repr_str_literal)
 
-def _repr_ordered_dict(dumper: yaml.SafeDumper, data: OrderedDict):
+def _repr_ordered_dict(dumper: yaml.SafeDumper, data: OrderedDict) -> yaml.nodes.MappingNode:
     return dumper.represent_mapping('tag:yaml.org,2002:map', list(data.items()))
 
 ReadableDumper.add_representer(OrderedDict, _repr_ordered_dict)
@@ -1004,7 +1027,7 @@ def _dump_section(key: str, value: dict) -> str:
     """
     Gibt einen einzelnen Top-Level-Abschnitt als YAML (ohne Dokument-Header) zurück.
     """
-    return yaml.dump(
+    result = yaml.dump(
         {key: value},
         Dumper=ReadableDumper,
         allow_unicode=True,
@@ -1013,6 +1036,7 @@ def _dump_section(key: str, value: dict) -> str:
         indent=2,
         width=4096                  # kein erzwungenes Zeilenfalten
     )
+    return str(result) if result is not None else ""
 
 def save_config(cfg: AppConfig, path: str = "config/config.yaml") -> None:
     """Konfiguration als gut lesbare YAML speichern (mit Abschnitts-Kommentaren)."""

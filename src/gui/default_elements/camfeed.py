@@ -9,7 +9,7 @@ from src.config import get_logger
 
 logger = get_logger('gui.camfeed')
 
-def create_camfeed_content():
+def create_camfeed_content() -> None:
         # Kamera initialisieren
         logger.info("Creating camera feed")
         with ui.card().style("align-self:stretch; justify-content:center; align-items:start;"):
@@ -30,7 +30,7 @@ def create_camfeed_content():
                     videoimage.set_source(f'/video/frame?{time.time()}')
                 except Exception:
                     try:
-                        videoimage.source = f'/video/frame?{time.time()}'  # type: ignore[attr-defined]
+                        videoimage.source = f'/video/frame?{time.time()}'
                     except Exception:
                         pass
 

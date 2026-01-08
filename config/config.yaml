@@ -46,12 +46,12 @@ webcam:
 # UVC Controls
 # ---------------------------------------------------------------------------
 uvc_controls:
-  brightness: 35
+  brightness: 40
   hue: 0
   contrast: 16
   saturation: 64
   sharpness: 2
-  gamma: 0
+  gamma: 280
   white_balance:
     auto: true
     value: 4000
@@ -67,10 +67,10 @@ uvc_controls:
 motion_detection:
   region_of_interest:
     enabled: true
-    x: 1252
-    y: 48
-    width: 433
-    height: 240
+    x: 471
+    y: 238
+    width: 778
+    height: 582
   sensitivity: 0.55
   background_learning_rate: 0.005
   min_contour_area: 252
@@ -93,6 +93,7 @@ measurement:
   inactivity_timeout_minutes: 60
   motion_summary_interval_seconds: 60
   enable_motion_summary_logs: true
+  history_path: data/history
 
 # ---------------------------------------------------------------------------
 # E‑Mail

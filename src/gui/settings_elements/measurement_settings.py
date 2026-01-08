@@ -59,6 +59,8 @@ def create_measurement_card(
                         ctrl.classes('flex-1')
             # Intentionally omit extra help text label for a more compact layout
 
+    from src.gui.bindings import bind_number_slider
+
     def _set_control_value(ctrl: Any, value: object) -> None:
         try:
             if hasattr(ctrl, 'set_value'):
@@ -69,59 +71,6 @@ def create_measurement_card(
                     ctrl.update()
         except Exception:
             pass
-
-    def _bind_number_slider(
-        number_ctrl: Any,
-        slider_ctrl: Any,
-        *,
-        min_value: float,
-        max_value: float,
-        caster: Callable[[Any, float], Optional[float]],
-        fallback: float,
-        as_int: bool,
-        notify_change: Callable[[], None],
-    ) -> None:
-        syncing = {'active': False}
-
-        def _clamp(value: Any) -> Optional[float]:
-            v = caster(value, fallback)
-            if v is None:
-                return None
-            v = max(min_value, v)
-            v = min(max_value, v)
-            return v
-
-        def _format_value(v: float) -> Any:
-            return int(round(v)) if as_int else v
-
-        def _from_slider(event: Optional[object], commit: bool = False) -> None:
-            v = _clamp(getattr(event, 'value', getattr(slider_ctrl, 'value', None)))
-            if v is None:
-                return
-            if syncing['active']:
-                return
-            syncing['active'] = True
-            _set_control_value(number_ctrl, _format_value(v))
-            syncing['active'] = False
-            if commit:
-                notify_change()
-
-        def _from_number(event: Optional[object]) -> None:
-            if syncing['active']:
-                return
-            raw = getattr(event, 'value', getattr(number_ctrl, 'value', None)) if event is not None else getattr(number_ctrl, 'value', None)
-            v = _clamp(raw)
-            if v is None:
-                return
-            syncing['active'] = True
-            _set_control_value(slider_ctrl, _format_value(v))
-            syncing['active'] = False
-            notify_change()
-
-        slider_ctrl.on('update:model-value', lambda e: _from_slider(e, False))
-        slider_ctrl.on('change', lambda e: _from_slider(e, True))
-        number_ctrl.on('update:model-value', _from_number)
-        number_ctrl.on('blur', _from_number)
 
     def _cast_to_int(value: Any, fallback: float) -> Optional[float]:
         try:
@@ -167,20 +116,20 @@ def create_measurement_card(
             .tooltip(tooltip)
             .classes('flex-1')
         )
-        _bind_number_slider(
+        bind_number_slider(
             number_ctrl,
             slider_ctrl,
             min_value=min_value,
             max_value=max_value,
             caster=caster,
-            fallback=fallback,
+            fallback_value=fallback,
             as_int=as_int,
-            notify_change=_on_change,
+            on_change=lambda _: _on_change(),
         )
         _field(None, [number_ctrl, slider_ctrl])
         return number_ctrl, slider_ctrl
 
-    def _on_change(_=None) -> None:
+    def _on_change(_: Any = None) -> None:
         # Enable apply if any value differs from config
         try:
             current = {
@@ -230,14 +179,14 @@ def create_measurement_card(
             if violations:
                 ui.notify('; '.join(violations), type='warning', position='bottom-right')            # Persist to config
             mc = cfg.measurement
-            mc.alert_delay_seconds = new_state['alert_delay_seconds']
-            mc.max_alerts_per_session = new_state['max_alerts_per_session']
-            mc.alert_check_interval = new_state['alert_check_interval']
-            mc.alert_cooldown_seconds = new_state['alert_cooldown_seconds']
-            mc.alert_include_snapshot = new_state['alert_include_snapshot']
-            mc.inactivity_timeout_minutes = new_state['inactivity_timeout_minutes']
-            mc.motion_summary_interval_seconds = new_state['motion_summary_interval_seconds']
-            mc.enable_motion_summary_logs = new_state['enable_motion_summary_logs']
+            mc.alert_delay_seconds = int(new_state['alert_delay_seconds'])
+            mc.max_alerts_per_session = int(new_state['max_alerts_per_session'])
+            mc.alert_check_interval = float(new_state['alert_check_interval'])
+            mc.alert_cooldown_seconds = int(new_state['alert_cooldown_seconds'])
+            mc.alert_include_snapshot = bool(new_state['alert_include_snapshot'])
+            mc.inactivity_timeout_minutes = int(new_state['inactivity_timeout_minutes'])
+            mc.motion_summary_interval_seconds = int(new_state['motion_summary_interval_seconds'])
+            mc.enable_motion_summary_logs = bool(new_state['enable_motion_summary_logs'])
 
             if save_global_config():
                 # Live-apply to running controller if provided
@@ -301,7 +250,7 @@ def create_measurement_card(
         caster=_cast_to_int,
         as_int=True,
     )
-    include_snapshot_cb = ui.checkbox('Include snapshot in alert', value=state['alert_include_snapshot'])
+    include_snapshot_cb = ui.checkbox('Include snapshot in alert', value=bool(state['alert_include_snapshot']))
     inactivity_inp, inactivity_slider = _make_numeric_field(
         'inactivity_timeout_minutes',
         label='Inactivity timeout',
@@ -326,7 +275,7 @@ def create_measurement_card(
         caster=_cast_to_int,
         as_int=True,
     )
-    enable_summary_cb = ui.checkbox('Enable motion summary logs', value=state['enable_motion_summary_logs'])
+    enable_summary_cb = ui.checkbox('Enable motion summary logs', value=bool(state['enable_motion_summary_logs']))
 
     with ui.grid(columns=2).classes('w-full gap-3'):
         _field(None, [alert_delay_inp, alert_delay_slider], 'Time without motion before sending an alert')

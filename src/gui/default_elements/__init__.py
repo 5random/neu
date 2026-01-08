@@ -1,16 +1,12 @@
-from .uvc_knobs import create_uvc_content
-from .motion_detection_setting_card import create_motiondetection_card
-from .measurementcard import create_measurement_card
 from .motion_status_element import create_motion_status_element
 from .camfeed import create_camfeed_content
-from .new_emailcard import create_emailcard
+from .history_card import create_history_card
+from .stats_card import create_stats_card
 
 
 __all__ = [
-    "create_emailcard",
-    "create_uvc_content",
-    "create_motiondetection_card",
-    "create_measurement_card",
     "create_motion_status_element",
     "create_camfeed_content",
+    "create_history_card",
+    "create_stats_card",
 ]

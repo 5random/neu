@@ -6,7 +6,7 @@ import shutil
 import os
 import logging
 import queue
-from typing import Optional
+from typing import Optional, Any
 
 from nicegui import ui, app
 
@@ -171,7 +171,7 @@ def create_log_settings() -> None:
         client = ui.context.client
         # Remove any previous handlers this client added to avoid duplicates on re-render
         try:
-            prev = getattr(client, 'cvd_ui_log_handlers', [])  # type: ignore[attr-defined]
+            prev = getattr(client, 'cvd_ui_log_handlers', [])
             for lg, h in prev:
                 try:
                     lg.removeHandler(h)
@@ -185,7 +185,7 @@ def create_log_settings() -> None:
         def on_clear() -> None:
             live_log.clear()
 
-        def on_level_change(e) -> None:
+        def on_level_change(e: Any) -> None:
             level_name = str(e.value)
             level = getattr(logging, level_name, logging.INFO)
             ui_handler.setLevel(level)
@@ -209,7 +209,7 @@ def create_log_settings() -> None:
 
         # Ensure only one drain timer per client; cancel a previous one if present
         try:
-            prev_timer = getattr(client, 'cvd_logs_timer', None)  # type: ignore[attr-defined]
+            prev_timer = getattr(client, 'cvd_logs_timer', None)
             if prev_timer:
                 try:
                     prev_timer.cancel()
@@ -220,7 +220,7 @@ def create_log_settings() -> None:
 
         timer = ui.timer(0.25, drain_queue)
         try:
-            setattr(client, 'cvd_logs_timer', timer)  # type: ignore[attr-defined]
+            setattr(client, 'cvd_logs_timer', timer)
         except Exception:
             pass
 
@@ -231,13 +231,13 @@ def create_log_settings() -> None:
             except Exception:
                 pass
             try:
-                if getattr(client, 'cvd_logs_timer', None) is timer:  # type: ignore[attr-defined]
-                    delattr(client, 'cvd_logs_timer')  # type: ignore[attr-defined]
+                if getattr(client, 'cvd_logs_timer', None) is timer:
+                    delattr(client, 'cvd_logs_timer')
             except Exception:
                 pass
             try:
                 # remove handlers we added
-                for lg, h in getattr(client, 'cvd_ui_log_handlers', []):  # type: ignore[attr-defined]
+                for lg, h in getattr(client, 'cvd_ui_log_handlers', []):
                     try:
                         lg.removeHandler(h)
                     except Exception:

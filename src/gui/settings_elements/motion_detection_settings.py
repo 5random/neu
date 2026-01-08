@@ -7,6 +7,7 @@ from nicegui import ui
 from src.cam.camera import Camera, MotionDetector
 from src.gui.util import schedule_bg
 from src.config import get_global_config, save_global_config, get_logger
+from src.gui.bindings import bind_number_slider
 
 logger = get_logger('gui.motion')
 
@@ -34,67 +35,19 @@ def create_motiondetection_card(camera: Optional[Camera] = None) -> None:
         except Exception:
             pass
 
-    def _bind_controls(number_ctrl: Any, slider_ctrl: Any) -> None:
-        syncing = {'from_slider': False, 'from_number': False}
-
-        def _clamp(value: Any) -> float:
-            try:
-                v = float(value)
-            except Exception:
-                current = getattr(number_ctrl, 'value', 10)
-                try:
-                    v = float(current)
-                except Exception:
-                    v = 10.0
-            v = max(0.0, v)
-            v = min(100.0, v)
-            return v
-
-        def _from_slider(event: Any, commit: bool) -> None:
-            if syncing['from_number']:
-                return
-            raw = getattr(event, 'value', getattr(slider_ctrl, 'value', 10))
-            value = _clamp(raw)
-            syncing['from_slider'] = True
-            try:
-                _set_control_value(number_ctrl, int(round(value)))
-                if commit:
-                    update_sensitivity(int(round(value)))
-            finally:
-                syncing['from_slider'] = False
-
-        def _from_number(event: Any, commit: bool) -> None:
-            if syncing['from_slider']:
-                return
-            raw = getattr(event, 'value', getattr(number_ctrl, 'value', 10)) if event is not None else getattr(number_ctrl, 'value', 10)
-            value = _clamp(raw)
-            syncing['from_number'] = True
-            try:
-                _set_control_value(slider_ctrl, value)
-                if commit:
-                    update_sensitivity(int(round(value)))
-            finally:
-                syncing['from_number'] = False
-
-        slider_ctrl.on('update:model-value', lambda e: _from_slider(e, False))
-        slider_ctrl.on('change', lambda e: _from_slider(e, True))
-        number_ctrl.on('update:model-value', lambda e: _from_number(e, True))
-        number_ctrl.on('blur', lambda e: _from_number(e, True))
-
     def update_sensitivity(value: int) -> None:
         """Update MotionDetector sensitivity and persist with debounce."""
         nonlocal debounce_task
         if camera is None or camera.motion_detector is None:
             return
-        cam = cast(Camera, camera)
-        md = cast(MotionDetector, cam.motion_detector)
+        md = camera.motion_detector
         sens_value = max(0.01, value / 100.0)
         md.update_sensitivity(sens_value)
 
-        async def save_config_delayed():
+        async def save_config_delayed() -> None:
             await asyncio.sleep(0.5)
             try:
-                if cam.motion_detector and config:
+                if camera.motion_detector and config:
                     config.motion_detection.sensitivity = sens_value
                     save_global_config()
                     logger.info(f'Saved sensitivity: {sens_value}')
@@ -121,8 +74,7 @@ def create_motiondetection_card(camera: Optional[Camera] = None) -> None:
         try:
             if camera is None or camera.motion_detector is None:
                 return
-            cam = cast(Camera, camera)
-            md = cast(MotionDetector, cam.motion_detector)
+            md = camera.motion_detector
             if hasattr(md, 'sensitivity'):
                 sens_value = int(md.sensitivity * 100)
                 if sensitivity_number is not None:
@@ -154,7 +106,14 @@ def create_motiondetection_card(camera: Optional[Camera] = None) -> None:
                 .classes('flex-1')
             )
 
-            _bind_controls(sensitivity_number, sensitivity_slider)
+            bind_number_slider(
+                sensitivity_number,
+                sensitivity_slider,
+                min_value=0,
+                max_value=100,
+                as_int=True,
+                on_change=lambda v: update_sensitivity(int(v))
+            )
             try:
                 notify_client = getattr(sensitivity_number, 'client', None)
             except Exception:

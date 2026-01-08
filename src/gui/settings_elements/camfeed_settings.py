@@ -239,14 +239,14 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
                 h = int(IMG_H) - y
             return x, y, w, h
 
-    def update_state_from_inputs(_=None) -> None:
+    def update_state_from_inputs(_: Any = None) -> None:
         """Apply numeric input values to state and refresh overlay/labels."""
         nonlocal x_input, y_input, w_input, h_input, _updating_inputs
         if _updating_inputs or x_input is None or y_input is None or w_input is None or h_input is None:
             return
         try:
             # Helper to read values tolerant of intermediate states
-            def _get_val(ctrl) -> Optional[int]:
+            def _get_val(ctrl: Any) -> Optional[int]:
                 try:
                     v = getattr(ctrl, 'value', None)
                 except Exception:
@@ -319,7 +319,7 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
 
     def _apply_roi_to_config(enabled: bool, x0: int, y0: int, w: int, h: int) -> None:
         """Persist ROI to global config and camera.app_config, supporting dict or dataclass ROI."""
-        def _update_roi_container(container) -> None:
+        def _update_roi_container(container: Any) -> None:
             try:
                 if container is None:
                     return
@@ -446,7 +446,7 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
         update_inputs_from_state()
         update_roi_hint()
 
-    def handle_mouse(e):
+    def handle_mouse(e: Any) -> None:
         nonlocal coords_label
         try:
             if coords_label is not None:
@@ -493,20 +493,23 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
         )
 
         # Update the streaming source periodically (with fallback for older NiceGUI versions)
-        def _refresh_stream():
+        # Issue #14 fix: Check capability once to avoid repeated try-except
+        has_set_source = hasattr(image, 'set_source')
+        
+        def _refresh_stream() -> None:
             src = f'/video/frame?{time.time()}'
-            try:
+            if has_set_source:
                 image.set_source(src)
-            except Exception:
+            else:
                 try:
-                    image.source = src  # type: ignore[attr-defined]
+                    image.source = src
                 except Exception:
                     pass
         # Ensure only one refresh timer per client for the settings camfeed
         try:
             client = ui.context.client
             try:
-                prev = getattr(client, 'cvd_camfeed_timer_settings', None)  # type: ignore[attr-defined]
+                prev = getattr(client, 'cvd_camfeed_timer_settings', None)
                 if prev:
                     try:
                         prev.cancel()
@@ -517,18 +520,18 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
 
             timer = ui.timer(0.2, _refresh_stream)
             try:
-                setattr(client, 'cvd_camfeed_timer_settings', timer)  # type: ignore[attr-defined]
+                setattr(client, 'cvd_camfeed_timer_settings', timer)
             except Exception:
                 pass
 
-            def _cleanup():
+            def _cleanup() -> None:
                 try:
                     timer.cancel()
                 except Exception:
                     pass
                 try:
-                    if getattr(client, 'cvd_camfeed_timer_settings', None) is timer:  # type: ignore[attr-defined]
-                        delattr(client, 'cvd_camfeed_timer_settings')  # type: ignore[attr-defined]
+                    if getattr(client, 'cvd_camfeed_timer_settings', None) is timer:
+                        delattr(client, 'cvd_camfeed_timer_settings')
                 except Exception:
                     pass
 
@@ -569,7 +572,7 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
             roi_hint_label = ui.label('').classes('text-sm text-grey')
 
         # Enable/disable inputs based on ROI enabled state
-        def _sync_inputs_enabled():
+        def _sync_inputs_enabled() -> None:
             try:
                 enabled = bool(roi_enabled_checkbox.value) if roi_enabled_checkbox else True
                 for control in (x_input, y_input, w_input, h_input):

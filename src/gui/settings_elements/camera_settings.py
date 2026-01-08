@@ -5,6 +5,7 @@ import asyncio
 from src.cam.camera import Camera
 from src.gui.util import schedule_bg, cancel_task_safely
 from src.config import get_logger, get_global_config, save_global_config
+from src.gui.bindings import bind_number_slider
 
 logger = get_logger('gui.uvc_sliders')
 
@@ -19,7 +20,9 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
     knob_refs: dict[str, Any] = {}
     debounce_tasks: dict[str, Any] = {}
 
-    # Helpers
+    ranges = camera.get_uvc_ranges() if camera else {}
+    current = camera.get_uvc_current_values() if camera else {}
+
     def _set_control_value(ctrl: Any, value: Any) -> None:
         try:
             if hasattr(ctrl, 'set_value'):
@@ -30,131 +33,9 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                     ctrl.update()
         except Exception as e:
             logger.debug(f'Failed to set control value: {e}')
-    def _bind_numeric_pair(
-        number_ctrl: Any,
-        slider_ctrl: Any,
-        *,
-        min_value: float,
-        max_value: float,
-        as_int: bool,
-        on_commit: Callable[[float | int], None],
-    ) -> None:
-        syncing = {'from_slider': False, 'from_number': False}
 
-        def _fmt(value: float) -> float | int:
-            return int(round(value)) if as_int else value
-
-        def _clamp(value: Any) -> float:
-            try:
-                v = float(value)
-            except Exception:
-                current = getattr(number_ctrl, 'value', min_value)
-                try:
-                    v = float(current)
-                except Exception:
-                    v = min_value
-            v = max(min_value, v)
-            v = min(max_value, v)
-            return v
-
-        def _from_slider(event: Any, commit: bool) -> None:
-            if syncing['from_number']:
-                return
-            raw = getattr(event, 'value', getattr(slider_ctrl, 'value', min_value))
-            value = _clamp(raw)
-            syncing['from_slider'] = True
-            try:
-                _set_control_value(number_ctrl, _fmt(value))
-                if commit:
-                    on_commit(_fmt(value))
-            finally:
-                syncing['from_slider'] = False
-
-        def _from_number(event: Any, commit: bool) -> None:
-            if syncing['from_slider']:
-                return
-            raw = getattr(event, 'value', getattr(number_ctrl, 'value', min_value)) if event is not None else getattr(number_ctrl, 'value', min_value)
-            value = _clamp(raw)
-            slider_value = value if not as_int else _fmt(value)
-            syncing['from_number'] = True
-            try:
-                _set_control_value(slider_ctrl, slider_value)
-                if commit:
-                    on_commit(_fmt(value))
-            finally:
-                syncing['from_number'] = False
-
-        slider_ctrl.on('update:model-value', lambda e: _from_slider(e, False))
-        slider_ctrl.on('change', lambda e: _from_slider(e, True))
-        number_ctrl.on('update:model-value', lambda e: _from_number(e, True))
-        number_ctrl.on('blur', lambda e: _from_number(e, True))
-
-    def _build_scalar_card(
-        *,
-        title: str,
-        name: str,
-        range_key: str,
-        fallback: dict[str, float],
-        step: float,
-        tooltip: str,
-    setter: Callable[[float | int], Any],
-        config_field: str,
-        is_float: bool = False,
-    ) -> None:
-        range_info = ranges.get(range_key, fallback)
-        min_val = range_info.get('min', fallback['min'])
-        max_val = range_info.get('max', fallback['max'])
-        default_val = range_info.get('default', fallback['default'])
-        raw_value = current.get(name, default_val)
-        value = float(raw_value) if is_float else int(raw_value)
-
-        with ui.card().tight().classes('p-4 flex flex-col').style('align-items:stretch;'):
-            ui.label(f'{title}:').classes('font-semibold mb-2 self-start')
-            with ui.row().classes('items-center gap-3 w-full'):
-                number_ctrl = (
-                    ui.number(
-                        value=value,
-                        min=min_val,
-                        max=max_val,
-                        step=step,
-                        format='%.1f' if is_float else '%.0f',
-                    )
-                    .props('dense outlined')
-                    .tooltip(tooltip)
-                    .classes('min-w-[120px]')
-                )
-                slider_ctrl = (
-                    ui.slider(min=min_val, max=max_val, step=step, value=value)
-                    .tooltip(tooltip)
-                    .classes('flex-1')
-                )
-
-            commit = make_handler(setter, config_field, default_val)
-            _bind_numeric_pair(
-                number_ctrl,
-                slider_ctrl,
-                min_value=min_val,
-                max_value=max_val,
-                as_int=not is_float,
-                on_commit=commit,
-            )
-
-            knob_refs[name] = {'slider': slider_ctrl, 'number': number_ctrl}
-
-    def _to_bool_auto_exposure(val: Any) -> bool:
-        """Interpret OpenCV auto-exposure flag across platforms.
-        Windows typically reports 0.75 (auto) / 0.25 (manual);
-        Linux often 3 (auto) / 1 (manual); sometimes 0/1.
-        """
-        try:
-            f = float(val)
-        except Exception:
-            return bool(val)
-        # Treat > 0.5 as auto, and explicit 3.0 as auto
-        return f > 0.5 or abs(f - 3.0) < 1e-6
-    
-    def make_handler(camera_setter, config_field: str, default_value):
-        def handler(event):
+    def make_handler(camera_setter: Callable, config_field: str, default_value: Any) -> Callable:
+        def handler(event: Any) -> None:
             if hasattr(event, 'args'):
                 if isinstance(event.args, dict):
                     value = event.args.get('value', default_value)
@@ -170,7 +51,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
             camera_setter(value)
 
              # Delayed config saving            
-            async def save_config_delayed():
+            async def save_config_delayed() -> None:
                 await asyncio.sleep(0.5)  # 500ms Verzögerung
                 try:
                     config = get_global_config()
@@ -203,10 +84,74 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
             debounce_tasks[config_field] = schedule_bg(save_config_delayed(), name=f'save_{config_field}')
         
         return handler
+
+    def _build_scalar_card(
+        *,
+        title: str,
+        name: str,
+        range_key: str,
+        fallback: dict[str, float],
+        step: float,
+        tooltip: str,
+        setter: Callable[[float | int], Any],
+        config_field: str,
+        is_float: bool = False,
+    ) -> None:
+        range_info = ranges.get(range_key, fallback)
+        min_val = range_info.get('min', fallback['min'])
+        max_val = range_info.get('max', fallback['max'])
+        default_val = range_info.get('default', fallback['default'])
+        raw_value = current.get(name, default_val)
+        value = float(raw_value) if is_float else int(raw_value)
+
+        with ui.card().tight().classes('p-4 flex flex-col').style('align-items:stretch;'):
+            ui.label(f'{title}:').classes('font-semibold mb-2 self-start')
+            with ui.row().classes('items-center gap-3 w-full'):
+                number_ctrl = (
+                    ui.number(
+                        value=value,
+                        min=min_val,
+                        max=max_val,
+                        step=step,
+                        format='%.1f' if is_float else '%.0f',
+                    )
+                    .props('dense outlined')
+                    .tooltip(tooltip)
+                    .classes('min-w-[120px]')
+                )
+                slider_ctrl = (
+                    ui.slider(min=min_val, max=max_val, step=step, value=value)
+                    .tooltip(tooltip)
+                    .classes('flex-1')
+                )
+
+            commit = make_handler(setter, config_field, default_val)
+            bind_number_slider(
+                number_ctrl,
+                slider_ctrl,
+                min_value=min_val,
+                max_value=max_val,
+                as_int=not is_float,
+                on_change=commit,
+            )
+
+            knob_refs[name] = {'slider': slider_ctrl, 'number': number_ctrl}
+
+    def _to_bool_auto_exposure(val: Any) -> bool:
+        """Interpret OpenCV auto-exposure flag across platforms.
+        Windows typically reports 0.75 (auto) / 0.25 (manual);
+        Linux often 3 (auto) / 1 (manual); sometimes 0/1.
+        """
+        try:
+            f = float(val)
+        except (ValueError, TypeError):
+            return bool(val)
+        # Treat > 0.5 as auto, and explicit 3.0 as auto
+        return f > 0.5 or abs(f - 3.0) < 1e-6
     
-    def make_instant_handler(camera_setter, config_field: str, default_value):
+    def make_instant_handler(camera_setter: Callable, config_field: str, default_value: Any) -> Callable:
         """Für Checkboxes - sofortige Speicherung ohne Debounce"""
-        def handler(event):
+        def handler(event: Any) -> None:
             if hasattr(event, 'args'):
                 if isinstance(event.args, dict):
                     value = event.args.get('value', default_value)
@@ -245,10 +190,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
         
         return handler
 
-    ranges = camera.get_uvc_ranges() if camera else {}
-    current = camera.get_uvc_current_values() if camera else {}
-
-    def reset_uvc():
+    def reset_uvc() -> bool:
         try:
             if camera.reset_uvc_to_defaults():
                 for task in debounce_tasks.values():
@@ -445,13 +387,13 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                     if camera:
                         wb_auto.on('update:model-value', make_instant_handler(camera.set_auto_white_balance, 'uvc_controls.white_balance.auto', True))
                         wb_commit = make_handler(camera.set_manual_white_balance, 'uvc_controls.white_balance.value', wb_manual_range.get('default', 4600))
-                        _bind_numeric_pair(
+                        bind_number_slider(
                             wb_manual_number,
                             wb_manual_slider,
                             min_value=wb_manual_range['min'],
                             max_value=wb_manual_range['max'],
                             as_int=True,
-                            on_commit=wb_commit,
+                            on_change=wb_commit,
                         )
                         knob_refs['white_balance_auto'] = wb_auto
                         knob_refs['white_balance_manual'] = {'slider': wb_manual_slider, 'number': wb_manual_number}
@@ -497,13 +439,13 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                     if camera:
                         exp_auto.on('update:model-value', make_instant_handler(camera.set_auto_exposure, 'uvc_controls.exposure.auto', True))
                         exp_commit = make_handler(camera.set_manual_exposure, 'uvc_controls.exposure.value', exp_manual_range.get('default', -6))
-                        _bind_numeric_pair(
+                        bind_number_slider(
                             exp_manual_number,
                             exp_manual_slider,
                             min_value=exp_manual_range['min'],
                             max_value=exp_manual_range['max'],
                             as_int=True,
-                            on_commit=exp_commit,
+                            on_change=exp_commit,
                         )
                         knob_refs['exposure_auto'] = exp_auto
                         knob_refs['exposure_manual'] = {'slider': exp_manual_slider, 'number': exp_manual_number}
@@ -512,14 +454,22 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
 
     # Reset Button
     with ui.row().classes('gap-4'):
-            save_btn = ui.button(icon='save', color='primary')\
-                .classes('flex-1 text-gray-500').props('round')\
-                .tooltip('save settings')
-            reset_btn = ui.button(
-                icon='restore',
-                color='secondary'
-            ).classes('flex-1 text-gray-500').props('round').tooltip('reset settings')
+        save_btn = ui.button(icon='save', color='primary')\
+            .classes('flex-1 text-gray-500').props('round')\
+            .tooltip('save settings')
+        reset_btn = ui.button(
+            icon='restore',
+            color='secondary'
+        ).classes('flex-1 text-gray-500').props('round').tooltip('reset settings')
 
-            if camera:
-                save_btn.on('click', lambda: (camera.save_uvc_config(), ui.notify('Settings saved successfully!', type='positive', position='bottom-right')))
-                reset_btn.on('click', lambda: reset_uvc())
+        if camera:
+            def save_settings() -> None:
+                try:
+                    camera.save_uvc_config()
+                    ui.notify('Settings saved successfully!', type='positive', position='bottom-right')
+                except Exception as e:
+                    logger.error(f"Failed to save UVC config: {e}")
+                    ui.notify(f'Failed to save: {e}', type='negative', position='bottom-right')
+
+            save_btn.on('click', save_settings)
+            reset_btn.on('click', lambda: reset_uvc())

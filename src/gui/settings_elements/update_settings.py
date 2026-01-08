@@ -22,7 +22,7 @@ def create_update_settings() -> None:
 
         status_label = ui.label('').classes('text-body2')
 
-        async def on_update_click():
+        async def on_update_click() -> None:
             try:
                 status_label.text = 'Checking for updates…'
                 stat = await asyncio.to_thread(check_update)

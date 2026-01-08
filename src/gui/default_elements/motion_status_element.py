@@ -4,14 +4,14 @@ from fastapi.responses import JSONResponse
 import os
 from datetime import datetime
 import threading
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Any
 
 from src.measurement import MeasurementController
 from src.cam.camera import Camera
 from src.config import get_logger
 logger = get_logger('gui.motion_status')
 
-def create_motion_status_element(camera: Camera | None, measurement_controller: Optional['MeasurementController'] = None):
+def create_motion_status_element(camera: Camera | None, measurement_controller: Optional['MeasurementController'] = None) -> None:
     if camera is None:
         logger.warning("Camera not available - motion detection disabled")
         # Fallback-UI ohne Kamera-Integration (kompakter)
@@ -57,7 +57,7 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
                 status_label.text = 'No motion detected'
             timestamp_label.text = f'Last changed: {last_changed.strftime("%Y-%m-%d %H:%M:%S")}'
 
-    def _motion_callback(frame, result):
+    def _motion_callback(frame: Any, result: Any) -> None:
         nonlocal motion_detected, last_changed
         updated = False
         with state_lock:
@@ -69,7 +69,7 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
         # Ausserhalb des Locks aufrufen, um Blockierung zu vermeiden
         if measurement_controller is not None:
             try:
-                measurement_controller.on_motion_detected(result)
+                measurement_controller.on_motion_detected(frame, result)
             except Exception:
                 logger.exception("Error in measurement_controller.on_motion_detected")
 
@@ -79,7 +79,7 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
     refresh_view()
     # ---------- REST endpoint for analysis script -------------------
     @ui.page('/api/motion/update')
-    async def update(request: Request):
+    async def update(request: Request) -> JSONResponse:
         nonlocal motion_detected, last_changed
 
         def _is_authorized(req: Request) -> tuple[bool, str]:

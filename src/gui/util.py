@@ -1,9 +1,9 @@
 from __future__ import annotations
 from typing import Optional, Any
-from nicegui import ui, background_tasks, core, app
+from nicegui import ui, background_tasks, core, app, Client
 
 # --- Tab helpers: dynamic title & favicon per client/all clients ---
-def set_tab(title: str | None = None, icon_url: str | None = None, client=None) -> None:
+def set_tab(title: str | None = None, icon_url: str | None = None, client: Optional[Client] = None) -> None:
     """Set browser tab title and/or favicon on the given or current client.
 
     Safe no-op if no client context is available.
@@ -84,7 +84,7 @@ def favicon_highlight_off_red() -> str:
     return _svg_data_url(svg)
 
 
-def schedule_bg(coroutine: Any, name: Optional[str] = None) -> Optional[Any] | None:
+def schedule_bg(coroutine: Any, name: Optional[str] = None) -> Optional[Any]:
     """Safely schedule a coroutine on NiceGUI's event loop.
 
     If the NiceGUI loop is not yet available (core.loop is None), defer scheduling
@@ -96,7 +96,8 @@ def schedule_bg(coroutine: Any, name: Optional[str] = None) -> Optional[Any] | N
         if core.loop is None:
             ui.timer(0.0, lambda: background_tasks.create_lazy(coroutine, name=task_name), once=True)
             return None
-        return background_tasks.create_lazy(coroutine, name=task_name)
+        background_tasks.create_lazy(coroutine, name=task_name)
+        return None
     except AssertionError:
         # In case create/create_lazy asserts due to loop not being ready, defer via timer
         ui.timer(0.0, lambda: background_tasks.create_lazy(coroutine, name=task_name), once=True)
@@ -119,3 +120,27 @@ def cancel_task_safely(task: Any) -> None:
     except Exception:
         # Best-effort; ignore any cancellation errors
         pass
+
+def safe_ui_operation(
+    operation: Any,
+    error_msg: str = "Operation failed",
+    success_msg: Optional[str] = None,
+    logger: Optional[Any] = None
+) -> None:
+    """
+    Executes a UI operation safely, handling exceptions and notifying the user.
+    
+    Args:
+        operation: Callable to execute.
+        error_msg: Message to show/log on error.
+        success_msg: Optional message to show on success.
+        logger: Optional logger to record errors.
+    """
+    try:
+        operation()
+        if success_msg:
+            ui.notify(success_msg, type='positive')
+    except Exception as e:
+        if logger:
+            logger.error(f"{error_msg}: {e}")
+        ui.notify(f"{error_msg}: {e}", type='negative')

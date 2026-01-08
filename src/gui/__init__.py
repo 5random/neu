@@ -1,24 +1,23 @@
-"""GUI package init with lazy exports to prevent circular imports.
-
-We avoid importing submodules at package import time. Instead we provide
-attributes on demand via __getattr__.
-"""
-
+"""GUI package init with lazy exports to prevent circular imports."""
 import importlib
 
 _DEFAULT_ELEMENTS_EXPORTS = {
-    "create_emailcard",
-    "create_uvc_content",
-    "create_motiondetection_card",
-    "create_measurement_card",
-    "create_motion_status_element",
-    "create_camfeed_content",
+    "MotionStatusElement",
+    "CameraStatusElement", 
+    "SystemStatusElement",
+    "HistoryCard",
+    "StatsCard"
 }
 
-_GUI_EXPORTS = {"create_gui", "init_camera"}
+_GUI_EXPORTS = {
+    "create_header",
+    "create_navigation",
+    "create_content_area"
+}
 
-def __getattr__(name: str):
-    # Lazy proxies to break circular imports
+from typing import Any
+
+def __getattr__(name: str) -> Any:
     if name in _DEFAULT_ELEMENTS_EXPORTS:
         mod = importlib.import_module(".default_elements", __name__)
         return getattr(mod, name)

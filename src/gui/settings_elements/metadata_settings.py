@@ -102,13 +102,14 @@ def create_metadata_settings() -> None:
 					ui.notify(f'Error saving metadata: {exc}', type='negative', position='bottom-right')
 
 			apply_btn = ui.button('Apply', on_click=_apply).props('color=primary')
-			ui.button('Reset', on_click=lambda: [
-				setattr(cvd_id_inp, 'value', str(getattr(md, 'cvd_id', 0))),
-				setattr(cvd_name_inp, 'value', str(getattr(md, 'cvd_name', ''))),
-				cvd_id_inp.update(),
-				cvd_name_inp.update(),
-				_update_ui_from_inputs(),
-			])
+			def _reset() -> None:
+				cvd_id_inp.value = str(getattr(md, 'cvd_id', 0))
+				cvd_name_inp.value = str(getattr(md, 'cvd_name', ''))
+				cvd_id_inp.update()
+				cvd_name_inp.update()
+				_update_ui_from_inputs()
+
+			ui.button('Reset', on_click=_reset)
 
 		# Wire robust value change events
 		try:

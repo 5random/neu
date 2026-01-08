@@ -128,7 +128,7 @@ def create_emailcard(*, config: AppConfig) -> None:
                         ui.tooltip("Port must be between 1 and 65535.")
 
 
-                def attempt_save():
+                def attempt_save() -> None:
                     errors = validate_smtp(smtp)
                     if errors:
                         ui.notify(" ".join(errors), color="negative")
@@ -136,7 +136,7 @@ def create_emailcard(*, config: AppConfig) -> None:
                         persist_state()
                         ui.notify("Saved", color="positive")
                 
-                def send_test_email():
+                def send_test_email() -> None:
                         email = EMailSystem(config.email, config.measurement, config)
                         if email.send_test_email():
                             ui.notify("Test email sent successfully", color="positive")

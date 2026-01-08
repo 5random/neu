@@ -18,7 +18,8 @@ from fastapi.responses import JSONResponse
 from src.config import load_config, get_logger
 from src.gui.gui_ import create_gui
 
-def handle_asyncio_connection_lost(loop, context):
+from typing import Any, Dict
+def handle_asyncio_connection_lost(loop: Any, context: Dict[str, Any]) -> None:
     """Ignoriere ConnectionResetError in ProactorBasePipeTransport."""
     exc = context.get("exception")
     if isinstance(exc, ConnectionResetError):

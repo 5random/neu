@@ -6,9 +6,9 @@ import re
 
 from nicegui import ui, app
 try:
-    import yaml  # type: ignore
+    import yaml
 except ImportError:  # graceful fallback if PyYAML is not installed
-    yaml = None  # type: ignore    yaml = None  # type: ignore
+    yaml = None  # type: ignore[assignment]
 
 # Links are provided by help.yaml via an optional 'link' field per section.
 
@@ -56,7 +56,7 @@ def _load_yaml_content() -> Dict[str, Any]:
         data = yaml.safe_load(text)
         if not isinstance(data, dict):
             raise ValueError('Invalid YAML structure')
-        return data  # type: ignore[return-value]
+        return data
     except Exception:
         # On parse error, show raw content
         return {
@@ -88,12 +88,12 @@ def help_page() -> None:
 
     # Reuse global header/footer if available
     try:
-        from ..gui_ import build_header, build_footer  # type: ignore
+        from ..gui_ import build_header, build_footer
     except Exception:
         build_header = None  # type: ignore
         build_footer = None  # type: ignore
 
-    if build_header:
+    if build_header is not None:
         build_header()
 
     # Minor CSS for anchors and readability
@@ -155,5 +155,5 @@ html { scroll-behavior: smooth; }
                         ui.link('Open related section in app', route.strip()).classes('text-primary text-caption q-mb-xs')
                     ui.markdown(content).classes('prose')
 
-    if build_footer:
+    if build_footer is not None:
         build_footer()

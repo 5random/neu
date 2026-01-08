@@ -3,7 +3,7 @@
 These tests verify that invalid email addresses are not stored in groups
 and duplicates are removed while preserving order.
 """
-from src.gui.default_elements.new_emailcard import (
+from src.gui.settings_elements.email_settings import (
     sanitize_group_addresses,
     sanitize_groups_dict,
 )
