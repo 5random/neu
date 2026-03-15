@@ -9,15 +9,15 @@
 metadata:
   version: 1.0
   description: CVD-Tracker
-  cvd_id: 0
-  cvd_name: Default_CVD
+  cvd_id: 2
+  cvd_name: Default_CVD_Test
   released_at: 2023-01-01
 
 # ---------------------------------------------------------------------------
 # Webcam
 # ---------------------------------------------------------------------------
 webcam:
-  camera_index: 0
+  camera_index: 1
   default_resolution:
     width: 1920
     height: 1080
@@ -46,17 +46,17 @@ webcam:
 # UVC Controls
 # ---------------------------------------------------------------------------
 uvc_controls:
-  brightness: 40
+  brightness: -13
   hue: 0
   contrast: 16
   saturation: 64
   sharpness: 2
-  gamma: 280
+  gamma: 164
   white_balance:
     auto: true
-    value: 4000
-  gain: 50
-  backlight_compensation: 0
+    value: 3400
+  gain: 10
+  backlight_compensation: 42
   exposure:
     auto: true
     value: -6
@@ -67,10 +67,10 @@ uvc_controls:
 motion_detection:
   region_of_interest:
     enabled: true
-    x: 471
-    y: 238
-    width: 778
-    height: 582
+    x: 340
+    y: 163
+    width: 1367
+    height: 736
   sensitivity: 0.55
   background_learning_rate: 0.005
   min_contour_area: 252

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections import deque
 from pathlib import Path
 import tempfile
 import zipfile
@@ -6,6 +7,7 @@ import shutil
 import os
 import logging
 import queue
+import re
 from typing import Optional, Any
 
 from nicegui import ui, app
@@ -13,6 +15,14 @@ from nicegui import ui, app
 from src.config import get_logger
 
 logger = get_logger('gui.logs')
+LOG_LEVELS = {
+    'DEBUG': logging.DEBUG,
+    'INFO': logging.INFO,
+    'WARNING': logging.WARNING,
+    'ERROR': logging.ERROR,
+    'CRITICAL': logging.CRITICAL,
+}
+LOG_LEVEL_PATTERN = re.compile(r'\s-\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s-\s')
 
 
 class UILogHandler(logging.Handler):
@@ -21,7 +31,7 @@ class UILogHandler(logging.Handler):
     The queue is drained into a NiceGUI ui.log() widget by a UI timer on the client.
     """
 
-    def __init__(self, msg_queue: queue.Queue[str], level: int = logging.INFO, fmt: Optional[logging.Formatter] = None):
+    def __init__(self, msg_queue: queue.Queue[tuple[int, str]], level: int = logging.DEBUG, fmt: Optional[logging.Formatter] = None):
         super().__init__(level)
         self.queue = msg_queue
         if fmt is not None:
@@ -40,7 +50,7 @@ class UILogHandler(logging.Handler):
                     _ = self.queue.get_nowait()
             except Exception:
                 pass
-            self.queue.put_nowait(msg)
+            self.queue.put_nowait((record.levelno, msg))
         except Exception:
             # As a last resort, ignore to avoid breaking logging
             pass
@@ -57,6 +67,14 @@ def _read_tail(file_path: Path, max_lines: int = 200) -> list[str]:
         return lines[-max_lines:]
     except Exception:
         return []
+
+
+def _extract_level_from_line(line: str) -> int:
+    """Extract the logging level from a formatted log line."""
+    match = LOG_LEVEL_PATTERN.search(line)
+    if not match:
+        return logging.INFO
+    return LOG_LEVELS.get(match.group(1), logging.INFO)
 
 
 def create_log_settings() -> None:
@@ -114,46 +132,47 @@ def create_log_settings() -> None:
                 pass
 
     # --- UI Layout ---
-    with ui.column().classes('gap-3'):
+    with ui.column().classes('w-full gap-4 items-stretch'):
         ui.label('Logs').classes('text-subtitle1 font-semibold').props('id=logs')
         ui.label('Package and download recent application logs for troubleshooting.').classes('text-body2')
-        with ui.row().classes('gap-2'):
+        with ui.row().classes('w-full items-center gap-2'):
             ui.button('Download Logs (ZIP)', icon='download', on_click=download_logs_as_zip).props('color=primary')
 
         ui.separator()
         ui.label('Live Log (from cvd_tracker)').classes('text-subtitle1 font-semibold')
 
         # Controls row
-        with ui.row().classes('items-center gap-3'):
+        with ui.row().classes('w-full items-center gap-3 flex-wrap'):
             paused_switch = ui.switch('Pause').props('color=primary')
             clear_btn = ui.button('Clear', icon='clear')
-            # Level filter: affects our handler's level (cannot raise events logged below logger level)
             level_select = ui.select(
-                {"DEBUG": "DEBUG", "INFO": "INFO", "WARNING": "WARNING", "ERROR": "ERROR", "CRITICAL": "CRITICAL"},
-                value="INFO",
+                list(LOG_LEVELS.keys()),
+                value='INFO',
                 with_input=False,
-            ).props('label=Level dense outlined style="min-width: 160px;"')
+            ).props('label=Level dense outlined').classes('min-w-[180px]')
 
         # The live log widget
-        live_log = ui.log(max_lines=2000).classes('w-full h-72')
+        with ui.element('div').classes('w-full min-w-0'):
+            live_log = ui.log(max_lines=2000).classes('w-full h-96').style('min-width: 0; width: 100%;')
 
         # Initialize: tail existing file
         logs_dir = Path('logs')
         ensure_logs_static_mapping(logs_dir)
         current_log_file = logs_dir / 'cvd_tracker.log'
         initial_lines = _read_tail(current_log_file, max_lines=200)
+        all_entries: deque[tuple[int, str]] = deque(maxlen=5000)
         for line in initial_lines:
-            live_log.push(line)
+            all_entries.append((_extract_level_from_line(line), line))
 
         # Queue and handler per client
-        msg_queue: queue.Queue[str] = queue.Queue(maxsize=5000)
+        msg_queue: queue.Queue[tuple[int, str]] = queue.Queue(maxsize=5000)
 
         # Set up a formatter consistent with file log lines
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%d.%m.%Y %H:%M:%S'
         )
-        ui_handler = UILogHandler(msg_queue, level=logging.INFO, fmt=formatter)
+        ui_handler = UILogHandler(msg_queue, level=logging.DEBUG, fmt=formatter)
 
         # Attach to multiple relevant loggers to capture broader output
         target_loggers: list[logging.Logger] = [
@@ -182,29 +201,46 @@ def create_log_settings() -> None:
         client.cvd_ui_log_handlers = [(lg, ui_handler) for lg in target_loggers]  # type: ignore[attr-defined]
 
         # Wire controls
-        def on_clear() -> None:
+        def current_level() -> int:
+            return LOG_LEVELS.get(str(level_select.value), logging.INFO)
+
+        def render_log_view() -> None:
             live_log.clear()
+            filtered = [msg for level, msg in all_entries if level >= current_level()]
+            for msg in filtered[-2000:]:
+                live_log.push(msg)
+
+        def on_clear() -> None:
+            all_entries.clear()
+            live_log.clear()
+            while not msg_queue.empty():
+                try:
+                    msg_queue.get_nowait()
+                except Exception:
+                    break
 
         def on_level_change(e: Any) -> None:
-            level_name = str(e.value)
-            level = getattr(logging, level_name, logging.INFO)
-            ui_handler.setLevel(level)
+            render_log_view()
 
         clear_btn.on('click', on_clear)
         level_select.on('update:model-value', on_level_change)
+        render_log_view()
 
         # Drain queue into the UI in the client context
         def drain_queue() -> None:
             if paused_switch.value:
                 return
             drained = 0
+            threshold = current_level()
             # Limit per tick to avoid UI flooding
             while drained < 200 and not msg_queue.empty():
                 try:
-                    msg = msg_queue.get_nowait()
+                    level, msg = msg_queue.get_nowait()
                 except Exception:
                     break
-                live_log.push(msg)
+                all_entries.append((level, msg))
+                if level >= threshold:
+                    live_log.push(msg)
                 drained += 1
 
         # Ensure only one drain timer per client; cancel a previous one if present

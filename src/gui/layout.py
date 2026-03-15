@@ -1,5 +1,8 @@
 from nicegui import ui, app
 from src.config import get_global_config
+from .constants import StorageKeys
+from .storage import get_ui_pref, get_ui_storage, set_ui_pref
+
 
 def _compute_title() -> str:
     """Compute UI title from config.gui.title template and metadata."""
@@ -22,21 +25,10 @@ def _compute_title() -> str:
 
 def build_header() -> None:
     with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
-        # Per-client dark mode binding with immediate initialization from client storage
-        dark = ui.dark_mode()
-        try:
-            _stored_dark = app.storage.client.get('cvd.dark_mode')
-            if _stored_dark is not None:
-                dark.value = bool(_stored_dark)
-        except Exception:
-            pass
-        
-        # Ensure per-client title value is initialized for bindings below
-        try:
-            if app.storage.client.get('cvd.gui_title') is None:
-                app.storage.client['cvd.gui_title'] = _compute_title()
-        except Exception:
-            pass
+        dark = ui.dark_mode(value=bool(get_ui_pref(StorageKeys.DARK_MODE, False)))
+
+        # Refresh the shared title on each page build so config changes are reflected.
+        set_ui_pref(StorageKeys.GUI_TITLE, _compute_title())
 
         # --- Linke Seite -------------------------------------------
         with ui.row().classes('items-center gap-3'):
@@ -63,7 +55,7 @@ def build_header() -> None:
             title_label = ui.label().props('id=cvd-header-title').classes(
                 'text-xl font-semibold tracking-wider text-gray-100')
             try:
-                title_label.bind_text_from(app.storage.client, 'cvd.gui_title')
+                title_label.bind_text_from(get_ui_storage(), StorageKeys.GUI_TITLE)
             except Exception:
                 title_label.text = _compute_title()
 
@@ -72,10 +64,7 @@ def build_header() -> None:
             dark.toggle()
             new_icon = 'light_mode' if dark.value else 'dark_mode'
             btn.props(f'icon={new_icon}')
-            try:
-                app.storage.client['cvd.dark_mode'] = bool(dark.value)
-            except Exception:
-                pass
+            set_ui_pref(StorageKeys.DARK_MODE, bool(dark.value))
 
         with ui.row().classes('items-center gap-4'):
             ui.button(icon='help', on_click=lambda: ui.navigate.to('/help'))\
@@ -87,17 +76,11 @@ def build_header() -> None:
             ).props('flat round dense').classes('text-xl').tooltip('Toggle dark mode')
 
             def _go_home() -> None:
-                try:
-                    app.storage.client['cvd.last_route'] = '/'
-                except Exception:
-                    pass
+                set_ui_pref(StorageKeys.LAST_ROUTE, '/')
                 ui.navigate.to('/', new_tab=False)
 
             def _go_settings() -> None:
-                try:
-                    app.storage.client['cvd.last_route'] = '/settings'
-                except Exception:
-                    pass
+                set_ui_pref(StorageKeys.LAST_ROUTE, '/settings')
                 ui.navigate.to('/settings', new_tab=False)
 
             ui.button(icon='home', on_click=_go_home)\
@@ -111,7 +94,7 @@ def build_footer() -> None:
         with ui.row().classes('items-center justify-between px-4 py-2'):
             footer_label = ui.label().props('id=cvd-footer-title').classes('text-white text-sm')
             try:
-                footer_label.bind_text_from(app.storage.client, 'cvd.gui_title')
+                footer_label.bind_text_from(get_ui_storage(), StorageKeys.GUI_TITLE)
             except Exception:
                 footer_label.text = _compute_title()
             ui.label('© 2025 TUHH KVWEB').classes('text-white text-sm')

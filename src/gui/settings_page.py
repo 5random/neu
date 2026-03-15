@@ -1,6 +1,7 @@
 from typing import Optional, TYPE_CHECKING, Callable, Any
+import json
 
-from nicegui import ui, app
+from nicegui import ui
 
 from src.cam.camera import Camera
 if TYPE_CHECKING:
@@ -18,6 +19,8 @@ from src.gui.settings_elements.log_settings import create_log_settings
 from src.gui.settings_elements.config_settings import create_config_settings
 from src.gui.settings_elements.update_settings import create_update_settings
 from src.gui.settings_elements.metadata_settings import create_metadata_settings
+from src.gui.constants import StorageKeys
+from src.gui.storage import delete_ui_pref, get_runtime_ui_pref, get_ui_pref, set_runtime_ui_pref, set_ui_pref
 
 logger = get_logger("settings_page")
 
@@ -43,46 +46,90 @@ def settings_page() -> None:
     cfg = get_global_config()
     if cfg is None:
         ui.notify('Configuration not loaded', type='warning', position='bottom-right')
-    # Persist last visited route per client
-    try:
-        app.storage.client['cvd.last_route'] = '/settings'
-    except Exception:
-        pass
+    # Persist last visited route for this browser session
+    set_ui_pref(StorageKeys.LAST_ROUTE, '/settings')
 
     # Hinweis: Der Browser-Tab-Titel wird ausschließlich beim Start über ui.run gesetzt.
     # Auf der Settings-Seite erfolgt keine dynamische Anpassung mehr.
 
     # Gemeinsamen Header/Footer der App verwenden
-    try:
-        from .gui_ import build_header, build_footer
-    except Exception:
-        build_header = None  # type: ignore
-        build_footer = None  # type: ignore
+    from .layout import build_header, build_footer
+    build_header()
 
-    if build_header is not None:
-        build_header()
+    # Determine initial drawer state from persisted UI storage (default: open)
+    _stored_drawer_open = get_ui_pref(StorageKeys.DRAWER_OPEN)
+    _initial_drawer_open = bool(_stored_drawer_open) if _stored_drawer_open is not None else True
 
-    # Determine initial drawer state from per-client storage (default: open)
-    try:
-        _stored_drawer_open = app.storage.client.get('cvd.settings.drawer_open')
-        _initial_drawer_open = bool(_stored_drawer_open) if _stored_drawer_open is not None else True
-    except Exception:
-        _initial_drawer_open = True
+    section_openers: dict[str, Callable[[], None]] = {}
+
+    def _scroll_to_section(anchor_id: str, section_id: str) -> None:
+        ui.run_javascript(f"""
+        (function() {{
+            const anchorId = {json.dumps(anchor_id)};
+            const sectionId = {json.dumps(section_id)};
+            const isCollapsed = () => {{
+                const content = document.getElementById(`cvd-content-${{sectionId}}`);
+                if (!content) return false;
+                const style = window.getComputedStyle(content);
+                return content.classList.contains('hidden') || style.display === 'none' || style.visibility === 'hidden';
+            }};
+            let attempts = 0;
+            const maxAttempts = 40;
+            const tryScroll = () => {{
+                const target = document.getElementById(anchorId);
+                const sectionReady = !isCollapsed();
+                if (target && sectionReady) {{
+                    try {{
+                        if (window.__cvdQuickLinksSetActiveById) {{
+                            window.__cvdQuickLinksSetActiveById(anchorId);
+                        }}
+                        history.replaceState(null, '', `#${{anchorId}}`);
+                    }} catch (e) {{ /* ignore */ }}
+                    target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                    return true;
+                }}
+                attempts += 1;
+                return attempts >= maxAttempts;
+            }};
+            if (tryScroll()) return;
+            const timer = window.setInterval(() => {{
+                if (tryScroll()) {{
+                    window.clearInterval(timer);
+                }}
+            }}, 75);
+        }})();
+        """)
+
+    def _open_section(anchor_id: str, section_id: str) -> None:
+        opener = section_openers.get(section_id)
+        if opener is not None:
+            opener()
+        _scroll_to_section(anchor_id, section_id)
 
     # Left drawer with quick links; initialize model value explicitly
-    with ui.left_drawer(value=_initial_drawer_open).classes('bg-blue-100 w-64 p-2') as left_drawer:
+    with ui.left_drawer(value=_initial_drawer_open).classes('w-64 p-2 cvd-quicklinks-drawer') as left_drawer:
+        def _quick_link(label: str, anchor_id: str, section_id: str) -> None:
+            link = ui.link(label, f'#{anchor_id}') \
+                .classes('cvd-quick-link block px-2 py-1 rounded') \
+                .props(f'data-anchor={anchor_id} data-section={section_id}')
+            link.on(
+                'click',
+                lambda _anchor=anchor_id, _section=section_id: _open_section(_anchor, _section),
+                js_handler='(e) => { e.preventDefault(); emit(); }',
+            )
+
         # Add an id to scope our script and styles
         left_drawer.props('id=cvd-quicklinks')
-        ui.label('Quick Links').classes('text-bold pl-2 pt-2')
-        # Anchor links to scroll to sections
-        ui.link('Camera', '#camera').classes('cvd-quick-link block px-2 py-1 hover:bg-blue-200 rounded')
-        ui.link('Metadata', '#metadata').classes('cvd-quick-link block px-2 py-1 hover:bg-blue-200 rounded')
-        ui.link('Motion Detection', '#motion').classes('cvd-quick-link block px-2 py-1 hover:bg-blue-200 rounded')
-        ui.link('Measurement', '#measurement').classes('cvd-quick-link block px-2 py-1 hover:bg-blue-200 rounded')
-        ui.link('E-Mail', '#email').classes('cvd-quick-link block px-2 py-1 hover:bg-blue-200 rounded')
-        ui.link('Configuration', '#config').classes('cvd-quick-link block px-2 py-1 hover:bg-blue-200 rounded')
-        ui.link('Update', '#update').classes('cvd-quick-link block px-2 py-1 hover:bg-blue-200 rounded')
-        ui.link('Logs', '#logs').classes('cvd-quick-link block px-2 py-1 hover:bg-blue-200 rounded')
+        ui.label('Quick Links').classes('text-bold pl-2 pt-2 cvd-quicklinks-title')
+        # Anchor links to scroll to sections and expand the owning card if necessary
+        _quick_link('Camera', 'camera', 'camera')
+        _quick_link('Metadata', 'metadata', 'metadata')
+        _quick_link('Motion Detection', 'motion', 'camera')
+        _quick_link('Measurement', 'measurement', 'measurement')
+        _quick_link('E-Mail', 'email', 'email')
+        _quick_link('Configuration', 'config', 'config')
+        _quick_link('Update', 'update', 'update')
+        _quick_link('Logs', 'logs', 'logs')
 
     # Sticky menu button to toggle the left drawer for navigation
     with ui.page_sticky(position='top-left', x_offset=12, y_offset=12).classes('cvd-sticky').style('z-index:10000'):
@@ -93,11 +140,7 @@ def settings_page() -> None:
             nonlocal _drawer_state
             left_drawer.toggle()
             _drawer_state = not _drawer_state
-            # Persist per-client drawer state
-            try:
-                app.storage.client['cvd.settings.drawer_open'] = _drawer_state
-            except Exception:
-                pass
+            set_ui_pref(StorageKeys.DRAWER_OPEN, _drawer_state)
         ui.button(on_click=_toggle_drawer, icon='menu').props('fab color=primary')
 
     # Sticky actions: Back-to-top and optional help/contact
@@ -110,22 +153,23 @@ def settings_page() -> None:
             ui.button(on_click=lambda: ui.navigate.to('/help'), icon='contact_support').props('fab')\
                 .tooltip('Help')
 
-            # Reset UI Preferences (client storage) with confirmation
+            # Reset persisted UI preferences with confirmation
             reset_dialog = ui.dialog()
             with reset_dialog:
                 with ui.card().classes('items-start gap-3'):
                     ui.label('Reset UI Preferences?').classes('text-h6')
-                    ui.label('This will clear per-client preferences like dark mode, last visited page, drawer state, and collapsed sections for this browser.').classes('text-body2')
+                    ui.label('This will clear persisted UI preferences like dark mode, last visited page, drawer state, and collapsed sections for this browser.').classes('text-body2')
                     with ui.row().classes('gap-2'):
                         def _confirm_reset() -> None:
                             try:
-                                # Clear known client-scoped keys
-                                for key in ['cvd.dark_mode', 'cvd.last_route', 'cvd.settings.drawer_open', 'cvd.settings.collapse']:
-                                    try:
-                                        if key in app.storage.client:
-                                            del app.storage.client[key]
-                                    except Exception:
-                                        pass
+                                for key in [
+                                    StorageKeys.DARK_MODE,
+                                    StorageKeys.LAST_ROUTE,
+                                    StorageKeys.DRAWER_OPEN,
+                                    StorageKeys.COLLAPSE_STATE,
+                                    StorageKeys.GUI_TITLE,
+                                ]:
+                                    delete_ui_pref(key)
                                 ui.notify('UI preferences reset', type='positive', position='bottom-right')
                                 reset_dialog.close()
                                 # Reload to apply fresh state
@@ -138,16 +182,14 @@ def settings_page() -> None:
 
             ui.button(icon='settings_backup_restore', on_click=reset_dialog.open).props('fab color=warning').tooltip('Reset UI preferences for this browser')
 
-    # Prepare per-client collapse state storage
-    try:
-        collapse_state = app.storage.client.get('cvd.settings.collapse') or {}
-        if not isinstance(collapse_state, dict):
-            collapse_state = {}
-    except Exception:
+    # Prepare runtime-scoped collapse state storage.
+    # All cards start collapsed after an app restart, but keep the last user choice while the app runs.
+    collapse_state = get_runtime_ui_pref(StorageKeys.COLLAPSE_STATE, {}) or {}
+    if not isinstance(collapse_state, dict):
         collapse_state = {}
 
-    def _collapsible_card(section_id: str, title: str, default_collapsed: bool = False) -> ui.column:
-        """Create a collapsible card with persistent (per client) state.
+    def _collapsible_card(section_id: str, title: str, default_collapsed: bool = True) -> ui.column:
+        """Create a collapsible card with runtime-scoped UI state.
 
         Returns the content container to populate inside the card.
         """
@@ -161,7 +203,7 @@ def settings_page() -> None:
             section_id = 'section'
         title_escaped = html.escape(title)
 
-        with ui.card().classes('w-full').props('flat bordered'):
+        with ui.card().classes('w-full').props(f'flat bordered id=cvd-card-{section_id}'):
             # Header with ID (for anchor/IntersectionObserver) and toggle
             with ui.row().classes('items-center justify-between'):
                 ui.html(
@@ -173,29 +215,32 @@ def settings_page() -> None:
                     nonlocal collapsed
                     collapsed = not collapsed
                     collapse_state[section_id] = collapsed
-                    try:
-                        app.storage.client['cvd.settings.collapse'] = collapse_state
-                    except Exception:
-                        pass
+                    set_runtime_ui_pref(StorageKeys.COLLAPSE_STATE, collapse_state)
                     content.visible = not collapsed
                     chevron.props('icon=' + ('chevron_right' if collapsed else 'expand_more'))
 
+                def _ensure_open() -> None:
+                    if collapsed:
+                        _toggle()
+
                 chevron = ui.button(icon=('chevron_right' if collapsed else 'expand_more'), on_click=_toggle)
-                chevron.props('flat round dense').tooltip('Collapse/expand')
+                chevron.props(f'flat round dense id=cvd-toggle-{section_id}').tooltip('Collapse/expand')
 
             # Content container
             content = ui.column().classes('w-full gap-4')
+            content.props(f'id=cvd-content-{section_id}')
             content.visible = not collapsed
+            section_openers[section_id] = _ensure_open
         return content
 
-    def _collapsible_lazy_card(section_id: str, title: str, render_fn: Callable[[Any], None], default_collapsed: bool = False) -> ui.column:
+    def _collapsible_lazy_card(section_id: str, title: str, render_fn: Callable[[Any], None], default_collapsed: bool = True) -> ui.column:
         """Create a collapsible card that renders its content lazily on first expand.
 
         render_fn receives a NiceGUI container to populate when needed.
         """
         collapsed = bool(collapse_state.get(section_id, default_collapsed))
         rendered = False
-        with ui.card().classes('w-full').props('flat bordered'):
+        with ui.card().classes('w-full').props(f'flat bordered id=cvd-card-{section_id}'):
             with ui.row().classes('items-center justify-between'):
                 ui.html(
                     f'<div id="{section_id}" class="text-h6 font-semibold mb-2">{title}</div>',
@@ -206,10 +251,7 @@ def settings_page() -> None:
                     nonlocal collapsed, rendered
                     collapsed = not collapsed
                     collapse_state[section_id] = collapsed
-                    try:
-                        app.storage.client['cvd.settings.collapse'] = collapse_state
-                    except Exception:
-                        pass
+                    set_runtime_ui_pref(StorageKeys.COLLAPSE_STATE, collapse_state)
                     content.visible = not collapsed
                     chevron.props('icon=' + ('chevron_right' if collapsed else 'expand_more'))
                     if not collapsed and not rendered:
@@ -221,11 +263,17 @@ def settings_page() -> None:
                         except Exception:
                             pass
 
+                def _ensure_open() -> None:
+                    if collapsed:
+                        _toggle()
+
                 chevron = ui.button(icon=('chevron_right' if collapsed else 'expand_more'), on_click=_toggle)
-                chevron.props('flat round dense').tooltip('Collapse/expand')
+                chevron.props(f'flat round dense id=cvd-toggle-{section_id}').tooltip('Collapse/expand')
 
             content = ui.column().classes('w-full gap-4')
+            content.props(f'id=cvd-content-{section_id}')
             content.visible = not collapsed
+            section_openers[section_id] = _ensure_open
             if not collapsed and not rendered:
                 try:
                     with content:
@@ -249,26 +297,26 @@ def settings_page() -> None:
                 with ui.column().classes('gap-3'):
                     create_uvc_content(camera)
 
-        # Default heavy camera section to collapsed on first visit (renders lazily)
+        # Default heavy camera section to collapsed on startup (renders lazily)
         _collapsible_lazy_card('camera', 'Camera', _render_camera, default_collapsed=True)
 
-        measurement_card = _collapsible_card('measurement', 'Measurement')
+        measurement_card = _collapsible_card('measurement', 'Measurement', default_collapsed=True)
         with measurement_card:
             create_measurement_card(measurement_controller=measurement_controller)
 
-        email_card = _collapsible_card('email', 'E-Mail Notifications')
+        email_card = _collapsible_card('email', 'E-Mail Notifications', default_collapsed=True)
         with email_card:
             create_emailcard(email_system=email_system)
 
-        metadata_card = _collapsible_card('metadata', 'Metadata')
+        metadata_card = _collapsible_card('metadata', 'Metadata', default_collapsed=True)
         with metadata_card:
             create_metadata_settings()
 
-        config_card = _collapsible_card('config', 'Configuration')
+        config_card = _collapsible_card('config', 'Configuration', default_collapsed=True)
         with config_card:
             create_config_settings()
 
-        update_card = _collapsible_card('update', 'Update')
+        update_card = _collapsible_card('update', 'Update', default_collapsed=True)
         with update_card:
             create_update_settings()
 
@@ -283,20 +331,52 @@ def settings_page() -> None:
     
     # Smooth scrolling and active link highlighting for quick links
     # Inject CSS/JS properly via NiceGUI (scripts are not allowed inside ui.html)
-    try:
-        _assets_loaded = app.storage.client.get('cvd.settings.assets_loaded')
-    except Exception:
-        _assets_loaded = False
-    if not _assets_loaded:
-        ui.add_head_html(
+    ui.add_head_html(
         """
 <style>
 html { scroll-behavior: smooth; }
 /* Offset for fixed header; adjust if header height changes */
 [id] { scroll-margin-top: 80px; }
+/* Theme-aware settings drawer */
+#cvd-quicklinks {
+    color: inherit;
+}
+body.body--light #cvd-quicklinks {
+    background: #dbeafe;
+}
+body.body--dark #cvd-quicklinks {
+    background: #182533;
+    border-right: 1px solid rgba(255,255,255,0.08);
+}
+#cvd-quicklinks .cvd-quicklinks-title {
+    color: inherit;
+}
+#cvd-quicklinks a.cvd-quick-link {
+    color: inherit;
+    text-decoration: none;
+    border-left: 4px solid transparent;
+    padding-left: 12px;
+    transition: background-color .15s ease, color .15s ease, border-color .15s ease;
+}
+body.body--light #cvd-quicklinks a.cvd-quick-link:hover {
+    background-color: rgba(59,130,246,0.18);
+}
+body.body--dark #cvd-quicklinks a.cvd-quick-link:hover {
+    background-color: rgba(96,165,250,0.18);
+}
 /* Active link highlight */
-#cvd-quicklinks a.cvd-quick-link.active-link { background-color: rgba(59,130,246,0.25); }
-#cvd-quicklinks a.cvd-quick-link { transition: background-color .15s ease; }
+body.body--light #cvd-quicklinks a.cvd-quick-link.active-link {
+    background-color: rgba(59,130,246,0.18);
+    border-left-color: var(--q-primary);
+    color: #0f172a;
+    font-weight: 600;
+}
+body.body--dark #cvd-quicklinks a.cvd-quick-link.active-link {
+    background-color: rgba(96,165,250,0.18);
+    border-left-color: #60a5fa;
+    color: #dbeafe;
+    font-weight: 600;
+}
 /* Improve focus visibility */
 #cvd-quicklinks a.cvd-quick-link:focus { outline: 2px solid rgba(59,130,246,.6); outline-offset: 2px; }
 /* Ensure sticky controls are always above content */
@@ -305,47 +385,61 @@ html { scroll-behavior: smooth; }
 body .q-tooltip, .q-tooltip { z-index: 11000 !important; }
 </style>
 """
-        )
+    )
     ui.add_body_html(
         """
 <script>
 (function() {
-    if (window.__cvdQuickLinksSetup) return; // prevent duplicate init
-    window.__cvdQuickLinksSetup = true;
+    if (window.__cvdQuickLinksCleanup) {
+        try {
+            window.__cvdQuickLinksCleanup();
+        } catch (e) { /* ignore */ }
+        window.__cvdQuickLinksCleanup = null;
+    }
     const drawer = document.getElementById('cvd-quicklinks');
     if (!drawer) return;
     const links = Array.from(drawer.querySelectorAll('a.cvd-quick-link[href^="#"]'));
     const map = new Map();
+    const activateLink = (link) => {
+        if (!link) return;
+        links.forEach(l => {
+            const active = l === link;
+            l.classList.toggle('active-link', active);
+            if (active) {
+                l.setAttribute('aria-current', 'location');
+            } else {
+                l.removeAttribute('aria-current');
+            }
+        });
+        try {
+            link.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        } catch (e) { /* ignore */ }
+    };
+    window.__cvdQuickLinksSetActiveById = (anchorId) => {
+        const link = map.get(anchorId);
+        if (link) activateLink(link);
+    };
     links.forEach(a => {
         try {
             const href = a.getAttribute('href') || '';
             const id = decodeURIComponent(href).replace(/^#/, '');
             if (id) map.set(id, a);
-            a.addEventListener('click', () => {
-                links.forEach(l => l.classList.remove('active-link'));
-                a.classList.add('active-link');
-            });
         } catch (e) { /* ignore */ }
     });
     const setActiveByHash = () => {
         const h = decodeURIComponent(window.location.hash || '').replace(/^#/, '');
         const el = map.get(h);
-        if (el) {
-            links.forEach(l => l.classList.remove('active-link'));
-            el.classList.add('active-link');
-        }
+        if (el) activateLink(el);
     };
-    window.addEventListener('hashchange', setActiveByHash);
+    const onHashChange = () => setActiveByHash();
+    window.addEventListener('hashchange', onHashChange);
     const opts = { root: null, rootMargin: '-40% 0px -55% 0px', threshold: 0.01 };
     const obs = new IntersectionObserver((entries) => {
         entries.forEach(e => {
             if (e.isIntersecting) {
                 const id = e.target.id;
                 const link = map.get(id);
-                if (link) {
-                    links.forEach(l => l.classList.remove('active-link'));
-                    link.classList.add('active-link');
-                }
+                if (link) activateLink(link);
             }
         });
     }, opts);
@@ -354,14 +448,18 @@ body .q-tooltip, .q-tooltip { z-index: 11000 !important; }
         if (el) obs.observe(el);
     });
     setActiveByHash();
+    if (!links.some(link => link.classList.contains('active-link')) && links.length) {
+        activateLink(links[0]);
+    }
+    window.__cvdQuickLinksCleanup = () => {
+        window.removeEventListener('hashchange', onHashChange);
+        window.__cvdQuickLinksSetActiveById = null;
+        obs.disconnect();
+    };
 })();
 </script>
 """
     )
-    try:
-        app.storage.client['cvd.settings.assets_loaded'] = True
-    except Exception:
-        pass
 
     # Issue #8 fix: Removed disconnect cleanup - preferences should persist
 

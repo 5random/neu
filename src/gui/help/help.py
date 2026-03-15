@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import re
 
-from nicegui import ui, app
+from nicegui import ui
+from src.gui.constants import StorageKeys
+from src.gui.storage import set_ui_pref
 try:
     import yaml
 except ImportError:  # graceful fallback if PyYAML is not installed
@@ -80,21 +82,11 @@ def help_page() -> None:
     title: str = help_root.get('title') or 'Help'
     sections: List[Dict[str, Any]] = help_root.get('sections') or []
 
-    # Persist last visited route per client
-    try:
-        app.storage.client['cvd.last_route'] = '/help'
-    except Exception:
-        pass
+    # Persist last visited route for this browser session
+    set_ui_pref(StorageKeys.LAST_ROUTE, '/help')
 
-    # Reuse global header/footer if available
-    try:
-        from ..gui_ import build_header, build_footer
-    except Exception:
-        build_header = None  # type: ignore
-        build_footer = None  # type: ignore
-
-    if build_header is not None:
-        build_header()
+    from ..layout import build_header, build_footer
+    build_header()
 
     # Minor CSS for anchors and readability
     ui.add_head_html(
@@ -155,5 +147,4 @@ html { scroll-behavior: smooth; }
                         ui.link('Open related section in app', route.strip()).classes('text-primary text-caption q-mb-xs')
                     ui.markdown(content).classes('prose')
 
-    if build_footer is not None:
-        build_footer()
+    build_footer()
