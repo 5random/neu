@@ -14,16 +14,16 @@ _OVERLAY_HEAD_HTML = """
 """
 
 
-def _compute_title() -> str:
-    """Compute UI title from config.gui.title template and metadata."""
+def compute_gui_title(cfg: object | None = None, *, cvd_id: object | None = None, cvd_name: object | None = None) -> str:
+    """Compute the browser/UI title from the configured template and metadata."""
     try:
-        cfg = get_global_config()
-        if cfg and getattr(cfg, 'gui', None):
-            tpl = getattr(cfg.gui, 'title', '') or 'CVD-TRACKER'
-            meta = getattr(cfg, 'metadata', None)
+        resolved_cfg = cfg or get_global_config()
+        if resolved_cfg and getattr(resolved_cfg, 'gui', None):
+            tpl = getattr(resolved_cfg.gui, 'title', '') or 'CVD-TRACKER'
+            meta = getattr(resolved_cfg, 'metadata', None)
             params = {
-                'cvd_id': getattr(meta, 'cvd_id', ''),
-                'cvd_name': getattr(meta, 'cvd_name', ''),
+                'cvd_id': getattr(meta, 'cvd_id', '') if cvd_id is None else cvd_id,
+                'cvd_name': getattr(meta, 'cvd_name', '') if cvd_name is None else cvd_name,
             }
             try:
                 return str(tpl).format(**params)
@@ -45,7 +45,7 @@ def build_header() -> None:
         dark = ui.dark_mode(value=bool(get_ui_pref(StorageKeys.DARK_MODE, False)))
 
         # Refresh the shared title on each page build so config changes are reflected.
-        set_ui_pref(StorageKeys.GUI_TITLE, _compute_title())
+        set_ui_pref(StorageKeys.GUI_TITLE, compute_gui_title())
 
         # --- Linke Seite -------------------------------------------
         with ui.row().classes('items-center gap-3'):
@@ -74,7 +74,7 @@ def build_header() -> None:
             try:
                 title_label.bind_text_from(get_ui_storage(), StorageKeys.GUI_TITLE)
             except Exception:
-                title_label.text = _compute_title()
+                title_label.text = compute_gui_title()
 
         # --- Rechte Seite ------------------------------------------
         def toggle_dark() -> None:
@@ -113,5 +113,5 @@ def build_footer() -> None:
             try:
                 footer_label.bind_text_from(get_ui_storage(), StorageKeys.GUI_TITLE)
             except Exception:
-                footer_label.text = _compute_title()
+                footer_label.text = compute_gui_title()
             ui.label('© 2025 TUHH KVWEB').classes('text-white text-sm')

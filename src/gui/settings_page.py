@@ -1,6 +1,7 @@
 from typing import Optional, TYPE_CHECKING, Callable, Any
 import json
 
+from fastapi import Request
 from nicegui import ui
 
 from src.cam.camera import Camera
@@ -34,7 +35,7 @@ def _get_core_instances() -> tuple[Optional[Camera], Optional['MeasurementContro
 
 
 @ui.page('/settings')
-def settings_page() -> None:
+def settings_page(request: Request) -> None:
     """Settings page with left quick links and stacked sections.
 
     Sections in order: Camera, Motion Detection, Measurement, Email.
@@ -61,6 +62,8 @@ def settings_page() -> None:
     _initial_drawer_open = bool(_stored_drawer_open) if _stored_drawer_open is not None else True
 
     section_openers: dict[str, Callable[[], None]] = {}
+    anchor_to_section: dict[str, str] = {}
+    requested_anchor = str(request.query_params.get('section', '') or '').strip()
 
     def _scroll_to_section(anchor_id: str, section_id: str) -> None:
         ui.run_javascript(f"""
@@ -109,6 +112,7 @@ def settings_page() -> None:
     # Left drawer with quick links; initialize model value explicitly
     with ui.left_drawer(value=_initial_drawer_open).classes('w-64 p-2 cvd-quicklinks-drawer') as left_drawer:
         def _quick_link(label: str, anchor_id: str, section_id: str) -> None:
+            anchor_to_section[anchor_id] = section_id
             link = ui.link(label, f'#{anchor_id}') \
                 .classes('cvd-quick-link block px-2 py-1 rounded') \
                 .props(f'data-anchor={anchor_id} data-section={section_id}')
@@ -166,6 +170,7 @@ def settings_page() -> None:
                                     StorageKeys.DARK_MODE,
                                     StorageKeys.LAST_ROUTE,
                                     StorageKeys.DRAWER_OPEN,
+                                    StorageKeys.HELP_DRAWER_OPEN,
                                     StorageKeys.COLLAPSE_STATE,
                                     StorageKeys.GUI_TITLE,
                                 ]:
@@ -460,6 +465,24 @@ body .q-tooltip, .q-tooltip { z-index: 11000 !important; }
 </script>
 """
     )
+
+    async def _open_requested_section_on_load() -> None:
+        anchor_id = requested_anchor
+        if not anchor_id:
+            try:
+                hash_value = await ui.run_javascript(
+                    "return decodeURIComponent(window.location.hash || '').replace(/^#/, '')",
+                    timeout=2.0,
+                )
+            except Exception:
+                hash_value = ''
+            anchor_id = str(hash_value or '').strip()
+
+        section_id = anchor_to_section.get(anchor_id)
+        if section_id:
+            _open_section(anchor_id, section_id)
+
+    ui.timer(0.2, _open_requested_section_on_load, once=True, immediate=False)
 
     # Issue #8 fix: Removed disconnect cleanup - preferences should persist
 

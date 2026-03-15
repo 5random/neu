@@ -71,14 +71,19 @@ help:
         - If you get too many false alarms, try reducing sensitivity or redefining the ROI.
 
     - title: "Measurement & Sessions"
-      link: "/"
+      link: "/settings#measurement"
       content: |
-        The core function of the CVD-Tracker is to monitor for *lack of motion* during a specific session.
+        The measurement settings define how a monitoring session behaves and when alerts are triggered.
 
         ## Starting a Session
         1. On the Dashboard, set the desired **Duration** (e.g., 60 minutes).
         2. Click **Start Measurement**.
         3. The system is now armed.
+
+        ## Measurement Parameters
+        - **Duration**: Defines how long a session should run before it stops automatically.
+        - **Alert Delay**: Determines how long no motion may be detected before an alarm is triggered.
+        - **Cooldown**: Prevents repeated alarms from firing immediately one after another.
 
         ## Alert Logic
         - If **no motion** is detected for the configured **Alert Delay** (e.g., 5 minutes), an alarm is triggered.
@@ -102,25 +107,49 @@ help:
         - Use the **Send Test Email** button to verify your configuration.
         - Check your spam folder if the test email doesn't arrive.
 
-    - title: "System & Maintenance"
-      link: "/settings#system"
+    - title: "Metadata"
+      link: "/settings#metadata"
       content: |
-        ## Configuration Management
-        - You can download the current `config.yaml` for backup purposes via **Settings > Configuration**.
-        
-        ## Updates
-        - Go to **Settings > Update**.
-        - The system checks for updates via Git.
-        - Click **Check & Update** to pull the latest version and restart the application.
-        
-        ## Logs
-        - Go to **Settings > Logs**.
-        - View live logs to troubleshoot issues.
-        - Download logs as a ZIP file for external analysis.
-        - **Log Levels**:
-          - **INFO**: Normal operation events.
-          - **WARNING**: Potential issues (e.g., camera lag).
-          - **ERROR**: Functional failures (e.g., email failed to send).
+        The metadata section identifies this tracker instance throughout the UI and email notifications.
+
+        ## Available Fields
+        - **CVD ID**: Numeric identifier for the tracker instance.
+        - **CVD Name**: Human-readable name shown in the header, footer, and templates.
+
+        ## Applying Changes
+        - Click **Apply** to save metadata changes.
+        - Restart the application if you want all UI areas to reflect the updated values consistently.
+
+    - title: "Configuration"
+      link: "/settings#config"
+      content: |
+        Use the configuration section to download the active `config.yaml` file for backup or review.
+
+        ## Typical Workflow
+        - Download the current configuration before making larger changes.
+        - Store backup copies in a safe location.
+        - Compare saved versions if you need to trace configuration changes later.
+
+    - title: "Software Update"
+      link: "/settings#update"
+      content: |
+        The update section checks whether the local installation is behind the configured Git source.
+
+        ## Update Process
+        - Click **Check & Update**.
+        - If the application is already current, the page reports that no update is required.
+        - If updates are available, the application opens the updater flow automatically.
+
+    - title: "Logs"
+      link: "/settings#logs"
+      content: |
+        The logs section provides tools to inspect recent events and export them for debugging.
+
+        ## Available Tools
+        - **Download Logs (ZIP)** packages the recent log files for external analysis.
+        - **Live Log** shows the current application output directly in the browser.
+        - **Level Filter** limits the displayed entries to a specific severity.
+        - **Pause** and **Clear** help you focus on specific events during troubleshooting.
 
     - title: "Troubleshooting"
       link: "/settings#logs"

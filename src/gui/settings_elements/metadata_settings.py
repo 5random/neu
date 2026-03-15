@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from nicegui import ui, app
+from nicegui import ui
 
 from src.config import get_global_config, save_global_config, get_logger
+from src.gui.constants import StorageKeys
+from src.gui.layout import compute_gui_title
+from src.gui.storage import set_ui_pref
+from src.gui.util import set_tab_all
 
 logger = get_logger('gui.metadata')
 
@@ -36,17 +40,11 @@ def create_metadata_settings() -> None:
 
 		# Helpers
 		def _compute_template_title(cvd_id_val: str, cvd_name_val: str) -> str:
-			try:
-				tpl = getattr(getattr(cfg, 'gui', None), 'title', 'CVD-TRACKER')
-				return str(tpl).format(
-					cvd_id=int(cvd_id_val) if str(cvd_id_val).strip() else '',
-					cvd_name=str(cvd_name_val or '').strip(),
-				)
-			except Exception:
-				try:
-					return str(getattr(getattr(cfg, 'gui', None), 'title', 'CVD-TRACKER'))
-				except Exception:
-					return 'CVD-TRACKER'
+			return compute_gui_title(
+				cfg,
+				cvd_id=int(cvd_id_val) if str(cvd_id_val).strip() else '',
+				cvd_name=str(cvd_name_val or '').strip(),
+			)
 
 		def _is_dirty() -> bool:
 			try:
@@ -92,7 +90,10 @@ def create_metadata_settings() -> None:
 					cfg.metadata.cvd_name = str(cvd_name_inp.value or '').strip()
 
 					if save_global_config():
-						ui.notify('Metadata saved. Please restart the application to apply.', type='positive', position='bottom-right')
+						new_title = compute_gui_title(cfg)
+						set_ui_pref(StorageKeys.GUI_TITLE, new_title)
+						set_tab_all(title=new_title)
+						ui.notify('Metadata saved.', type='positive', position='bottom-right')
 						logger.info('Metadata updated: id=%s, name=%s', cfg.metadata.cvd_id, cfg.metadata.cvd_name)
 						_update_ui_from_inputs()
 					else:

@@ -1,5 +1,5 @@
-from nicegui import ui, app
-from src.gui.layout import build_header, build_footer
+from nicegui import ui
+from src.gui.layout import build_header, build_footer, compute_gui_title
 from src.gui.init import init_application
 from src.gui.instances import get_camera, get_measurement_controller, get_email_system
 from src.gui.default_elements.camfeed import create_camfeed_content
@@ -14,15 +14,9 @@ from src.gui.settings_elements.measurement_settings import create_measurement_ca
 from src.gui.settings_elements.email_settings import create_emailcard
 
 from src.config import get_logger
+from src.gui.util import set_tab
 
 logger = get_logger('gui.index')
-
-def _compute_title() -> str:
-    try:
-        title = app.storage.general.get('cvd.title', 'CVD-Tracker')
-        return f"{title} - Dashboard"
-    except Exception:
-        return "CVD-Tracker - Dashboard"
 
 @ui.page('/')
 def index_page() -> None:
@@ -82,5 +76,5 @@ def index_page() -> None:
     # 3. Footer
     build_footer()
 
-    # Set title
-    ui.run_javascript(f"document.title = '{_compute_title()}'")
+    # Keep the tab title aligned with the configured metadata-based app title.
+    set_tab(title=compute_gui_title())

@@ -17,6 +17,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from src.config import load_config, get_logger
 from src.gui.gui_ import create_gui
+from src.gui.layout import compute_gui_title
 
 from typing import Any, Dict
 def handle_asyncio_connection_lost(loop: Any, context: Dict[str, Any]) -> None:
@@ -128,17 +129,7 @@ def main() -> int:
         # Provide a storage_secret to enable app.storage.user access (used for sharing instances)
         storage_secret = os.environ.get('CVD_STORAGE_SECRET') or secrets.token_urlsafe(32)
 
-        # Compute browser window title from config (supports {cvd_id}/{cvd_name})
-        try:
-            meta = getattr(cfg, 'metadata', None)
-            params = {
-                'cvd_id': getattr(meta, 'cvd_id', ''),
-                'cvd_name': getattr(meta, 'cvd_name', ''),
-            }
-            gui_title_tpl = getattr(getattr(cfg, 'gui', None), 'title', 'CVD-TRACKER')
-            window_title = str(gui_title_tpl).format(**params)
-        except Exception:
-            window_title = 'CVD-TRACKER'
+        window_title = compute_gui_title(cfg)
 
         # Remember default favicon for later restore across clients
         try:

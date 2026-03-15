@@ -1,47 +1,45 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List
 import re
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from nicegui import ui
+
 from src.gui.constants import StorageKeys
-from src.gui.storage import set_ui_pref
+from src.gui.storage import get_ui_pref, set_ui_pref
+
 try:
     import yaml
 except ImportError:  # graceful fallback if PyYAML is not installed
     yaml = None  # type: ignore[assignment]
 
-# Links are provided by help.yaml via an optional 'link' field per section.
-
 
 def _slugify(title: str) -> str:
     """Create a URL-safe anchor id from a title."""
-    
-    s = title.strip().lower()
-    s = re.sub(r"[^a-z0-9\s-]", "", s)
-    s = re.sub(r"\s+", "-", s)
-    s = re.sub(r"-+", "-", s)
-    return s or "section"
+
+    slug = title.strip().lower()
+    slug = re.sub(r"[^a-z0-9\s-]", "", slug)
+    slug = re.sub(r"\s+", "-", slug)
+    slug = re.sub(r"-+", "-", slug)
+    return slug or "section"
 
 
 def _load_yaml_content() -> Dict[str, Any]:
-    """Load help.yaml content.
+    """Load help.yaml content."""
 
-    Returns a dict like:
-    { 'help': { 'title': str, 'sections': [ { 'title': str, 'content': str }, ... ] } }
-    """
     help_yaml_path = Path(__file__).parent / 'help.yaml'
     if not help_yaml_path.exists():
-        return { 'help': { 'title': 'Help', 'sections': [] } }
+        return {'help': {'title': 'Help', 'sections': []}}
 
     try:
         text = help_yaml_path.read_text(encoding='utf-8')
     except Exception:
-        return { 'help': { 'title': 'Help', 'sections': [] } }
+        return {'help': {'title': 'Help', 'sections': []}}
 
     if yaml is None:
-        # Fallback: minimal parser – put full text into a single section
         return {
             'help': {
                 'title': 'Help',
@@ -60,7 +58,6 @@ def _load_yaml_content() -> Dict[str, Any]:
             raise ValueError('Invalid YAML structure')
         return data
     except Exception:
-        # On parse error, show raw content
         return {
             'help': {
                 'title': 'Help',
@@ -74,77 +71,281 @@ def _load_yaml_content() -> Dict[str, Any]:
         }
 
 
+def _prepare_sections(sections: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Prepare help sections with stable, unique anchor ids."""
+
+    prepared: List[Dict[str, str]] = []
+    seen_slugs: Dict[str, int] = {}
+
+    for section in sections:
+        title = str(section.get('title') or 'Section')
+        base_slug = _slugify(title)
+        seen_slugs[base_slug] = seen_slugs.get(base_slug, 0) + 1
+        anchor_id = base_slug if seen_slugs[base_slug] == 1 else f'{base_slug}-{seen_slugs[base_slug]}'
+
+        prepared.append({
+            'title': title,
+            'content': str(section.get('content') or ''),
+            'route': _prepare_related_route(str(section.get('link') or '').strip()),
+            'anchor_id': anchor_id,
+        })
+
+    return prepared
+
+
+def _prepare_related_route(route: str) -> str:
+    """Add a query fallback for settings anchors so the target section can open reliably."""
+
+    if not route:
+        return ''
+
+    parts = urlsplit(route)
+    if parts.path != '/settings' or not parts.fragment:
+        return route
+
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.setdefault('section', parts.fragment)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
 @ui.page('/help')
 def help_page() -> None:
-    """Help page rendering help.yaml with anchors and quick links."""
+    """Render the help page using the settings-style quick-link drawer."""
+
     payload = _load_yaml_content()
     help_root = payload.get('help') or {}
-    title: str = help_root.get('title') or 'Help'
-    sections: List[Dict[str, Any]] = help_root.get('sections') or []
+    title = str(help_root.get('title') or 'Help')
+    raw_sections: List[Dict[str, Any]] = help_root.get('sections') or []
+    sections = _prepare_sections(raw_sections)
 
-    # Persist last visited route for this browser session
     set_ui_pref(StorageKeys.LAST_ROUTE, '/help')
 
     from ..layout import build_header, build_footer
+
     build_header()
 
-    # Minor CSS for anchors and readability
+    stored_drawer_open = get_ui_pref(StorageKeys.HELP_DRAWER_OPEN)
+    initial_drawer_open = bool(stored_drawer_open) if stored_drawer_open is not None else True
+    section_openers: dict[str, Callable[[], None]] = {}
+
+    def _scroll_to_section(anchor_id: str) -> None:
+        ui.run_javascript(f"""
+        (function() {{
+            const anchorId = {json.dumps(anchor_id)};
+            let attempts = 0;
+            const maxAttempts = 20;
+            const tryScroll = () => {{
+                const target = document.getElementById(anchorId);
+                if (target) {{
+                    try {{
+                        if (window.__cvdHelpQuickLinksSetActiveById) {{
+                            window.__cvdHelpQuickLinksSetActiveById(anchorId);
+                        }}
+                        history.replaceState(null, '', `#${{anchorId}}`);
+                    }} catch (e) {{ /* ignore */ }}
+                    target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                    return true;
+                }}
+                attempts += 1;
+                return attempts >= maxAttempts;
+            }};
+            if (tryScroll()) return;
+            const timer = window.setInterval(() => {{
+                if (tryScroll()) {{
+                    window.clearInterval(timer);
+                }}
+            }}, 75);
+        }})();
+        """)
+
+    def _open_section(anchor_id: str) -> None:
+        opener = section_openers.get(anchor_id)
+        if opener is not None:
+            opener()
+        _scroll_to_section(anchor_id)
+
     ui.add_head_html(
         """
 <style>
 html { scroll-behavior: smooth; }
 [id] { scroll-margin-top: 80px; }
 .cvd-help .prose p { margin: 0.25rem 0; }
-/* Respect current theme colors */
 .cvd-help .prose { color: inherit; }
 .cvd-help .prose a { color: var(--q-primary); }
-/* Stronger section headings */
-.cvd-help .section-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.cvd-help .section-title { font-weight: 700; letter-spacing: 0.2px; }
-.cvd-help .section-title-accent { border-left: 3px solid var(--q-primary); padding-left: 8px; }
-/* Tame markdown heading sizes for better hierarchy */
 .cvd-help .prose h1 { font-size: 1.5rem; margin: .75rem 0 .25rem; }
 .cvd-help .prose h2 { font-size: 1.25rem; margin: .75rem 0 .25rem; }
 .cvd-help .prose h3 { font-size: 1.1rem;  margin: .6rem 0 .2rem; }
 .cvd-help .prose h4 { font-size: 1.0rem;  margin: .5rem 0 .2rem; }
 .cvd-help .prose h5 { font-size: .95rem;  margin: .4rem 0 .15rem; }
 .cvd-help .prose h6 { font-size: .9rem;   margin: .3rem 0 .1rem; }
-/* Style expansion headers to look like strong section titles */
-.cvd-help .q-expansion-item > .q-item { border-left: 3px solid var(--q-primary); padding-left: 8px; }
+.cvd-help .q-expansion-item > .q-item {
+    border-left: 3px solid var(--q-primary);
+    padding-left: 8px;
+}
 .cvd-help .q-expansion-item .q-item__label { font-weight: 700; letter-spacing: .2px; }
+.cvd-sticky { z-index: 10000 !important; }
+body .q-tooltip, .q-tooltip { z-index: 11000 !important; }
+#cvd-help-links {
+    color: inherit;
+}
+body.body--light #cvd-help-links {
+    background: #dbeafe;
+}
+body.body--dark #cvd-help-links {
+    background: #182533;
+    border-right: 1px solid rgba(255,255,255,0.08);
+}
+#cvd-help-links .cvd-help-links-title {
+    color: inherit;
+}
+#cvd-help-links a.cvd-quick-link {
+    color: inherit;
+    text-decoration: none;
+    border-left: 4px solid transparent;
+    padding-left: 12px;
+    transition: background-color .15s ease, color .15s ease, border-color .15s ease;
+}
+body.body--light #cvd-help-links a.cvd-quick-link:hover {
+    background-color: rgba(59,130,246,0.18);
+}
+body.body--dark #cvd-help-links a.cvd-quick-link:hover {
+    background-color: rgba(96,165,250,0.18);
+}
+body.body--light #cvd-help-links a.cvd-quick-link.active-link {
+    background-color: rgba(59,130,246,0.18);
+    border-left-color: var(--q-primary);
+    color: #0f172a;
+    font-weight: 600;
+}
+body.body--dark #cvd-help-links a.cvd-quick-link.active-link {
+    background-color: rgba(96,165,250,0.18);
+    border-left-color: #60a5fa;
+    color: #dbeafe;
+    font-weight: 600;
+}
+#cvd-help-links a.cvd-quick-link:focus {
+    outline: 2px solid rgba(59,130,246,.6);
+    outline-offset: 2px;
+}
 </style>
 """
     )
 
-    with ui.column().classes('w-full gap-4 p-4 cvd-help'):
+    if sections:
+        with ui.left_drawer(value=initial_drawer_open).classes('w-64 p-2 cvd-help-links-drawer') as left_drawer:
+            left_drawer.props('id=cvd-help-links')
+            ui.label('Table of contents').classes('text-bold pl-2 pt-2 cvd-help-links-title')
+            for section in sections:
+                link = ui.link(section['title'], f"#{section['anchor_id']}") \
+                    .classes('cvd-quick-link block px-2 py-1 rounded') \
+                    .props(f"data-anchor={section['anchor_id']}")
+                link.on(
+                    'click',
+                    lambda _anchor=section['anchor_id']: _open_section(_anchor),
+                    js_handler='(e) => { e.preventDefault(); emit(); }',
+                )
+
+        with ui.page_sticky(position='top-left', x_offset=12, y_offset=12).classes('cvd-sticky').style('z-index:10000'):
+            drawer_state = initial_drawer_open
+
+            def _toggle_drawer() -> None:
+                nonlocal drawer_state
+                left_drawer.toggle()
+                drawer_state = not drawer_state
+                set_ui_pref(StorageKeys.HELP_DRAWER_OPEN, drawer_state)
+
+            ui.button(on_click=_toggle_drawer, icon='menu').props('fab color=primary')
+
+        with ui.page_sticky(position='bottom-right', x_offset=20, y_offset=20).classes('cvd-sticky').style('z-index:10000'):
+            ui.button(
+                icon='arrow_upward',
+                on_click=lambda: ui.run_javascript('window.scrollTo({top:0, behavior:"smooth"})'),
+            ).props('fab color=primary').tooltip('Back to top')
+
+    with ui.column().classes('w-full max-w-[1400px] mx-auto gap-4 p-4 pb-24 cvd-help'):
         with ui.row().classes('items-center justify-between'):
             ui.label(title).classes('text-h5 font-semibold')
             ui.button('Back', on_click=lambda: ui.navigate.to('/', new_tab=False)).props('flat').tooltip('Back to Home')
 
-        if sections:
-            # Local table of contents (anchors on this page)
-            with ui.expansion('Table of contents', icon='list').props('expand-separator').classes('w-full'):
-                with ui.column().classes('gap-1'):
-                    for s in sections:
-                        stitle = str(s.get('title') or '')
-                        sid = _slugify(stitle)
-                        with ui.row().classes('items-center gap-2'):
-                            ui.label('•')
-                            ui.link(stitle or 'Section', f"#%s" % sid)
-
-        # Render sections (collapsible, default expanded)
         for section in sections:
-            stitle = str(section.get('title') or 'Section')
-            content = str(section.get('content') or '')
-            route = section.get('link') or ''
-            sid = _slugify(stitle)
-
-            with ui.card().classes('w-full'):
-                # Anchor element for smooth scrolling to this section
-                ui.html(f'<span id="{sid}"></span>', sanitize=False)
-                with ui.expansion(stitle, value=True, icon='article').props('expand-separator'):
-                    if isinstance(route, str) and route.strip():
-                        ui.link('Open related section in app', route.strip()).classes('text-primary text-caption q-mb-xs')
-                    ui.markdown(content).classes('prose')
+            with ui.card().classes('w-full').props(f"id={section['anchor_id']} flat bordered"):
+                with ui.expansion(section['title'], value=True, icon='article').props('expand-separator') as expansion:
+                    section_openers[section['anchor_id']] = expansion.open
+                    if section['route']:
+                        ui.link('Open related section in app', section['route']).classes('text-primary text-caption q-mb-xs')
+                    ui.markdown(section['content']).classes('prose')
 
     build_footer()
+
+    ui.add_body_html(
+        """
+<script>
+(function() {
+    if (window.__cvdHelpQuickLinksCleanup) {
+        try {
+            window.__cvdHelpQuickLinksCleanup();
+        } catch (e) { /* ignore */ }
+        window.__cvdHelpQuickLinksCleanup = null;
+    }
+    const drawer = document.getElementById('cvd-help-links');
+    if (!drawer) return;
+    const links = Array.from(drawer.querySelectorAll('a.cvd-quick-link[href^="#"]'));
+    const map = new Map();
+    const activateLink = (link) => {
+        if (!link) return;
+        links.forEach(l => {
+            const active = l === link;
+            l.classList.toggle('active-link', active);
+            if (active) {
+                l.setAttribute('aria-current', 'location');
+            } else {
+                l.removeAttribute('aria-current');
+            }
+        });
+        try {
+            link.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        } catch (e) { /* ignore */ }
+    };
+    window.__cvdHelpQuickLinksSetActiveById = (anchorId) => {
+        const link = map.get(anchorId);
+        if (link) activateLink(link);
+    };
+    links.forEach(link => {
+        try {
+            const href = link.getAttribute('href') || '';
+            const id = decodeURIComponent(href).replace(/^#/, '');
+            if (id) map.set(id, link);
+        } catch (e) { /* ignore */ }
+    });
+    const setActiveByHash = () => {
+        const hash = decodeURIComponent(window.location.hash || '').replace(/^#/, '');
+        const link = map.get(hash);
+        if (link) activateLink(link);
+    };
+    const onHashChange = () => setActiveByHash();
+    window.addEventListener('hashchange', onHashChange);
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const link = map.get(entry.target.id);
+                if (link) activateLink(link);
+            }
+        });
+    }, { root: null, rootMargin: '-40% 0px -55% 0px', threshold: 0.01 });
+    Array.from(map.keys()).forEach(id => {
+        const element = document.getElementById(id);
+        if (element) observer.observe(element);
+    });
+    setActiveByHash();
+    if (!links.some(link => link.classList.contains('active-link')) && links.length) {
+        activateLink(links[0]);
+    }
+    window.__cvdHelpQuickLinksCleanup = () => {
+        window.removeEventListener('hashchange', onHashChange);
+        window.__cvdHelpQuickLinksSetActiveById = null;
+        observer.disconnect();
+    };
+})();
+</script>
+"""
+    )
