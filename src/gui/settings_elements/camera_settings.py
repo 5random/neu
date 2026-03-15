@@ -22,6 +22,10 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
 
     ranges = camera.get_uvc_ranges() if camera else {}
     current = camera.get_uvc_current_values() if camera else {}
+    compact_value_classes = 'w-[5.5rem] min-w-[5.5rem] max-w-[5.5rem] shrink-0'
+    unit_value_classes = 'w-[7rem] min-w-[7rem] max-w-[7rem] shrink-0'
+    slider_classes = 'flex-1 min-w-[10rem] max-w-full'
+    compact_slider_classes = 'flex-1 min-w-0 max-w-full'
 
     def _set_control_value(ctrl: Any, value: Any) -> None:
         try:
@@ -104,9 +108,9 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
         raw_value = current.get(name, default_val)
         value = float(raw_value) if is_float else int(raw_value)
 
-        with ui.card().tight().classes('p-4 flex flex-col').style('align-items:stretch;'):
-            ui.label(f'{title}:').classes('font-semibold mb-2 self-start')
-            with ui.row().classes('items-center gap-3 w-full'):
+        with ui.card().tight().classes('p-3 flex flex-col self-start w-full').style('align-items:stretch;'):
+            ui.label(f'{title}:').classes('font-semibold mb-1 self-start')
+            with ui.row().classes('items-center gap-2 w-full flex-nowrap'):
                 number_ctrl = (
                     ui.number(
                         value=value,
@@ -117,12 +121,12 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                     )
                     .props('dense outlined')
                     .tooltip(tooltip)
-                    .classes('min-w-[120px]')
+                    .classes(compact_value_classes)
                 )
                 slider_ctrl = (
                     ui.slider(min=min_val, max=max_val, step=step, value=value)
                     .tooltip(tooltip)
-                    .classes('flex-1')
+                    .classes(slider_classes)
                 )
 
             commit = make_handler(setter, config_field, default_val)
@@ -245,18 +249,18 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
         return False
             
     # Render directly without wrapping in an extra Card; parent page will provide cards
-    with ui.column().style("align-self:stretch; flex-direction:column; flex-wrap:wrap; justify-content:end; align-items:start; display:flex;").classes('gap-4'):
+    with ui.column().classes('w-full gap-4'):
 
         # ── Gruppe: Bildqualität ────────────────────────────────────────
         ui.label('Image Quality')\
             .style("align-self:flex-start; display:block;")\
             .classes('text-h6 font-semibold mb-2')
 
-        with ui.grid(columns=2, rows=2)\
-                .style("grid-template-rows:repeat(2, minmax(0, 1fr));"
-                       "grid-template-columns:repeat(2, minmax(0, 1fr));"
+        with ui.grid(columns=2)\
+                .style("grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));"
+                       "grid-auto-rows:min-content;"
                        "align-self:stretch;")\
-                .classes('gap-4 mb-4'):
+                .classes('gap-3 mb-4 items-start'):
 
                 _build_scalar_card(
                     title='Brightness',
@@ -344,20 +348,20 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
         # ── Gruppe: Belichtung & Weißabgleich ───────────────────────────
                 
         # Zwei Cards nebeneinander (Weißabgleich | Belichtung)
-        with ui.grid(columns=2).classes('gap-4 w-full'):
+        with ui.grid(columns=2).classes('gap-3 w-full items-start').style('grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); grid-auto-rows:min-content;'):
 
                 # Weißabgleich ------------------------------------------------
                 with ui.card().tight()\
-                        .style("align-self:stretch;")\
-                        .classes('p-4 flex flex-col gap-2'):
-                    ui.label('White Balance').classes('font-semibold mb-2')
+                        .style("align-self:start;")\
+                        .classes('p-3 flex flex-col gap-2 w-full'):
+                    ui.label('White Balance').classes('font-semibold mb-1')
                     wb_auto_value = bool(current.get('auto_white_balance', 1))
                     wb_auto = ui.checkbox('Auto white balance', value=wb_auto_value).tooltip('Enable automatic white balance adjustment')
 
                     wb_manual_range = ranges.get('white_balance', {'min': 2800, 'max': 6500, 'default': 4600})
                     wb_manual_value = int(current.get('white_balance', wb_manual_range['default']))
-                    with ui.row().classes('items-center gap-2 w-full'):
-                        ui.label('Manual:').classes('text-sm text-grey-7')
+                    with ui.row().classes('items-center gap-2 w-full flex-nowrap'):
+                        ui.label('Manual:').classes('text-sm text-grey-7 shrink-0')
                         wb_manual_number = (
                             ui.number(
                                 value=wb_manual_value,
@@ -368,7 +372,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                             )
                             .props('dense outlined suffix="K"')
                             .tooltip('Adjust manual white balance (default: 4600K)')
-                            .classes('min-w-[120px]')
+                            .classes(unit_value_classes)
                         )
                         wb_manual_slider = (
                             ui.slider(
@@ -378,7 +382,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                                 step=50,
                             )
                             .tooltip('Adjust manual white balance (default: 4600K)')
-                            .classes('flex-1')
+                            .classes(compact_slider_classes)
                         )
 
                     wb_manual_number.bind_enabled_from(wb_auto, 'value', lambda x: not x)
@@ -399,17 +403,17 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                         knob_refs['white_balance_manual'] = {'slider': wb_manual_slider, 'number': wb_manual_number}
                 # Belichtung --------------------------------------------------
                 with ui.card().tight()\
-                        .style("align-self:stretch;")\
-                        .classes('p-4 flex flex-col gap-2'):
-                    ui.label('Exposure').classes('font-semibold mb-2')
+                        .style("align-self:start;")\
+                        .classes('p-3 flex flex-col gap-2 w-full'):
+                    ui.label('Exposure').classes('font-semibold mb-1')
                     exp_auto_value = _to_bool_auto_exposure(current.get('auto_exposure', 1))
                     exp_auto = ui.checkbox('Auto exposure', value=exp_auto_value).tooltip('Enable automatic exposure adjustment')
 
                     exp_manual_range = ranges.get('exposure', {'min': -13, 'max': -1, 'default': -6})
                     exp_manual_value = int(current.get('exposure', exp_manual_range['default']))
 
-                    with ui.row().classes('items-center gap-2 w-full'):
-                        ui.label('Manual:').classes('text-sm text-grey-7')
+                    with ui.row().classes('items-center gap-2 w-full flex-nowrap'):
+                        ui.label('Manual:').classes('text-sm text-grey-7 shrink-0')
                         exp_manual_number = (
                             ui.number(
                                 value=exp_manual_value,
@@ -420,7 +424,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                             )
                             .props('dense outlined suffix="EV"')
                             .tooltip('Adjust manual exposure (default: -6)')
-                            .classes('min-w-[120px]')
+                            .classes(unit_value_classes)
                         )
                         exp_manual_slider = (
                             ui.slider(
@@ -430,7 +434,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                                 step=1,
                             )
                             .tooltip('Adjust manual exposure (default: -6)')
-                            .classes('flex-1')
+                            .classes(compact_slider_classes)
                         )
 
                     exp_manual_number.bind_enabled_from(exp_auto, 'value', lambda x: not x)

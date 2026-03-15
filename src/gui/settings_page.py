@@ -288,13 +288,13 @@ def settings_page() -> None:
     with ui.column().classes('w-full max-w-[1400px] mx-auto gap-4 p-4 pb-24'):
         # Camera section: 2-column layout (lazy render)
         def _render_camera(_container: Any) -> None:
-            with ui.grid(columns=2).classes('w-full gap-4'):
-                with ui.column().classes('gap-3'):
+            with ui.grid(columns=2).classes('w-full gap-4 items-start').style('grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));'):
+                with ui.column().classes('gap-3 min-w-0 w-full self-start'):
                     create_camfeed_content(camera)
                     ui.separator()
                     ui.label('Motion Detection').classes('text-subtitle1 font-semibold').props('id=motion')
                     create_motiondetection_card(camera)
-                with ui.column().classes('gap-3'):
+                with ui.column().classes('gap-3 min-w-0 w-full self-start'):
                     create_uvc_content(camera)
 
         # Default heavy camera section to collapsed on startup (renders lazily)
