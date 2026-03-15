@@ -1,6 +1,5 @@
 from typing import Optional, Callable, Any
 from nicegui import ui
-from src.notify import EMailSystem
 from src.config import get_global_config, save_global_config, get_logger
 from src.measurement import MeasurementController
 
@@ -45,32 +44,10 @@ def create_measurement_card(
     }
 
     ui.label('Measurement Settings').classes('text-h6 font-semibold mb-2')
-
-    # Compact field wrapper: rely on control tooltips, avoid extra help labels to save space
-    def _field(label: Optional[str], controls: list[Any], help_text: str = '') -> None:
-        with ui.column().classes('gap-1 min-w-[220px]'):
-            if label:
-                ui.label(label).classes('text-caption text-grey-8')
-            with ui.row().classes('items-center gap-2 w-full'):
-                for idx, ctrl in enumerate(controls):
-                    if idx == 0:
-                        ctrl.classes('min-w-[140px]')
-                    else:
-                        ctrl.classes('flex-1')
-            # Intentionally omit extra help text label for a more compact layout
+    value_classes = 'w-[7rem] min-w-[7rem] max-w-[7rem] shrink-0'
+    slider_classes = 'flex-1 min-w-[10rem] max-w-full'
 
     from src.gui.bindings import bind_number_slider
-
-    def _set_control_value(ctrl: Any, value: object) -> None:
-        try:
-            if hasattr(ctrl, 'set_value'):
-                ctrl.set_value(value)
-            else:
-                setattr(ctrl, 'value', value)
-                if hasattr(ctrl, 'update'):
-                    ctrl.update()
-        except Exception:
-            pass
 
     def _cast_to_int(value: Any, fallback: float) -> Optional[float]:
         try:
@@ -91,10 +68,10 @@ def create_measurement_card(
             return default
         return default if value is None else value
 
-    def _make_numeric_field(
+    def _build_numeric_card(
         key: str,
         *,
-        label: str,
+        title: str,
         tooltip: str,
         min_value: float,
         max_value: float,
@@ -103,19 +80,23 @@ def create_measurement_card(
         suffix: str,
         caster: Callable[[Any, float], Optional[float]],
         as_int: bool,
-    ) -> tuple[ui.element, ui.element]:
+    ) -> tuple[Any, Any]:
         initial = state[key]
         fallback = float(initial)
-        number_ctrl = (
-            ui.number(value=initial, min=min_value, max=max_value, step=step, format=fmt)
-            .props(f'dense outlined stack-label hide-bottom-space label="{label}" suffix="{suffix}"')
-            .tooltip(tooltip)
-        )
-        slider_ctrl = (
-            ui.slider(min=min_value, max=max_value, step=step, value=initial)
-            .tooltip(tooltip)
-            .classes('flex-1')
-        )
+        with ui.card().tight().classes('p-3 flex flex-col self-start w-full').style('align-items:stretch;'):
+            ui.label(f'{title}:').classes('font-semibold mb-1 self-start')
+            with ui.row().classes('items-center gap-2 w-full flex-nowrap'):
+                number_ctrl = (
+                    ui.number(value=initial, min=min_value, max=max_value, step=step, format=fmt)
+                    .props(f'dense outlined hide-bottom-space suffix="{suffix}"')
+                    .tooltip(tooltip)
+                    .classes(value_classes)
+                )
+                slider_ctrl = (
+                    ui.slider(min=min_value, max=max_value, step=step, value=initial)
+                    .tooltip(tooltip)
+                    .classes(slider_classes)
+                )
         bind_number_slider(
             number_ctrl,
             slider_ctrl,
@@ -126,8 +107,17 @@ def create_measurement_card(
             as_int=as_int,
             on_change=lambda _: _on_change(),
         )
-        _field(None, [number_ctrl, slider_ctrl])
         return number_ctrl, slider_ctrl
+
+    def _build_toggle_card(title: str, checkbox_label: str, value: bool, tooltip: str) -> Any:
+        with ui.card().tight().classes('p-3 flex flex-col self-start w-full').style('align-items:stretch;'):
+            ui.label(title).classes('font-semibold mb-1 self-start')
+            checkbox = (
+                ui.checkbox(checkbox_label, value=value)
+                .tooltip(tooltip)
+                .classes('self-start')
+            )
+        return checkbox
 
     def _on_change(_: Any = None) -> None:
         # Enable apply if any value differs from config
@@ -201,91 +191,97 @@ def create_measurement_card(
             logger.error('Failed to save measurement settings: %s', exc, exc_info=True)
             ui.notify(f'Error saving settings: {exc}', type='negative', position='bottom-right')
 
-    # Build controls with inline labels and tooltips for clarity
-    alert_delay_inp, alert_delay_slider = _make_numeric_field(
-        'alert_delay_seconds',
-        label='Alert delay',
-        tooltip='Seconds without motion before the first alert is sent',
-        min_value=30,
-        max_value=3600,
-        step=5,
-        fmt='%.0f',
-        suffix='s',
-        caster=_cast_to_int,
-        as_int=True,
-    )
-    max_alerts_inp, max_alerts_slider = _make_numeric_field(
-        'max_alerts_per_session',
-        label='Max alerts per session',
-        tooltip='Upper bound on alerts within a single session (spam protection)',
-        min_value=1,
-        max_value=50,
-        step=1,
-        fmt='%.0f',
-        suffix='',
-        caster=_cast_to_int,
-        as_int=True,
-    )
-    check_interval_inp, check_interval_slider = _make_numeric_field(
-        'alert_check_interval',
-        label='Check interval',
-        tooltip='How often the controller evaluates alert conditions',
-        min_value=0.5,
-        max_value=120.0,
-        step=0.5,
-        fmt='%.1f',
-        suffix='s',
-        caster=_cast_to_float,
-        as_int=False,
-    )
-    cooldown_inp, cooldown_slider = _make_numeric_field(
-        'alert_cooldown_seconds',
-        label='Alert cooldown',
-        tooltip='Minimum time between two alerts',
-        min_value=0,
-        max_value=3600,
-        step=5,
-        fmt='%.0f',
-        suffix='s',
-        caster=_cast_to_int,
-        as_int=True,
-    )
-    include_snapshot_cb = ui.checkbox('Include snapshot in alert', value=bool(state['alert_include_snapshot']))
-    inactivity_inp, inactivity_slider = _make_numeric_field(
-        'inactivity_timeout_minutes',
-        label='Inactivity timeout',
-        tooltip='Stop session after prolonged inactivity (0 = disabled)',
-        min_value=0,
-        max_value=720,
-        step=5,
-        fmt='%.0f',
-        suffix='min',
-        caster=_cast_to_int,
-        as_int=True,
-    )
-    summary_interval_inp, summary_interval_slider = _make_numeric_field(
-        'motion_summary_interval_seconds',
-        label='Summary interval',
-        tooltip='Period for motion summary logs (>= 5 seconds)',
-        min_value=5,
-        max_value=3600,
-        step=5,
-        fmt='%.0f',
-        suffix='s',
-        caster=_cast_to_int,
-        as_int=True,
-    )
-    enable_summary_cb = ui.checkbox('Enable motion summary logs', value=bool(state['enable_motion_summary_logs']))
+    with ui.grid(columns=2).classes('w-full gap-3 mb-3 items-start').style(
+        'grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); grid-auto-rows:min-content;'
+    ):
+        alert_delay_inp, alert_delay_slider = _build_numeric_card(
+            'alert_delay_seconds',
+            title='Alert Delay',
+            tooltip='Seconds without motion before the first alert is sent',
+            min_value=30,
+            max_value=3600,
+            step=5,
+            fmt='%.0f',
+            suffix='s',
+            caster=_cast_to_int,
+            as_int=True,
+        )
+        max_alerts_inp, max_alerts_slider = _build_numeric_card(
+            'max_alerts_per_session',
+            title='Max Alerts Per Session',
+            tooltip='Upper bound on alerts within a single session (spam protection)',
+            min_value=1,
+            max_value=50,
+            step=1,
+            fmt='%.0f',
+            suffix='',
+            caster=_cast_to_int,
+            as_int=True,
+        )
+        check_interval_inp, check_interval_slider = _build_numeric_card(
+            'alert_check_interval',
+            title='Check Interval',
+            tooltip='How often the controller evaluates alert conditions',
+            min_value=0.5,
+            max_value=120.0,
+            step=0.5,
+            fmt='%.1f',
+            suffix='s',
+            caster=_cast_to_float,
+            as_int=False,
+        )
+        cooldown_inp, cooldown_slider = _build_numeric_card(
+            'alert_cooldown_seconds',
+            title='Alert Cooldown',
+            tooltip='Minimum time between two alerts',
+            min_value=0,
+            max_value=3600,
+            step=5,
+            fmt='%.0f',
+            suffix='s',
+            caster=_cast_to_int,
+            as_int=True,
+        )
+        inactivity_inp, inactivity_slider = _build_numeric_card(
+            'inactivity_timeout_minutes',
+            title='Inactivity Timeout',
+            tooltip='Stop session after prolonged inactivity (0 = disabled)',
+            min_value=0,
+            max_value=720,
+            step=5,
+            fmt='%.0f',
+            suffix='min',
+            caster=_cast_to_int,
+            as_int=True,
+        )
+        summary_interval_inp, summary_interval_slider = _build_numeric_card(
+            'motion_summary_interval_seconds',
+            title='Summary Interval',
+            tooltip='Period for motion summary logs (>= 5 seconds)',
+            min_value=5,
+            max_value=3600,
+            step=5,
+            fmt='%.0f',
+            suffix='s',
+            caster=_cast_to_int,
+            as_int=True,
+        )
 
-    with ui.grid(columns=2).classes('w-full gap-3'):
-        _field(None, [alert_delay_inp, alert_delay_slider], 'Time without motion before sending an alert')
-        _field(None, [max_alerts_inp, max_alerts_slider], 'Spam protection; minimum 1')
-        _field(None, [check_interval_inp, check_interval_slider], 'How often to evaluate alert conditions')
-        _field(None, [cooldown_inp, cooldown_slider], 'Minimum time between two alerts')
-        _field(None, [inactivity_inp, inactivity_slider], 'Stop session after prolonged inactivity (0 = disabled)')
-        _field(None, [summary_interval_inp, summary_interval_slider], 'Period for motion summary logs (>= 5 seconds)')
-        _field(None, [include_snapshot_cb], 'Attach a snapshot to alert emails (if camera available)')
-        _field(None, [enable_summary_cb], 'Master switch for motion summary logging')
+    with ui.grid(columns=2).classes('w-full gap-3 items-start').style(
+        'grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); grid-auto-rows:min-content;'
+    ):
+        include_snapshot_cb = _build_toggle_card(
+            'Alert Snapshot',
+            'Include snapshot in alert',
+            bool(state['alert_include_snapshot']),
+            'Attach a snapshot to alert emails when an alert is sent',
+        )
+        enable_summary_cb = _build_toggle_card(
+            'Motion Summary Logs',
+            'Enable motion summary logs',
+            bool(state['enable_motion_summary_logs']),
+            'Master switch for periodic motion summary logging',
+        )
 
     # Apply bar
     with ui.row().classes('items-center q-gutter-sm q-mt-sm justify-end'):
