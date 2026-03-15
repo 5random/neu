@@ -12,6 +12,13 @@ def set_tab(title: str | None = None, icon_url: str | None = None, client: Optio
     c = client
     js_parts: list[str] = []
     if title is not None:
+        try:
+            if c is not None and hasattr(c, 'title'):
+                c.title = title
+            elif getattr(ui.context, 'client', None) is not None:
+                ui.context.client.title = title
+        except Exception:
+            pass
         js_parts.append(f'document.title = {title!r};')
     if icon_url is not None:
         js_parts.append(

@@ -6,7 +6,6 @@ from src.config import get_global_config, save_global_config, get_logger
 from src.gui.constants import StorageKeys
 from src.gui.layout import compute_gui_title
 from src.gui.storage import set_ui_pref
-from src.gui.util import set_tab_all
 
 logger = get_logger('gui.metadata')
 
@@ -90,9 +89,10 @@ def create_metadata_settings() -> None:
 					cfg.metadata.cvd_name = str(cvd_name_inp.value or '').strip()
 
 					if save_global_config():
-						new_title = compute_gui_title(cfg)
+						from src.gui.gui_ import sync_runtime_gui_title
+
+						new_title = sync_runtime_gui_title(title=compute_gui_title(cfg), broadcast=True)
 						set_ui_pref(StorageKeys.GUI_TITLE, new_title)
-						set_tab_all(title=new_title)
 						ui.notify('Metadata saved.', type='positive', position='bottom-right')
 						logger.info('Metadata updated: id=%s, name=%s', cfg.metadata.cvd_id, cfg.metadata.cvd_name)
 						_update_ui_from_inputs()

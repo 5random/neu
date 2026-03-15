@@ -41,11 +41,13 @@ def install_overlay_styles() -> None:
 
 def build_header() -> None:
     install_overlay_styles()
+    current_title = compute_gui_title()
+    ui.page_title(current_title)
     with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
         dark = ui.dark_mode(value=bool(get_ui_pref(StorageKeys.DARK_MODE, False)))
 
         # Refresh the shared title on each page build so config changes are reflected.
-        set_ui_pref(StorageKeys.GUI_TITLE, compute_gui_title())
+        set_ui_pref(StorageKeys.GUI_TITLE, current_title)
 
         # --- Linke Seite -------------------------------------------
         with ui.row().classes('items-center gap-3'):
@@ -74,7 +76,7 @@ def build_header() -> None:
             try:
                 title_label.bind_text_from(get_ui_storage(), StorageKeys.GUI_TITLE)
             except Exception:
-                title_label.text = compute_gui_title()
+                title_label.text = current_title
 
         # --- Rechte Seite ------------------------------------------
         def toggle_dark() -> None:

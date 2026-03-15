@@ -9,8 +9,8 @@
 metadata:
   version: 1.0
   description: CVD-Tracker
-  cvd_id: 2
-  cvd_name: LOL
+  cvd_id: 0
+  cvd_name: Instanzs
   released_at: 2023-01-01
 
 # ---------------------------------------------------------------------------

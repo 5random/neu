@@ -1,4 +1,5 @@
 from typing import Any
+import json
 
 _settings_page: Any = None
 try:
@@ -18,10 +19,70 @@ from src.gui.default_page import index_page as default_page  # noqa: F401
 
 logger = get_logger("gui")
 
-from .layout import build_header, build_footer, install_overlay_styles
+from .layout import build_header, build_footer, compute_gui_title, install_overlay_styles
+from .util import set_tab
+
+_title_sync_registered = False
 
 # Register signal handlers for graceful shutdown
 cleanup.register_signal_handlers()
+
+
+def sync_runtime_gui_title(*, title: str | None = None, client: Any = None, broadcast: bool = False) -> str:
+    """Sync the current metadata-based GUI title into NiceGUI runtime state and clients."""
+    resolved_title = str(title or compute_gui_title())
+
+    try:
+        app.config.title = resolved_title
+    except Exception:
+        pass
+
+    try:
+        app.storage.general['cvd.runtime_title'] = resolved_title
+    except Exception:
+        pass
+
+    label_sync_code = f"""
+    const title = {json.dumps(resolved_title)};
+    for (const id of ['cvd-header-title', 'cvd-footer-title']) {{
+        const element = document.getElementById(id);
+        if (element) {{
+            element.textContent = title;
+        }}
+    }}
+    """
+
+    try:
+        if client is not None:
+            if hasattr(client, 'title'):
+                client.title = resolved_title
+            set_tab(title=resolved_title, client=client)
+            if hasattr(client, 'run_javascript'):
+                client.run_javascript(label_sync_code)
+        elif broadcast:
+            clients_dict = getattr(app, 'clients', {})
+            try:
+                clients = list(getattr(clients_dict, 'values', lambda: [])())
+            except Exception:
+                clients = []
+            for connected_client in clients:
+                sync_runtime_gui_title(title=resolved_title, client=connected_client)
+    except Exception:
+        logger.debug('Failed to sync GUI title to client(s)', exc_info=True)
+
+    return resolved_title
+
+
+def _sync_title_on_connect(client: Any = None) -> None:
+    sync_runtime_gui_title(client=client)
+
+
+def _ensure_title_sync_registered() -> None:
+    global _title_sync_registered
+    if _title_sync_registered:
+        return
+    app.on_connect(_sync_title_on_connect)
+    _title_sync_registered = True
 
 def create_gui(config_path: str = "config/config.yaml") -> None:
     """Initialisierung vor ui.run(): Konfiguration laden und App initialisieren.
@@ -31,6 +92,8 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
     try:
         # Centralized initialization
         init.init_application(config_path)
+        _ensure_title_sync_registered()
+        sync_runtime_gui_title()
         
         # Optional: statische Pfade einmalig mounten
         try:
