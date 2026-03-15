@@ -3,6 +3,16 @@ from src.config import get_global_config
 from .constants import StorageKeys
 from .storage import get_ui_pref, get_ui_storage, set_ui_pref
 
+_OVERLAY_HEAD_HTML = """
+<style>
+/* Keep notifications above sticky controls and other fixed overlays. */
+.q-notifications__list,
+.q-notification {
+    z-index: 12000 !important;
+}
+</style>
+"""
+
 
 def _compute_title() -> str:
     """Compute UI title from config.gui.title template and metadata."""
@@ -23,7 +33,14 @@ def _compute_title() -> str:
         pass
     return 'CVD-TRACKER'
 
+
+def install_overlay_styles() -> None:
+    """Ensure transient notifications render above fixed/sticky controls."""
+    ui.add_head_html(_OVERLAY_HEAD_HTML)
+
+
 def build_header() -> None:
+    install_overlay_styles()
     with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
         dark = ui.dark_mode(value=bool(get_ui_pref(StorageKeys.DARK_MODE, False)))
 

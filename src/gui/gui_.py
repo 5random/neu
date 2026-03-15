@@ -18,7 +18,7 @@ from src.gui.default_page import index_page as default_page  # noqa: F401
 
 logger = get_logger("gui")
 
-from .layout import build_header, build_footer
+from .layout import build_header, build_footer, install_overlay_styles
 
 # Register signal handlers for graceful shutdown
 cleanup.register_signal_handlers()
@@ -49,6 +49,7 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
 
 @ui.page('/shutdown')
 def shutdown_page() -> None:
+    install_overlay_styles()
     with ui.column().classes('absolute-center items-center gap-6'):
         ui.icon('power_settings_new').classes('text-6xl text-negative')
         ui.label('Server shutdown').classes('text-h4 font-medium')
@@ -61,6 +62,7 @@ def updating_page() -> None:
     import asyncio
     
     logger.info('Opening updating page...')
+    install_overlay_styles()
     with ui.column().classes('absolute-center items-center gap-4'):
         ui.icon('system_update').classes('text-6xl text-primary')
         ui.label('Update wird installiert...').classes('text-h5 font-medium')
