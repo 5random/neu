@@ -1,0 +1,64 @@
+import json
+
+import numpy as np
+
+from src.alert_history import append_history_entry, build_history_image_url, resolve_history_image_path
+from src.config import _create_default_config
+from src.measurement import MeasurementController
+
+
+def test_append_history_entry_repairs_non_list_history_file(tmp_path):
+    history_file = tmp_path / 'history.json'
+    history_file.write_text('{}', encoding='utf-8')
+
+    entry = {
+        'timestamp': '2026-03-15 12:00:00',
+        'session_id': 'session-1',
+        'type': 'alert',
+        'image_path': '',
+    }
+
+    append_history_entry(entry, history_file=history_file)
+
+    assert (tmp_path / 'history.json.bak').exists()
+    assert json.loads(history_file.read_text(encoding='utf-8')) == [entry]
+
+
+def test_build_history_image_url_stays_within_history_dir(tmp_path):
+    history_dir = tmp_path / 'history'
+    history_dir.mkdir()
+
+    image_file = history_dir / 'nested' / 'alert test.jpg'
+    image_file.parent.mkdir()
+    image_file.write_bytes(b'img')
+
+    assert build_history_image_url('nested/alert test.jpg', history_dir) == '/history/nested/alert%20test.jpg'
+    assert build_history_image_url(str(image_file), history_dir) == '/history/nested/alert%20test.jpg'
+    assert resolve_history_image_path('../outside.jpg', history_dir) is None
+    assert build_history_image_url('../outside.jpg', history_dir) == ''
+
+
+def test_measurement_history_stores_relative_posix_image_path(tmp_path):
+    cfg = _create_default_config()
+    cfg.measurement.history_path = str(tmp_path)
+
+    controller = MeasurementController(cfg.measurement, email_system=None, camera=None)
+    frame = np.zeros((8, 8, 3), dtype=np.uint8)
+
+    controller._save_alert_to_history('session-1', frame, email_sent=False)
+
+    history_file = tmp_path / 'history.json'
+    assert history_file.exists()
+
+    entries = json.loads(history_file.read_text(encoding='utf-8'))
+    assert len(entries) == 1
+
+    entry = entries[0]
+    assert entry['type'] == 'alert'
+    assert entry['email_sent'] is False
+    assert entry['image_path']
+    assert '\\' not in entry['image_path']
+    assert not entry['image_path'].startswith(str(tmp_path))
+    assert (tmp_path / entry['image_path']).exists()
+
+    controller.cleanup()

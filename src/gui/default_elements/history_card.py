@@ -1,10 +1,15 @@
 from nicegui import ui
-import json
-import os
 import uuid
-from pathlib import Path
 from typing import List, Dict, Any
 from datetime import datetime
+from src.alert_history import (
+    build_history_image_url,
+    get_history_dir,
+    get_history_file,
+    load_history_entries,
+    replace_history_entries,
+    resolve_history_image_path,
+)
 from src.config import get_logger
 
 logger = get_logger('gui.history')
@@ -12,32 +17,23 @@ logger = get_logger('gui.history')
 def create_history_card() -> None:
     """Creates a card displaying the alert history from JSON."""
     
-    history_file = Path("data/history/history.json")
-    HISTORY_DIR = Path("data/history").resolve()
+    history_dir = get_history_dir()
+    history_file = get_history_file()
     MAX_ENTRIES = 50  # Pagination limit
     
     def load_history() -> List[Dict[str, Any]]:
-        if not history_file.exists():
-            return []
         try:
-            with open(history_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            
-            if not isinstance(data, list):
-                logger.error("History file content is not a list")
-                return []
-
+            data = load_history_entries(history_file=history_file, entry_type='alert')
             valid_entries = []
-            for i, entry in enumerate(data):
-                if not isinstance(entry, dict):
-                    continue
+            for entry in data:
+                row = dict(entry)
                 
                 # Ensure ID exists
-                if 'id' not in entry:
-                    entry['id'] = str(uuid.uuid4())
+                if 'id' not in row:
+                    row['id'] = str(uuid.uuid4())
                 
                 # Validate and parse timestamp
-                ts_str = entry.get('timestamp')
+                ts_str = row.get('timestamp')
                 if not ts_str:
                     continue
                 
@@ -51,8 +47,9 @@ def create_history_card() -> None:
                         dt = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S")
                     
                     # Store parsed object for sorting, keep string for display
-                    entry['_dt'] = dt
-                    valid_entries.append(entry)
+                    row['_dt'] = dt
+                    row['image_url'] = build_history_image_url(row.get('image_path'), history_dir)
+                    valid_entries.append(row)
                 except ValueError:
                     logger.warning(f"Skipping entry with invalid timestamp format: {ts_str}")
                     continue
@@ -82,13 +79,7 @@ def create_history_card() -> None:
 
     def clear_history() -> None:
         try:
-            # Ensure directory exists before writing
-            if not history_file.parent.exists():
-                os.makedirs(history_file.parent, exist_ok=True)
-
-            # Clear JSON
-            with open(history_file, "w", encoding="utf-8") as f:
-                json.dump([], f)
+            replace_history_entries([], history_file=history_file)
             
             # TODO: Decide on image deletion policy. 
             # Currently preserving files to prevent accidental data loss.
@@ -108,27 +99,9 @@ def create_history_card() -> None:
             return False
             
         try:
-            # Resolve absolute path
-            # Note: image_path might be relative like "pics/alert_123.jpg" or absolute
-            # We assume it's relative to CWD or absolute.
-            # If it starts with /, it's absolute (on *nix) or relative to drive root (Windows)
-            # We treat it as relative to CWD if not absolute.
-            
-            # In this app, images are likely stored in data/history/images or similar.
-            # Let's check if the resolved path starts with HISTORY_DIR.
-            # However, existing code might use 'pics/' which is mounted as static.
-            # Let's assume we want to allow files in CWD/data/history OR CWD/pics (if that's where they are).
-            # The requirement says "Ensure paths are relative to data/history".
-            
-            # Let's be strict: must be inside CWD.
-            base_dir = Path.cwd().resolve()
-            target_path = (base_dir / image_path).resolve()
-            
-            # Check if target_path is within base_dir
-            if not str(target_path).startswith(str(base_dir)):
-                logger.warning(f"Path traversal attempt detected: {image_path}")
+            if resolve_history_image_path(image_path, history_dir) is None:
+                logger.warning(f"Invalid history image path: {image_path}")
                 return False
-                
             return True
         except Exception as e:
             logger.error(f"Path validation error: {e}")
@@ -155,12 +128,12 @@ def create_history_card() -> None:
         table.add_slot('body-cell-image', r'''
             <q-td key="image" :props="props">
                 <q-img 
-                    v-if="props.row.image_path"
-                    :src="props.row.image_path" 
+                    v-if="props.row.image_url"
+                    :src="props.row.image_url" 
                     spinner-color="primary" 
                     style="height: 50px; max-width: 90px"
                     class="rounded"
-                    @click="$emit('image-click', props.row.image_path)"
+                    @click="$emit('image-click', props.row.image_url)"
                 >
                     <template v-slot:error>
                         <div class="absolute-full flex flex-center bg-negative text-white">

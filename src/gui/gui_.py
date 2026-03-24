@@ -13,6 +13,8 @@ import sys
 from src.config import load_config, set_global_config, get_logger
 from src.gui import init, cleanup
 
+from src.alert_history import HISTORY_STATIC_ROUTE, get_history_dir
+
 # Register help and default page routes via import side effect
 from .help.help import help_page  # noqa: F401
 from src.gui.default_page import index_page as default_page  # noqa: F401
@@ -96,6 +98,12 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
         sync_runtime_gui_title()
         
         # Optional: statische Pfade einmalig mounten
+        try:
+            history_dir = get_history_dir()
+            history_dir.mkdir(parents=True, exist_ok=True)
+            app.add_static_files(HISTORY_STATIC_ROUTE, str(history_dir))
+        except Exception:
+            pass
         try:
             app.add_static_files('/pics', 'pics')
         except Exception:

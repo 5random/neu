@@ -3,14 +3,10 @@ from __future__ import annotations
 import threading
 import time
 import logging
-import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, Callable, TYPE_CHECKING, Any
 from concurrent.futures import ThreadPoolExecutor
 
-import json
-import os
-from pathlib import Path
 import cv2
 import numpy as np
 
@@ -21,6 +17,7 @@ if TYPE_CHECKING:
     from .cam.camera import Camera
     from .cam.motion import MotionResult
 
+from .alert_history import append_history_entry, get_history_dir, to_history_image_storage_path
 from .config import get_logger
 
 class MeasurementController:
@@ -64,9 +61,6 @@ class MeasurementController:
         self._motion_history: list[tuple[float, bool]] = []
         self._history_lock = threading.Lock()
         
-        # -- File I/O Lock for History JSON --
-        self._file_lock = threading.Lock()
-
         # -- GUI Motion Callbacks --
         self._motion_callbacks: list[Callable[[Any], None]] = []
         self._callbacks_lock = threading.Lock()
@@ -282,16 +276,21 @@ class MeasurementController:
             
         # Save to History (JSON)
         try:
-            self._save_alert_to_history(session_id, frame)
+            self._save_alert_to_history(session_id, frame, email_sent=bool(success))
         except Exception as e:
             self.logger.error(f"Failed to save alert history: {e}")
 
         return bool(success)
 
-    def _save_alert_to_history(self, session_id: str, frame: Optional[np.ndarray]) -> None:
+    def _save_alert_to_history(
+        self,
+        session_id: str,
+        frame: Optional[np.ndarray],
+        *,
+        email_sent: bool,
+    ) -> None:
         """Saves the alert event to a JSON history file and saves the image."""
-        # Verwende konfigurierbaren Path aus Config (Issue #10)
-        history_dir = Path(self.config.history_path)
+        history_dir = get_history_dir(self.config)
         history_dir.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.now()
@@ -305,8 +304,13 @@ class MeasurementController:
             try:
                 # Convert RGB to BGR if needed? Camera usually returns BGR for OpenCV
                 # Assuming frame is BGR from cv2.VideoCapture
-                cv2.imwrite(str(image_full_path), frame)
-                image_path = str(Path(self.config.history_path) / image_filename)
+                if cv2.imwrite(str(image_full_path), frame):
+                    image_path = to_history_image_storage_path(image_full_path, history_dir)
+                else:
+                    self.logger.error(
+                        f"Error saving alert image: cv2.imwrite returned False for {image_full_path}. "
+                        "Possible causes include disk full, invalid path, insufficient permissions, or invalid image data."
+                    )
             except Exception as e:
                 self.logger.error(f"Error saving alert image: {e}")
 
@@ -315,47 +319,15 @@ class MeasurementController:
             "session_id": session_id,
             "type": "alert",
             "image_path": image_path,
-            "details": "No motion detected"
+            "details": "No motion detected",
+            "email_sent": bool(email_sent),
         }
 
-        json_file = history_dir / "history.json"
-        history = []
-        
-        # Use file lock to prevent concurrent access corruption
-        with self._file_lock:
-            # Load existing
-            if json_file.exists():
-                try:
-                    with open(json_file, "r", encoding="utf-8") as f:
-                        history = json.load(f)
-                except json.JSONDecodeError as e:
-                    self.logger.error(f"Corrupt history.json, backing up and starting fresh: {e}")
-                    # Backup corrupt file
-                    backup_path = json_file.with_suffix('.json.bak')
-                    try:
-                        json_file.rename(backup_path)
-                    except Exception:
-                        pass
-                    history = []
-                except Exception as e:
-                    self.logger.error(f"Error loading history.json: {e}")
-            
-            # Append new
-            history.append(event_data)
-            
-            # Keep only last 100 entries
-            if len(history) > 100:
-                history = history[-100:]
-
-            # Save back using atomic write pattern (write to temp, then rename)
-            try:
-                temp_file = json_file.with_suffix('.json.tmp')
-                with open(temp_file, "w", encoding="utf-8") as f:
-                    json.dump(history, f, indent=2, ensure_ascii=False)
-                # Atomic rename (works on same filesystem)
-                temp_file.replace(json_file)
-            except Exception as e:
-                self.logger.error(f"Error saving history.json: {e}")
+        append_history_entry(
+            event_data,
+            history_file=history_dir / 'history.json',
+            max_entries=100,
+        )
 
     def check_session_timeout(self) -> None:
         """Prüft ob die maximale Session-Dauer erreicht ist."""

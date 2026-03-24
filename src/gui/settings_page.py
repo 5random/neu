@@ -113,12 +113,14 @@ def settings_page(request: Request) -> None:
     with ui.left_drawer(value=_initial_drawer_open).classes('w-64 p-2 cvd-quicklinks-drawer') as left_drawer:
         def _quick_link(label: str, anchor_id: str, section_id: str) -> None:
             anchor_to_section[anchor_id] = section_id
+            def _handle_click(_event: Any, _anchor: str = anchor_id, _section: str = section_id) -> None:
+                _open_section(_anchor, _section)
             link = ui.link(label, f'#{anchor_id}') \
                 .classes('cvd-quick-link block px-2 py-1 rounded') \
                 .props(f'data-anchor={anchor_id} data-section={section_id}')
             link.on(
                 'click',
-                lambda _anchor=anchor_id, _section=section_id: _open_section(_anchor, _section),
+                _handle_click,
                 js_handler='(e) => { e.preventDefault(); emit(); }',
             )
 
@@ -127,11 +129,11 @@ def settings_page(request: Request) -> None:
         ui.label('Quick Links').classes('text-bold pl-2 pt-2 cvd-quicklinks-title')
         # Anchor links to scroll to sections and expand the owning card if necessary
         _quick_link('Camera', 'camera', 'camera')
-        _quick_link('Metadata', 'metadata', 'metadata')
         _quick_link('Motion Detection', 'motion', 'camera')
         _quick_link('Measurement', 'measurement', 'measurement')
         _quick_link('E-Mail', 'email', 'email')
         _quick_link('Configuration', 'config', 'config')
+        _quick_link('Metadata', 'metadata', 'metadata')
         _quick_link('Update', 'update', 'update')
         _quick_link('Logs', 'logs', 'logs')
 
@@ -485,5 +487,4 @@ body .q-tooltip, .q-tooltip { z-index: 11000 !important; }
     ui.timer(0.2, _open_requested_section_on_load, once=True, immediate=False)
 
     # Issue #8 fix: Removed disconnect cleanup - preferences should persist
-
 

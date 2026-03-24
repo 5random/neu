@@ -1,36 +1,20 @@
 from nicegui import ui
-import json
-from pathlib import Path
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
 from collections import defaultdict
-from src.config import get_logger, get_global_config
+from src.alert_history import get_history_file, load_history_entries
+from src.config import get_logger
 
 logger = get_logger('gui.stats')
 
 def create_stats_card() -> None:
     """Creates a card displaying statistics charts."""
     
-    # Use configurable history path from global config (consistent with measurement.py)
-    config = get_global_config()
-    if config is not None and hasattr(config, 'measurement') and hasattr(config.measurement, 'history_path'):
-        history_path = Path(config.measurement.history_path)
-    else:
-        # Fallback to default path
-        history_path = Path("data/history")
-    history_file = history_path / "history.json"
+    history_file = get_history_file()
     
     def load_history() -> List[Dict[str, Any]]:
-        if not history_file.exists():
-            return []
         try:
-            with open(history_file, "r", encoding="utf-8") as f:
-                result = json.load(f)
-                if not isinstance(result, list):
-                    logger.error(f"History file {history_file} content is not a list")
-                    return []
-                # Optional: Check if items are dicts, though less critical than top-level type
-                return result
+            return load_history_entries(history_file=history_file, entry_type='alert')
         except Exception as e:
             logger.error(f"Error loading history for stats: {e}")
             return []

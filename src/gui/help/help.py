@@ -236,12 +236,14 @@ body.body--dark #cvd-help-links a.cvd-quick-link.active-link {
             left_drawer.props('id=cvd-help-links')
             ui.label('Table of contents').classes('text-bold pl-2 pt-2 cvd-help-links-title')
             for section in sections:
+                def _handle_click(_event: Any, _anchor: str = section['anchor_id']) -> None:
+                    _open_section(_anchor)
                 link = ui.link(section['title'], f"#{section['anchor_id']}") \
                     .classes('cvd-quick-link block px-2 py-1 rounded') \
                     .props(f"data-anchor={section['anchor_id']}")
                 link.on(
                     'click',
-                    lambda _anchor=section['anchor_id']: _open_section(_anchor),
+                    _handle_click,
                     js_handler='(e) => { e.preventDefault(); emit(); }',
                 )
 
