@@ -256,10 +256,10 @@ def create_measurement_card(
         ui.separator().classes('my-4')
 
         # Recipient Groups (Async Load)
-        groups_select = None
+        groups_select: Optional[ui.select] = None
         _last_groups_opts: list[str] = []
         groups_build_lock = asyncio.Lock()
-        apply_btn = None
+        apply_btn: Optional[ui.button] = None
 
         def _update_apply_groups_state() -> None:
             nonlocal groups_select, apply_btn
@@ -310,14 +310,19 @@ def create_measurement_card(
                             groups_select.on('update:model-value', _on_groups_change)
 
                             def apply_groups() -> None:
-                                nonlocal apply_btn
+                                nonlocal apply_btn, groups_select
                                 try:
-                                    apply_btn.disable()
+                                    button = apply_btn
+                                    select = groups_select
+                                    if button is None or select is None:
+                                        return
+
+                                    button.disable()
                                     conf = get_global_config()
                                     if not conf or not getattr(conf, 'email', None):
                                         return
                                     
-                                    raw_val = getattr(groups_select, 'value', [])
+                                    raw_val = getattr(select, 'value', [])
                                     selected = list(raw_val) if isinstance(raw_val, (list, tuple, set)) else []
                                     
                                     conf.email.active_groups = selected
