@@ -1,12 +1,13 @@
-from nicegui import ui
+from nicegui import ui, app
 import uuid
 from typing import List, Dict, Any
-from datetime import datetime
 from src.alert_history import (
+    HISTORY_STATIC_ROUTE,
     build_history_image_url,
     get_history_dir,
     get_history_file,
     load_history_entries,
+    parse_history_timestamp,
     replace_history_entries,
     resolve_history_image_path,
 )
@@ -32,27 +33,16 @@ def create_history_card() -> None:
                 if 'id' not in row:
                     row['id'] = str(uuid.uuid4())
                 
-                # Validate and parse timestamp
-                ts_str = row.get('timestamp')
-                if not ts_str:
-                    continue
-                
-                try:
-                    # Try parsing ISO 8601 formats
-                    # Attempt 1: "YYYY-MM-DD HH:MM:SS" (legacy/current)
-                    try:
-                        dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-                    except ValueError:
-                        # Attempt 2: "YYYY-MM-DDTHH:MM:SS" (strict ISO)
-                        dt = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S")
-                    
-                    # Store parsed object for sorting, keep string for display
-                    row['_dt'] = dt
-                    row['image_url'] = build_history_image_url(row.get('image_path'), history_dir)
-                    valid_entries.append(row)
-                except ValueError:
+                dt = parse_history_timestamp(row.get('timestamp'))
+                if dt is None:
+                    ts_str = row.get('timestamp')
                     logger.warning(f"Skipping entry with invalid timestamp format: {ts_str}")
                     continue
+
+                # Store parsed object for sorting, keep string for display
+                row['_dt'] = dt
+                row['image_url'] = build_history_image_url(row.get('image_path'), history_dir)
+                valid_entries.append(row)
 
             # Sort by datetime descending
             valid_entries.sort(key=lambda x: x['_dt'], reverse=True)
@@ -68,14 +58,15 @@ def create_history_card() -> None:
             logger.error(f"Error loading history: {e}")
             return []
 
-    def refresh_table() -> None:
+    def refresh_table(*, notify: bool = False) -> None:
         rows = load_history()
         table.rows = rows
         table.update()
-        if not rows:
-            ui.notify("No history found", type="info")
-        else:
-            ui.notify(f"Loaded latest {len(rows)} entries", type="positive")
+        if notify:
+            if not rows:
+                ui.notify("No history found", type="info")
+            else:
+                ui.notify(f"Loaded latest {len(rows)} entries", type="positive")
 
     def clear_history() -> None:
         try:
@@ -89,6 +80,24 @@ def create_history_card() -> None:
             ui.notify("History cleared", type="positive")
         except Exception as e:
             ui.notify(f"Error clearing history: {e}", type="negative")
+
+    def download_history() -> None:
+        try:
+            if not history_file.exists():
+                ui.notify("No history file found", type="warning")
+                return
+
+            history_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                app.add_static_files(HISTORY_STATIC_ROUTE, str(history_dir))
+            except Exception:
+                pass
+
+            ui.download.from_url(f'{HISTORY_STATIC_ROUTE}/{history_file.name}')
+            ui.notify("history.json downloaded", type="positive")
+        except Exception as e:
+            logger.error(f"Error downloading history file: {e}")
+            ui.notify("Error downloading history.json", type="negative")
 
     def validate_image_path(image_path: str) -> bool:
         """
@@ -111,7 +120,8 @@ def create_history_card() -> None:
         with ui.row().classes('w-full items-center justify-between'):
             ui.label('Alert History').classes('text-h6')
             with ui.row().classes('gap-2'):
-                ui.button(icon='refresh', on_click=refresh_table).props('flat round').tooltip('Refresh')
+                ui.button(icon='download', on_click=download_history).props('flat round').tooltip('Download history.json')
+                ui.button(icon='refresh', on_click=lambda: refresh_table(notify=True)).props('flat round').tooltip('Refresh')
                 ui.button(icon='delete', color='negative', on_click=clear_history).props('flat round').tooltip('Clear History')
 
         # Columns for the table
@@ -180,6 +190,9 @@ def create_history_card() -> None:
                 logger.warning(f"Invalid image path in event: {path}")
 
         table.on('image-click', handle_image_click)
+
+        # Keep the table in sync with the chart without notification spam.
+        ui.timer(5.0, refresh_table)
 
         # Initial load
         refresh_table()

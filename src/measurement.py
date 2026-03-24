@@ -242,11 +242,7 @@ class MeasurementController:
         return True
 
     def trigger_alert_sync(self, session_id: str) -> bool:
-        """Führt den eigentlichen Alert-Versand aus (läuft im Executor)."""
-        if not self.email_system:
-            self.logger.warning("No email system configured, cannot send alert")
-            return False
-            
+        """Execute alert side effects and always persist the alert history entry."""
         # Snapshot holen mit Validation
         frame = None
         if self.camera:
@@ -262,25 +258,32 @@ class MeasurementController:
             except Exception as e:
                 self.logger.error(f"Error taking snapshot: {e}")
                 frame = None
-            
-        success = self.email_system.send_motion_alert(
-            last_motion_time=self.last_motion_time,
-            session_id=session_id,
-            camera_frame=frame
-        )
-        
-        if success:
-            self.logger.info("Alert email sent successfully")
+
+        email_sent = False
+        if not self.email_system:
+            self.logger.warning("No email system configured; alert will only be written to history")
         else:
-            self.logger.error("Failed to send alert email")
-            
+            try:
+                email_sent = bool(self.email_system.send_motion_alert(
+                    last_motion_time=self.last_motion_time,
+                    session_id=session_id,
+                    camera_frame=frame,
+                ))
+
+                if email_sent:
+                    self.logger.info("Alert email sent successfully")
+                else:
+                    self.logger.error("Failed to send alert email")
+            except Exception as e:
+                self.logger.error(f"Error while sending alert email: {e}")
+
         # Save to History (JSON)
         try:
-            self._save_alert_to_history(session_id, frame, email_sent=bool(success))
+            self._save_alert_to_history(session_id, frame, email_sent=email_sent)
         except Exception as e:
             self.logger.error(f"Failed to save alert history: {e}")
 
-        return bool(success)
+        return email_sent
 
     def _save_alert_to_history(
         self,

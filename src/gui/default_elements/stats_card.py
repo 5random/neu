@@ -2,7 +2,7 @@ from nicegui import ui
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
 from collections import defaultdict
-from src.alert_history import get_history_file, load_history_entries
+from src.alert_history import get_history_file, load_history_entries, parse_history_timestamp
 from src.config import get_logger
 
 logger = get_logger('gui.stats')
@@ -20,30 +20,28 @@ def create_stats_card() -> None:
             return []
 
     def process_data(data: List[Dict[str, Any]]) -> Dict[str, Any]:
-        # Aggregate events by hour for the last 24 hours
+        # Aggregate events by hour for the last 24 hours, aligned to hour boundaries.
         now = datetime.now()
-        start_time = now - timedelta(hours=24)
+        end_hour = now.replace(minute=0, second=0, microsecond=0)
+        start_hour = end_hour - timedelta(hours=23)
         
         # Initialize buckets for last 24h
         buckets: Dict[str, int] = defaultdict(int)
-        # Pre-fill with 0 to ensure continuous line
         for i in range(24):
-            t = start_time + timedelta(hours=i)
+            t = start_hour + timedelta(hours=i)
             key = t.strftime("%Y-%m-%d %H:00")
             buckets[key] = 0
             
         for entry in data:
-            ts_str = entry.get('timestamp')
-            if not ts_str:
+            ts = parse_history_timestamp(entry.get('timestamp'))
+            if ts is None:
                 continue
-            try:
-                ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-                if ts >= start_time and ts < now:
-                    key = ts.strftime("%Y-%m-%d %H:00")
+
+            if start_hour <= ts <= now:
+                key = ts.replace(minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:00")
+                if key in buckets:
                     buckets[key] += 1
-            except ValueError:
-                continue
-                
+                 
         # Sort by time
         sorted_keys = sorted(buckets.keys())
         values = [buckets[k] for k in sorted_keys]
@@ -56,14 +54,14 @@ def create_stats_card() -> None:
         }
 
     with ui.card().classes('w-full h-full'):
-        ui.label('Network Statistics (Events/Hour)').classes('text-h6')
+        ui.label('Alert Statistics (Events/Hour)').classes('text-h6')
         
         chart = ui.echart({
             'tooltip': {'trigger': 'axis'},
             'xAxis': {'type': 'category', 'data': []},
             'yAxis': {'type': 'value', 'name': 'Events'},
             'series': [{
-                'name': 'Alarms',
+                'name': 'Alerts',
                 'type': 'line',
                 'data': [],
                 'smooth': True,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -57,6 +58,24 @@ def load_history_entries(
     if entry_type is None:
         return entries
     return [entry for entry in entries if entry.get('type') == entry_type]
+
+
+def parse_history_timestamp(timestamp: Any) -> datetime | None:
+    """Parse supported history timestamp formats into a datetime object."""
+    if timestamp is None:
+        return None
+
+    ts_str = str(timestamp).strip()
+    if not ts_str:
+        return None
+
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(ts_str, fmt)
+        except ValueError:
+            continue
+
+    return None
 
 
 def append_history_entry(

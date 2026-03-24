@@ -39,69 +39,69 @@ def create_camfeed_content() -> None:
                 # server-side timers that may be cancelled during route changes.
                 ui.add_body_html(
                         """
-<script>
-(function(){
-    try {
-        // Clear previous interval if any (when re-entering the page)
-        if (window.__cvdDefaultCamInt) {
-            clearInterval(window.__cvdDefaultCamInt);
-            window.__cvdDefaultCamInt = null;
-        }
+                        <script>
+                        (function(){
+                            try {
+                                // Clear previous interval if any (when re-entering the page)
+                                if (window.__cvdDefaultCamInt) {
+                                    clearInterval(window.__cvdDefaultCamInt);
+                                    window.__cvdDefaultCamInt = null;
+                                }
 
-        function updateCam() {
-            var root = document.getElementById('cvd-default-cam');
-            if (!root) return;
-            // Try to find the underlying <img> element rendered by Interactive Image
-            var img = root.querySelector('img');
-            if (!img) {
-                // Also try possible nested structures
-                var qimg = root.querySelector('.q-img__image img');
-                if (qimg) img = qimg;
-            }
-            if (!img) {
-                // As a fallback, attempt to set source on root (for SVG/image variants)
-                var url = '/video/frame?' + Date.now();
-                try { root.src = url; } catch(e) {}
-                try { root.setAttribute('src', url); } catch(e) {}
-                try { root.setAttribute('href', url); } catch(e) {}
-                return;
-            }
-            var url = '/video/frame?' + Date.now();
-            img.src = url;
-        }
+                                function updateCam() {
+                                    var root = document.getElementById('cvd-default-cam');
+                                    if (!root) return;
+                                    // Try to find the underlying <img> element rendered by Interactive Image
+                                    var img = root.querySelector('img');
+                                    if (!img) {
+                                        // Also try possible nested structures
+                                        var qimg = root.querySelector('.q-img__image img');
+                                        if (qimg) img = qimg;
+                                    }
+                                    if (!img) {
+                                        // As a fallback, attempt to set source on root (for SVG/image variants)
+                                        var url = '/video/frame?' + Date.now();
+                                        try { root.src = url; } catch(e) {}
+                                        try { root.setAttribute('src', url); } catch(e) {}
+                                        try { root.setAttribute('href', url); } catch(e) {}
+                                        return;
+                                    }
+                                    var url = '/video/frame?' + Date.now();
+                                    img.src = url;
+                                }
 
-        function start() {
-            if (window.__cvdDefaultCamInt) return;
-            updateCam();
-            window.__cvdDefaultCamInt = setInterval(updateCam, 200);
-        }
-        function stop() {
-            if (window.__cvdDefaultCamInt) {
-                clearInterval(window.__cvdDefaultCamInt);
-                window.__cvdDefaultCamInt = null;
-            }
-        }
+                                function start() {
+                                    if (window.__cvdDefaultCamInt) return;
+                                    updateCam();
+                                    window.__cvdDefaultCamInt = setInterval(updateCam, 200);
+                                }
+                                function stop() {
+                                    if (window.__cvdDefaultCamInt) {
+                                        clearInterval(window.__cvdDefaultCamInt);
+                                        window.__cvdDefaultCamInt = null;
+                                    }
+                                }
 
-        // Start immediately if page is visible and on the correct route
-        if (document.visibilityState === 'visible') start();
+                                // Start immediately if page is visible and on the correct route
+                                if (document.visibilityState === 'visible') start();
 
-        // Handle tab visibility changes
-        document.addEventListener('visibilitychange', function(){
-            if (document.visibilityState === 'visible') start();
-            else stop();
-        });
+                                // Handle tab visibility changes
+                                document.addEventListener('visibilitychange', function(){
+                                    if (document.visibilityState === 'visible') start();
+                                    else stop();
+                                });
 
-        // Restart after back/forward cache restore
-        window.addEventListener('pageshow', function(e){
-            if (e && e.persisted) start();
-            else if (document.visibilityState === 'visible') start();
-        });
+                                // Restart after back/forward cache restore
+                                window.addEventListener('pageshow', function(e){
+                                    if (e && e.persisted) start();
+                                    else if (document.visibilityState === 'visible') start();
+                                });
 
-        // Clean up when navigating away
-        window.addEventListener('pagehide', stop);
-        window.addEventListener('beforeunload', stop);
-    } catch (e) { /* ignore */ }
-})();
-</script>
-"""
+                                // Clean up when navigating away
+                                window.addEventListener('pagehide', stop);
+                                window.addEventListener('beforeunload', stop);
+                            } catch (e) { /* ignore */ }
+                        })();
+                        </script>
+                        """
                 )

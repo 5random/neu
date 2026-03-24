@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 
-from src.alert_history import append_history_entry, build_history_image_url, resolve_history_image_path
+from src.alert_history import append_history_entry, build_history_image_url, parse_history_timestamp, resolve_history_image_path
 from src.config import _create_default_config
 from src.measurement import MeasurementController
 
@@ -38,6 +38,12 @@ def test_build_history_image_url_stays_within_history_dir(tmp_path):
     assert build_history_image_url('../outside.jpg', history_dir) == ''
 
 
+def test_parse_history_timestamp_accepts_supported_formats():
+    assert parse_history_timestamp('2026-03-15 12:00:00') is not None
+    assert parse_history_timestamp('2026-03-15T12:00:00') is not None
+    assert parse_history_timestamp('15.03.2026 12:00:00') is None
+
+
 def test_measurement_history_stores_relative_posix_image_path(tmp_path):
     cfg = _create_default_config()
     cfg.measurement.history_path = str(tmp_path)
@@ -60,5 +66,28 @@ def test_measurement_history_stores_relative_posix_image_path(tmp_path):
     assert '\\' not in entry['image_path']
     assert not entry['image_path'].startswith(str(tmp_path))
     assert (tmp_path / entry['image_path']).exists()
+
+    controller.cleanup()
+
+
+def test_trigger_alert_sync_writes_history_without_email_system(tmp_path):
+    cfg = _create_default_config()
+    cfg.measurement.history_path = str(tmp_path)
+
+    controller = MeasurementController(cfg.measurement, email_system=None, camera=None)
+
+    assert controller.trigger_alert_sync('session-2') is False
+
+    history_file = tmp_path / 'history.json'
+    assert history_file.exists()
+
+    entries = json.loads(history_file.read_text(encoding='utf-8'))
+    assert len(entries) == 1
+
+    entry = entries[0]
+    assert entry['type'] == 'alert'
+    assert entry['session_id'] == 'session-2'
+    assert entry['email_sent'] is False
+    assert entry['image_path'] == ''
 
     controller.cleanup()
