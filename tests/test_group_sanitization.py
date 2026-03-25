@@ -4,6 +4,7 @@ These tests verify that invalid email addresses are not stored in groups
 and duplicates are removed while preserving order.
 """
 from src.gui.settings_elements.email_settings import (
+    extract_rename_addresses,
     sanitize_group_addresses,
     sanitize_groups_dict,
 )
@@ -35,3 +36,14 @@ def test_sanitize_groups_dict_applies_to_all_groups():
         "A": ["a@x.io"],
         "B": ["good@yy.de", "ok@ok.ok"],
     }
+
+
+def test_extract_rename_addresses_accepts_dict_and_sequence_payloads():
+    assert extract_rename_addresses({"oldAddress": "old@example.com", "newAddress": "new@example.com"}) == (
+        "old@example.com",
+        "new@example.com",
+    )
+    assert extract_rename_addresses(["old@example.com", "new@example.com"]) == (
+        "old@example.com",
+        "new@example.com",
+    )

@@ -182,6 +182,7 @@ def test_sync_runtime_config_instances_updates_motion_detector_and_email_system(
         """
 measurement:
   alert_delay_seconds: 600
+  alert_cooldown_seconds: 600
 motion_detection:
   sensitivity: 0.77
   background_learning_rate: 0.123
@@ -213,6 +214,7 @@ motion_detection:
     assert camera.motion_detector.learning_rate == 0.123
     assert camera.motion_detector.roi.enabled is True
     assert camera.motion_detector.roi.x == 10
+    assert email_system.alert_cooldown_seconds == 600
     assert email_system.cooldown_minutes == 10
     email_system.close()
 

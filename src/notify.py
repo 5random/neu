@@ -28,13 +28,17 @@ import asyncio
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
+from email.utils import formatdate
 from pathlib import Path
-from typing import Optional, List, Dict, Any, TYPE_CHECKING
-import logging
+from typing import Optional, List, Dict, Any, TYPE_CHECKING, Callable
 
 from .config import EmailConfig, MeasurementConfig, AppConfig, get_logger
 
 _RUNTIME_WEBSITE_URL_KEY = 'cvd.runtime_website_url'
+
+
+class AlertSendAborted(RuntimeError):
+    """Raised when an in-flight alert send must be cancelled."""
 
 
 class EMailSystem:
@@ -101,10 +105,9 @@ class EMailSystem:
         # Alert-State-Management
         self.last_alert_time: Optional[datetime] = None
         self.alerts_sent_count: int = 0
-        self.cooldown_minutes: int = max(
-            5,
-            math.ceil(self.measurement_config.alert_delay_seconds / 60),
-        )  # Minimum 5 Minuten zwischen E-Mails
+        self.alert_cooldown_seconds: int = 0
+        self.cooldown_minutes: int = 0
+        self._alert_session_id: Optional[str] = None
 
         self._state_lock = threading.RLock()
         self._smtp_lock = threading.Lock()
@@ -112,6 +115,7 @@ class EMailSystem:
         self._connection_timeout: int = 30
         self._executor = ThreadPoolExecutor(max_workers=2)
         self._alert_system_cleanup = False
+        self._refresh_alert_runtime_settings_unsafe()
 
         self.logger.info("EMailSystem initialized")
 
@@ -146,7 +150,32 @@ class EMailSystem:
 
     def __del__(self) -> None:
         if hasattr(self, '_smtp_lock'):
-            self.close()    
+            self.close()
+
+    def _refresh_alert_runtime_settings_unsafe(self) -> None:
+        cooldown_seconds = max(0, int(getattr(self.measurement_config, 'alert_cooldown_seconds', 0)))
+        self.alert_cooldown_seconds = cooldown_seconds
+        self.cooldown_minutes = math.ceil(cooldown_seconds / 60) if cooldown_seconds > 0 else 0
+
+    def _matches_alert_session_unsafe(self, session_id: Optional[str]) -> bool:
+        if session_id is None:
+            return True
+        return self._alert_session_id is not None and self._alert_session_id == session_id
+
+    def reset_alert_state(self, session_id: Optional[str] = None) -> None:
+        """Reset per-session alert counters and cooldown tracking."""
+        with self._state_lock:
+            self.last_alert_time = None
+            self.alerts_sent_count = 0
+            self._alert_session_id = session_id
+            self.logger.info("Alert state reset for session %s", session_id or "<none>")
+
+    def can_send_alert(self, session_id: Optional[str] = None) -> bool:
+        with self._state_lock:
+            if not self._matches_alert_session_unsafe(session_id):
+                return False
+            return self._should_send_alert_unsafe()
+
     def refresh_config(self) -> None:
         """
         Aktualisiert die Konfigurationsreferenzen.
@@ -158,13 +187,8 @@ class EMailSystem:
             self.measurement_config = self.app_cfg.measurement
             self.webcam_cfg = self.app_cfg.webcam
             self.motion_cfg = self.app_cfg.motion_detection
-            
-            # Cooldown neu berechnen
-            self.cooldown_minutes = max(
-                5,
-                math.ceil(self.measurement_config.alert_delay_seconds / 60),
-            )
-            
+            self._refresh_alert_runtime_settings_unsafe()
+
             self.logger.info("Alert-Configuration refreshed")
     
     def _get_current_email_config(self) -> 'EmailConfig':
@@ -211,6 +235,7 @@ class EMailSystem:
         end_time: Optional[datetime] = None,
         duration: Optional[str] = None,
         reason: Optional[str] = None,
+        snapshot_note: str = "",
     ) -> Dict[str, Any]:
         """
         Baut ein vollständiges Parameter-Set für alle E-Mail-Templates.
@@ -262,13 +287,74 @@ class EMailSystem:
             "reason": reason or "",
             "cvd_id": cvd_id,
             "cvd_name": cvd_name,
+            "snapshot_note": snapshot_note,
         }
+
+    @staticmethod
+    def _alert_snapshot_notice() -> str:
+        return "Attached is the current webcam image."
+
+    @staticmethod
+    def _looks_like_attachment_hint(line: str) -> bool:
+        stripped = (line or "").strip()
+        if not stripped:
+            return False
+
+        lowered = stripped.casefold()
+        attachment_markers = (
+            "attach",
+            "attached",
+            "attachment",
+            "attaching",
+            "anhang",
+            "angehängt",
+            "angehaengt",
+            "beigefügt",
+            "beigefuegt",
+        )
+        return any(marker in lowered for marker in attachment_markers)
+
+    def _finalize_alert_body(self, body: str, *, has_snapshot_attachment: bool) -> str:
+        text = body or ""
+        if has_snapshot_attachment:
+            return text.rstrip()
+
+        lines = [
+            line
+            for line in text.splitlines()
+            if not self._looks_like_attachment_hint(line)
+        ]
+        text = "\n".join(lines)
+        text = re.sub(r"(?:\r?\n){3,}", "\n\n", text)
+        return text.rstrip()
+
+    def _raise_if_alert_send_cancelled(
+        self,
+        *,
+        session_id: Optional[str],
+        abort_checker: Optional[Callable[[], bool]] = None,
+    ) -> None:
+        try:
+            if abort_checker is not None and abort_checker():
+                raise AlertSendAborted("alert send cancelled by measurement state")
+        except AlertSendAborted:
+            raise
+        except Exception as exc:
+            self.logger.warning("Alert abort checker failed: %s", exc)
+            raise AlertSendAborted("alert send cancelled because abort checker failed") from exc
+
+        with self._state_lock:
+            if self._alert_system_cleanup:
+                raise AlertSendAborted("alert send cancelled during cleanup")
+            if session_id is not None and not self._matches_alert_session_unsafe(session_id):
+                raise AlertSendAborted(f"alert send cancelled for stale or inactive session {session_id}")
 
     def send_motion_alert(
         self,
         last_motion_time: Optional[datetime] = None,
         session_id: Optional[str] = None,
-        camera_frame: Optional[np.ndarray] = None
+        camera_frame: Optional[np.ndarray] = None,
+        abort_checker: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """
         Sendet E-Mail-Alert bei Bewegungslosigkeit.
@@ -287,8 +373,19 @@ class EMailSystem:
     
         current_time = datetime.now()
         current_email_config = self._get_current_email_config()
+        abort_check = lambda: self._raise_if_alert_send_cancelled(
+            session_id=session_id,
+            abort_checker=abort_checker,
+        )
 
         with self._state_lock:
+            if session_id is not None and not self._matches_alert_session_unsafe(session_id):
+                self.logger.warning(
+                    "Skipping alert for stale or inactive session %s; active session is %s",
+                    session_id,
+                    self._alert_session_id,
+                )
+                return False
             if not self._should_send_alert_unsafe():
                 return False
             
@@ -298,10 +395,33 @@ class EMailSystem:
             self.last_alert_time = current_time
             temp_count = self.alerts_sent_count + 1
 
-            # E-Mail-Template rendern
+        try:
+            abort_check()
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            img_buffer: Optional[np.ndarray] = None
+            filename: Optional[str] = None
+            saved_frame_path: Optional[Path] = None
+            ok = False
+            include_snapshot = bool(self.measurement_config.alert_include_snapshot)
+            should_process_frame = (
+                camera_frame is not None
+                and (include_snapshot or self.measurement_config.save_alert_images)
+            )
+
+            if should_process_frame:
+                ok, img_buffer, filename = self._encode_frame(camera_frame, ts=timestamp)
+
+                if ok and img_buffer is not None and filename is not None and self.measurement_config.save_alert_images:
+                    saved_frame_path = self._save_alert_image(img_buffer, filename)
+
+            abort_check()
+            has_snapshot_attachment = bool(include_snapshot and img_buffer is not None and filename is not None)
+            snapshot_note = self._alert_snapshot_notice() if has_snapshot_attachment else ""
+            attachment_bytes = img_buffer.tobytes() if has_snapshot_attachment and img_buffer is not None else None
+            attachment_name = filename if has_snapshot_attachment and filename is not None else None
+
             try:
                 template = current_email_config.alert_template()
-                # Alle erwarteten Platzhalter bereitstellen
                 template_params = self._build_common_template_params(
                     session_id=session_id,
                     last_motion_time=last_motion_time,
@@ -309,95 +429,101 @@ class EMailSystem:
                     end_time=None,
                     duration="",
                     reason="",
+                    snapshot_note=snapshot_note,
                 )
-                
+
                 subject = template.subject.format(**template_params)
-                body = template.body.format(**template_params)
-                
+                body = self._finalize_alert_body(
+                    template.body.format(**template_params),
+                    has_snapshot_attachment=has_snapshot_attachment,
+                )
+
             except (KeyError, ValueError, AttributeError) as e:
                 self.logger.error(f"Error when rendering the email template: {e}, use fallback template")
-                timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
                 subject = f"CVD-Alert: No motion detected - {timestamp}"
-                body = (
-                    f"Motion has not been detected since {timestamp}!\n"
-                    f"Please check the website at: {self._resolve_website_url()}\n\n"
-                    f"Details:\n"
-                    f"Session-ID: {session_id or 'unknown'}\n"
-                    f"Camera: Index currently not available\n"
-                    f"Sensitivity: currently not available\n"
-                    f"ROI enabled: currently not available\n"
-                    f"Last motion at {last_motion_time.strftime('%H:%M:%S') if last_motion_time else 'unknown'}.\n"
-                    f"Attached is the current webcam image."
-                )
-            
-            # E-Mail-Nachricht erstellen
-            try:
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                img_buffer = None
-                filename: Optional[str] = None
-                saved_frame_path: Optional[Path] = None
-                ok = False
-                
-                if camera_frame is not None:
-                    ok, img_buffer, filename = self._encode_frame(camera_frame, ts=timestamp)
+                body_lines = [
+                    f"Motion has not been detected since {timestamp}!",
+                    f"Please check the website at: {self._resolve_website_url()}",
+                    "",
+                    "Details:",
+                    f"Session-ID: {session_id or 'unknown'}",
+                    "Camera: Index currently not available",
+                    "Sensitivity: currently not available",
+                    "ROI enabled: currently not available",
+                    f"Last motion at {last_motion_time.strftime('%H:%M:%S') if last_motion_time else 'unknown'}.",
+                ]
+                if has_snapshot_attachment:
+                    body_lines.extend(["", snapshot_note])
+                body = "\n".join(body_lines)
 
-                    if ok and img_buffer is not None and filename is not None and self.measurement_config.save_alert_images:
-                        saved_frame_path = self._save_alert_image(img_buffer, filename)
-
-                recipients = self._get_effective_recipients()
-                msg = self._create_email_message(subject, body, recipients)
-
-                # Bild-Anhang hinzufügen wenn verfügbar
-                if img_buffer is not None and filename is not None:
-                    img_attach = MIMEImage(img_buffer.tobytes())
-                    img_attach.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+            abort_check()
+            recipients = self._get_effective_recipients()
+            messages: list[tuple[str, MIMEMultipart]] = []
+            for recipient in recipients:
+                msg = self._create_email_message(subject, body, recipient)
+                if attachment_bytes is not None and attachment_name is not None:
+                    img_attach = MIMEImage(attachment_bytes)
+                    img_attach.add_header('Content-Disposition', f'attachment; filename="{attachment_name}"')
                     msg.attach(img_attach)
+                messages.append((recipient, msg))
+            success_count = self._send_emails_batch(messages, abort_check=abort_check)
 
-                # E-Mail versenden (one message per recipient for compatibility)
-                messages = [(r, msg) for r in recipients]
-                success_count = self._send_emails_batch(messages)
-
-                # Erfolg wenn mindestens eine E-Mail gesendet wurde
-                if success_count > 0:
-                    with self._state_lock:
-                        self.alerts_sent_count = temp_count
-                    self.logger.info(
-                        f"Alert #{temp_count} sent ({success_count}/{len(recipients)} successful)"
-                    )
-                    if saved_frame_path:
-                        try:
-                            saved_frame_path.unlink()
-                            self.logger.info(f"Alert image file {saved_frame_path} deleted")
-                        except Exception as e:
-                            self.logger.error(f"Error deleting alert image file {saved_frame_path}: {e}")
-                    return True
-                else:
-                    # Rollback bei Fehlschlag
-                    if saved_frame_path:
-                        self.logger.warning(f"Alert image file {saved_frame_path} not sent, keeping it")
-
-                    with self._state_lock:
-                        self.last_alert_time = previous_alert_time
-                        self.alerts_sent_count = previous_count
-                        self.logger.error("All email sending attempts failed, state reset")
-                    return False
-                
-            except Exception as exc:
+            if success_count > 0:
                 with self._state_lock:
-                        self.last_alert_time = previous_alert_time
-                        self.alerts_sent_count = previous_count
-                self.logger.error(f"Critical error when sending alert: {exc}; state reset")
-                return False
+                    if self._matches_alert_session_unsafe(session_id):
+                        self.alerts_sent_count = temp_count
+                self.logger.info(
+                    f"Alert #{temp_count} sent ({success_count}/{len(recipients)} successful)"
+                )
+                if saved_frame_path:
+                    try:
+                        saved_frame_path.unlink()
+                        self.logger.info(f"Alert image file {saved_frame_path} deleted")
+                    except Exception as e:
+                        self.logger.error(f"Error deleting alert image file {saved_frame_path}: {e}")
+                return True
+
+            if saved_frame_path:
+                self.logger.warning(f"Alert image file {saved_frame_path} not sent, keeping it")
+
+            with self._state_lock:
+                if self._matches_alert_session_unsafe(session_id):
+                    self.last_alert_time = previous_alert_time
+                    self.alerts_sent_count = previous_count
+                self.logger.error("All email sending attempts failed, state reset")
+            return False
+        except AlertSendAborted as exc:
+            with self._state_lock:
+                if self._matches_alert_session_unsafe(session_id):
+                    self.last_alert_time = previous_alert_time
+                    self.alerts_sent_count = previous_count
+            self.logger.info("Alert send aborted: %s", exc)
+            return False
+        except Exception as exc:
+            with self._state_lock:
+                if self._matches_alert_session_unsafe(session_id):
+                    self.last_alert_time = previous_alert_time
+                    self.alerts_sent_count = previous_count
+            self.logger.error(f"Critical error when sending alert: {exc}; state reset")
+            return False
 
     async def send_motion_alert_async(
         self,
         last_motion_time: Optional[datetime] = None,
         session_id: Optional[str] = None,
-        camera_frame: Optional[np.ndarray] = None
+        camera_frame: Optional[np.ndarray] = None,
+        abort_checker: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """ Async Wrapper für send_motion_alert """
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(self._executor, self.send_motion_alert, last_motion_time, session_id, camera_frame)
+        return await loop.run_in_executor(
+            self._executor,
+            self.send_motion_alert,
+            last_motion_time,
+            session_id,
+            camera_frame,
+            abort_checker,
+        )
 
     # ------------------------------------------------------------------
     # Measurement lifecycle notifications
@@ -488,8 +614,10 @@ class EMailSystem:
             if not recipients:
                 self.logger.warning("No recipients configured; skipping measurement event email")
                 return False
-            msg = self._create_email_message(subject, body, recipients)
-            messages = [(r, msg) for r in recipients]
+            messages = [
+                (recipient, self._create_email_message(subject, body, recipient))
+                for recipient in recipients
+            ]
             success_count = self._send_emails_batch(messages)
             return success_count > 0
         except Exception as exc:
@@ -507,7 +635,12 @@ class EMailSystem:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(self._executor, self.send_measurement_event, event, session_id, start_time, end_time, reason)
 
-    def _send_emails_batch(self, messages: list[tuple[str, MIMEMultipart]], max_retries: int = 3) -> int:
+    def _send_emails_batch(
+        self,
+        messages: list[tuple[str, MIMEMultipart]],
+        max_retries: int = 3,
+        abort_check: Optional[Callable[[], None]] = None,
+    ) -> int:
         """Send a message to multiple recipients; one item per recipient.
 
         messages: list of (recipient, message)
@@ -532,6 +665,8 @@ class EMailSystem:
 
         for attempt in range(max_retries):
             try:
+                if abort_check is not None:
+                    abort_check()
                 with self._smtp_lock:
                     with smtplib.SMTP(
                         current_email_config.smtp_server,
@@ -542,6 +677,17 @@ class EMailSystem:
                         failed_total: Dict[str, Any] = {}
                         for r, m in messages:
                             try:
+                                if abort_check is not None:
+                                    try:
+                                        abort_check()
+                                    except AlertSendAborted:
+                                        if success_count > 0:
+                                            self.logger.info(
+                                                "Alert send aborted after %s successful recipient(s)",
+                                                success_count,
+                                            )
+                                            return success_count
+                                        raise
                                 failed = smtp.sendmail(
                                     current_email_config.sender_email,
                                     [r],
@@ -560,6 +706,8 @@ class EMailSystem:
                 if success_count > 0:
                     break
 
+            except AlertSendAborted:
+                raise
             except (smtplib.SMTPException, ConnectionError, OSError) as exc:
                 self.logger.error(f"❌ SMTP ATTEMPT {attempt + 1} FAILED: {type(exc).__name__}")
                 self.logger.error(f"   Error: {exc}")
@@ -612,20 +760,27 @@ class EMailSystem:
         return success_count
 
     def _should_send_alert_unsafe(self) -> bool:
-        """
-        Prüft Anti-Spam-Mechanismus.
-        
-        Returns:
-            True wenn Alert gesendet werden kann
-        """
+        """Check cooldown and max-alert limits for the current session."""
+        max_alerts = max(1, int(getattr(self.measurement_config, 'max_alerts_per_session', 1)))
+        if self.alerts_sent_count >= max_alerts:
+            self.logger.debug(
+                "Alert limit reached for current session (%s/%s)",
+                self.alerts_sent_count,
+                max_alerts,
+            )
+            return False
+
         if self.last_alert_time is None:
             return True
-        
+
+        if self.alert_cooldown_seconds <= 0:
+            return True
+
         time_since_last = datetime.now() - self.last_alert_time
-        cooldown_reached = time_since_last.total_seconds() >= self.cooldown_minutes * 60
-        
+        cooldown_reached = time_since_last.total_seconds() >= self.alert_cooldown_seconds
+
         if not cooldown_reached:
-            remaining = self.cooldown_minutes * 60 - time_since_last.total_seconds()
+            remaining = self.alert_cooldown_seconds - time_since_last.total_seconds()
             self.logger.debug(f"Alert-cooldown active, remaining: {remaining:.0f}s")
 
         return cooldown_reached
@@ -634,7 +789,7 @@ class EMailSystem:
         with self._state_lock:
             return self._should_send_alert_unsafe()
 
-    def _create_email_message(self, subject: str, body: str, recipients: list[str]) -> MIMEMultipart:
+    def _create_email_message(self, subject: str, body: str, recipient: str) -> MIMEMultipart:
         """
         Erstellt MIME-Multipart-E-Mail-Nachricht.
         
@@ -650,9 +805,9 @@ class EMailSystem:
 
         msg = MIMEMultipart()
         msg['From'] = current_email_config.sender_email
-        msg['To'] = ", ".join(recipients)
+        msg['To'] = recipient
         msg['Subject'] = subject
-        msg['Date'] = datetime.now().strftime("%a, %d %b %Y %H:%M:%S %z")
+        msg['Date'] = formatdate(localtime=True)
         
         # Text-Inhalt hinzufügen
         msg.attach(MIMEText(body, 'plain', 'utf-8'))
@@ -661,7 +816,7 @@ class EMailSystem:
     
     def _encode_frame(
         self,
-        frame: np.ndarray,
+        frame: Optional[np.ndarray],
         ts: Optional[str] = None
     ) -> tuple[bool, Optional[np.ndarray], Optional[str]]:
         """
@@ -721,18 +876,20 @@ class EMailSystem:
         if not ok or buf is None or filename is None:
             self.logger.warning("Image encoding failed - no attachment added")
             return
+        encoded_buffer = buf
+        encoded_filename = filename
         # --------------------------------------------------------------------
 
         # --- Attachment erzeugen & anhängen ---------------------------------
-        img_attach = MIMEImage(buf.tobytes())           # buf ist ndarray mit Bytes
+        img_attach = MIMEImage(encoded_buffer.tobytes())           # buf ist ndarray mit Bytes
         img_attach.add_header(
             "Content-Disposition",
-            f'attachment; filename="{filename}"'
+            f'attachment; filename="{encoded_filename}"'
         )
         msg.attach(img_attach)
 
         self.logger.debug(
-            "Image attachment added: %s (%d bytes)", filename, buf.size
+            "Image attachment added: %s (%d bytes)", encoded_filename, encoded_buffer.size
         )
 
     def _save_alert_image(self, image_buffer: np.ndarray, filename: str) -> Optional[Path]:
@@ -821,7 +978,7 @@ class EMailSystem:
                 'last_alert_time': self.last_alert_time,
                 'alerts_sent_count': self.alerts_sent_count,
                 'cooldown_remaining': self._get_cooldown_remaining_unsafe(),
-                'can_send_alert': self._should_send_alert_unsafe(),
+                'can_send_alert': self._alert_session_id is not None and self._should_send_alert_unsafe(),
                 'configured_recipients': len(self._get_effective_recipients()),
                 'smtp_server': current_email_config.smtp_server,
             }
@@ -835,9 +992,12 @@ class EMailSystem:
         """
         if self.last_alert_time is None:
             return None
-        
+
+        if self.alert_cooldown_seconds <= 0:
+            return None
+
         time_since_last = datetime.now() - self.last_alert_time
-        cooldown_seconds = self.cooldown_minutes * 60
+        cooldown_seconds = self.alert_cooldown_seconds
         elapsed = time_since_last.total_seconds()
         
         if elapsed >= cooldown_seconds:
@@ -922,11 +1082,12 @@ class EMailSystem:
                 frame = None
 
             recipients = self._get_effective_recipients()
-            msg = self._create_email_message(subject, test_message, recipients)
-            if frame is not None:
-                self._attach_camera_image(msg, frame, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-            messages = [(r, msg) for r in recipients]
+            messages: list[tuple[str, MIMEMultipart]] = []
+            for recipient in recipients:
+                msg = self._create_email_message(subject, test_message, recipient)
+                if frame is not None:
+                    self._attach_camera_image(msg, frame, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                messages.append((recipient, msg))
             success_count = self._send_emails_batch(messages)
             return success_count > 0
             
@@ -976,6 +1137,7 @@ class EMailSystem:
             with self._state_lock:
                 self.last_alert_time = None
                 self.alerts_sent_count = 0
+                self._alert_session_id = None
             
             self._alert_system_cleanup = True  # Set cleanup flag
             self.logger.info("EMailSystem cleanup completed")
@@ -1046,7 +1208,8 @@ class EMailSystem:
                 'cooldown_remaining_seconds': self._get_cooldown_remaining_unsafe(),
                 'total_recipients_configured': len(current_email_config.recipients),
                 'recipients_configured': len(self._get_effective_recipients()),
-                'cooldown_minutes_configured': self.cooldown_minutes
+                'cooldown_minutes_configured': self.cooldown_minutes,
+                'cooldown_seconds_configured': self.alert_cooldown_seconds,
             }
 
 
@@ -1102,7 +1265,14 @@ def test_template_rendering() -> bool:
             'website_url': 'http://localhost:8080',
             'camera_index': 0,
             'sensitivity': 0.1,
-            'roi_enabled': True
+            'roi_enabled': True,
+            'cvd_id': 1,
+            'cvd_name': 'Test_CVD',
+            'start_time': '',
+            'end_time': '',
+            'duration': '',
+            'reason': '',
+            'snapshot_note': '',
         }
         
         try:

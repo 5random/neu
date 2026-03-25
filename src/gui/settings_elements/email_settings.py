@@ -30,6 +30,24 @@ def sanitize_groups_dict(groups: dict[str, list[str]]) -> dict[str, list[str]]:
     return clean
 
 
+def extract_rename_addresses(args: Any) -> tuple[Optional[str], Optional[str]]:
+    """Normalize rename event payloads from NiceGUI/Quasar into two addresses."""
+    if isinstance(args, (list, tuple)) and len(args) == 1:
+        args = args[0]
+
+    if isinstance(args, dict):
+        old_addr = args.get('oldAddress') or args.get('address')
+        new_addr = args.get('newAddress') or args.get('value')
+    elif isinstance(args, (list, tuple)) and len(args) >= 2:
+        old_addr, new_addr = args[0], args[1]
+    else:
+        return None, None
+
+    old_text = old_addr.strip() if isinstance(old_addr, str) else None
+    new_text = new_addr.strip() if isinstance(new_addr, str) else None
+    return old_text or None, new_text or None
+
+
 def _get_effective_recipients_from_config(cfg: Any, state: dict) -> list[str]:
     """Return effective recipients from cfg.email if available; fallback to state['recipients'].
 
@@ -131,6 +149,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
     notifications_apply_btn: Optional[ui.button] = None
     notify_start_cb: Optional[ui.checkbox] = None
     notify_end_cb: Optional[ui.checkbox] = None
+    notify_stop_cb: Optional[ui.checkbox] = None
     # Per-recipient notification preferences (from config)
     recipient_prefs: dict[str, dict[str, bool]] = dict(getattr(config.email, 'recipient_prefs', {}) or {})
 
@@ -327,15 +346,22 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
 
     def _update_notifications_apply_state() -> None:
         """Enable Notifications Apply only if checkbox values differ from state."""
-        nonlocal notifications_apply_btn, notify_start_cb, notify_end_cb
+        nonlocal notifications_apply_btn, notify_start_cb, notify_end_cb, notify_stop_cb
         try:
-            if notifications_apply_btn is None or notify_start_cb is None or notify_end_cb is None:
+            if (
+                notifications_apply_btn is None
+                or notify_start_cb is None
+                or notify_end_cb is None
+                or notify_stop_cb is None
+            ):
                 return
             cur_start = bool(state.get("notifications", {}).get("on_start", False))
             cur_end = bool(state.get("notifications", {}).get("on_end", False))
+            cur_stop = bool(state.get("notifications", {}).get("on_stop", False))
             sel_start = bool(getattr(notify_start_cb, 'value', cur_start))
             sel_end = bool(getattr(notify_end_cb, 'value', cur_end))
-            if (cur_start == sel_start) and (cur_end == sel_end):
+            sel_stop = bool(getattr(notify_stop_cb, 'value', cur_stop))
+            if (cur_start == sel_start) and (cur_end == sel_end) and (cur_stop == sel_stop):
                 notifications_apply_btn.disable()
             else:
                 notifications_apply_btn.enable()
@@ -455,6 +481,11 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             notif_labels['end'].text = 'enabled' if on else 'disabled'
             notif_labels['end'].classes(remove='text-negative text-grey text-positive', add=('text-positive' if on else 'text-grey'))
             notif_labels['end'].update()
+        if notif_labels.get('stop') is not None:
+            on = bool(state['notifications'].get('on_stop', False))
+            notif_labels['stop'].text = 'enabled' if on else 'disabled'
+            notif_labels['stop'].classes(remove='text-negative text-grey text-positive', add=('text-positive' if on else 'text-grey'))
+            notif_labels['stop'].update()
         for key in ["sender", "server", "port"]:
             if key in smtp_labels and smtp_labels[key] is not None:
                 smtp_labels[key].text = str(state["smtp"][key])
@@ -511,14 +542,9 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
     def rename_recipient(e: events.GenericEventArguments) -> None:
         """Handle renaming of a recipient in the table."""
         try:
-            args = e.args
-            if not isinstance(args, dict):
-                return
-            old_addr = args.get('address')
-            new_addr = args.get('newAddress')
+            old_addr, new_addr = extract_rename_addresses(e.args)
             if not old_addr or not new_addr:
                 return
-            new_addr = new_addr.strip()
             if not is_valid_email(new_addr):
                 ui.notify(f"Invalid email address: {new_addr}", color="negative")
                 refresh_table()  # Revert UI
@@ -663,7 +689,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             <q-td :props="props">
                 {{ props.row.address }}
                 <q-popup-edit v-model="props.row.address" v-slot="scope" 
-                    @save="(val) => $parent.$emit('rename', props.row.address, val)">
+                    @save="(val, initialValue) => $parent.$emit('rename', { oldAddress: initialValue, newAddress: val })">
                     <q-input v-model="scope.value" dense autofocus counter @keyup.enter="scope.set" />
                 </q-popup-edit>
             </q-td>
@@ -830,18 +856,30 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                 'Send email on measurement end',
                 value=bool(state["notifications"].get("on_end", False))
             )
+            notify_stop_cb = ui.checkbox(
+                'Send email on measurement stop',
+                value=bool(state["notifications"].get("on_stop", False))
+            )
             ui.space()
             def apply_notifications() -> None:
+                if notify_start_cb is None or notify_end_cb is None or notify_stop_cb is None:
+                    return
                 state["notifications"]["on_start"] = bool(notify_start_cb.value)
                 state["notifications"]["on_end"] = bool(notify_end_cb.value)
+                state["notifications"]["on_stop"] = bool(notify_stop_cb.value)
                 if persist_state():
                     ui.notify("Notification settings applied", color="positive", position='bottom-right')
                     refresh_overview()
                 _update_notifications_apply_state()
             notifications_apply_btn = create_action_button('apply')
-            notifications_apply_btn.on('click', lambda _=None: apply_notifications())
-            notify_start_cb.on('update:model-value', lambda _=None: _update_notifications_apply_state())
-            notify_end_cb.on('update:model-value', lambda _=None: _update_notifications_apply_state())
+            if notifications_apply_btn is not None:
+                notifications_apply_btn.on('click', lambda _=None: apply_notifications())
+            if notify_start_cb is not None:
+                notify_start_cb.on('update:model-value', lambda _=None: _update_notifications_apply_state())
+            if notify_end_cb is not None:
+                notify_end_cb.on('update:model-value', lambda _=None: _update_notifications_apply_state())
+            if notify_stop_cb is not None:
+                notify_stop_cb.on('update:model-value', lambda _=None: _update_notifications_apply_state())
             _update_notifications_apply_state()
 
         ui.separator()

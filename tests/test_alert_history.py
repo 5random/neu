@@ -75,8 +75,15 @@ def test_trigger_alert_sync_writes_history_without_email_system(tmp_path):
     cfg.measurement.history_path = str(tmp_path)
 
     controller = MeasurementController(cfg.measurement, email_system=None, camera=None)
+    with controller.session_lock:
+        controller.is_session_active = True
+        controller.session_id = 'session-2'
+        controller._reset_alert_tracking_locked()
+        alert_generation = controller._alert_generation
+        controller._alert_dispatch_in_progress = True
+        controller._alert_dispatch_generation = alert_generation
 
-    assert controller.trigger_alert_sync('session-2') is False
+    assert controller.trigger_alert_sync('session-2', alert_generation) is False
 
     history_file = tmp_path / 'history.json'
     assert history_file.exists()

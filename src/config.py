@@ -354,8 +354,40 @@ class EmailConfig:
             errors.append("smtp_server must not be empty")
         return errors
 
+    @staticmethod
+    def _normalize_template_text(value: Any, fallback: str, *, multiline: bool) -> str:
+        text = fallback if not isinstance(value, str) else value
+        if multiline:
+            # Repair legacy YAML values that stored escaped newlines literally.
+            if "\\n" in text:
+                text = text.replace("\\r\\n", "\n").replace("\\n", "\n")
+            return text
+
+        if "\\r\\n" in text or "\\n" in text:
+            text = text.replace("\\r\\n", " ").replace("\\n", " ")
+        if "\r" in text or "\n" in text:
+            text = text.replace("\r", " ").replace("\n", " ")
+        text = re.sub(r"\s{2,}", " ", text).strip()
+        return text
+
+    def _build_template(self, name: str, default_subject: str, default_body: str) -> EmailTemplate:
+        data = self.templates.get(name, {})
+        if not isinstance(data, dict):
+            data = {}
+        return EmailTemplate(
+            subject=self._normalize_template_text(
+                data.get("subject"),
+                default_subject,
+                multiline=False,
+            ),
+            body=self._normalize_template_text(
+                data.get("body"),
+                default_body,
+                multiline=True,
+            ),
+        )
+
     def alert_template(self) -> EmailTemplate:
-        data = self.templates.get("alert", {})
         default_subject = "CVD-TRACKER{cvd_id}-{cvd_name}-Alert: no motion detected - {timestamp}"
         default_body = (
             "CVD-Tracker{cvd_id} {cvd_name}: Alert!\n"
@@ -378,16 +410,11 @@ class EmailConfig:
             "   Sensitivity:    {sensitivity}\n"
             "   ROI enabled:    {roi_enabled}\n"
             "\n"
-            "Attached is the current webcam image."
+            "{snapshot_note}"
         )
-        
-        return EmailTemplate(
-            subject=data.get("subject", default_subject),
-            body=data.get("body", default_body),
-        )
+        return self._build_template("alert", default_subject, default_body)
     
     def test_template(self) -> EmailTemplate:
-        data = self.templates.get("test", {})
         default_subject = "CVD-TRACKER{cvd_id}-{cvd_name}: Test email - {timestamp}"
         default_body = (
             "This is a test email from CVD-TRACKER{cvd_id}-{cvd_name} sent at {timestamp}.\n"
@@ -412,14 +439,9 @@ class EmailConfig:
             "   ROI enabled:    {roi_enabled}\n"
             "\n"
         )
-        
-        return EmailTemplate(
-            subject=data.get("subject", default_subject),
-            body=data.get("body", default_body),
-        )
+        return self._build_template("test", default_subject, default_body)
     
     def measurement_start_template(self) -> EmailTemplate:
-        data = self.templates.get("measurement_start", {})
         default_subject = "CVD-TRACKER{cvd_id}-{cvd_name}: Measurement started - {timestamp}"
         default_body = (
             "CVD-Tracker{cvd_id}-{cvd_name} Measurement Started\n"
@@ -444,14 +466,9 @@ class EmailConfig:
             "   ROI enabled:    {roi_enabled}\n"
             "\n"
         )
-        
-        return EmailTemplate(
-            subject=data.get("subject", default_subject),
-            body=data.get("body", default_body),
-        )
+        return self._build_template("measurement_start", default_subject, default_body)
     
     def measurement_end_template(self) -> EmailTemplate:
-        data = self.templates.get("measurement_end", {})
         default_subject = "CVD-TRACKER{cvd_id}-{cvd_name}: Measurement ended - {timestamp}"
         default_body = (
             "CVD-Tracker{cvd_id}-{cvd_name} Measurement Ended\n"
@@ -476,14 +493,9 @@ class EmailConfig:
             "   ROI enabled:    {roi_enabled}\n"
             "\n"
         )
-        
-        return EmailTemplate(
-            subject=data.get("subject", default_subject),
-            body=data.get("body", default_body),
-        )
+        return self._build_template("measurement_end", default_subject, default_body)
     
     def measurement_stop_template(self) -> EmailTemplate:
-        data = self.templates.get("measurement_stop", {})
         default_subject = "CVD-TRACKER{cvd_id}-{cvd_name}: Measurement stopped - {timestamp}"
         default_body = (
             "CVD-Tracker{cvd_id}-{cvd_name} Measurement Stopped\n"
@@ -508,11 +520,7 @@ class EmailConfig:
             "   ROI enabled:    {roi_enabled}\n"
             "\n"
         )
-        
-        return EmailTemplate(
-            subject=data.get("subject", default_subject),
-            body=data.get("body", default_body),
-        )
+        return self._build_template("measurement_stop", default_subject, default_body)
 
     def get_target_recipients(self) -> List[str]:
         """Compute effective recipients based on active groups."""
@@ -2254,7 +2262,7 @@ def _create_default_config() -> AppConfig:
                         "\nCamera: Index {camera_index}"
                         "\nSensitivity: {sensitivity}"
                         "\nROI enabled: {roi_enabled}"
-                        "\n\nAttached is the current webcam image."
+                        "\n\n{snapshot_note}"
                     )
                 },
                 "measurement_start": {
@@ -2300,7 +2308,7 @@ def _create_default_config() -> AppConfig:
                     )
                 }
             },
-            notifications={"on_start": False, "on_end": False},
+            notifications={"on_start": False, "on_end": False, "on_stop": False},
             recipient_prefs={}
         ),
         gui=GUIConfig(

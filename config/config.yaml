@@ -121,7 +121,7 @@ email:
         Sensitivity: {sensitivity}
         ROI enabled: {roi_enabled}
 
-        Attached is the current webcam image.
+        {snapshot_note}
     measurement_start:
       subject: 'CVD-TRACKER{cvd_id}-{cvd_name}: Measurement started - {timestamp}'
       body: |+
@@ -171,7 +171,26 @@ email:
            ROI enabled:    {roi_enabled}
     measurement_stop:
       subject: 'CVD-TRACKER{cvd_id}-{cvd_name}: Measurement stopped - {timestamp}'
-      body: ' CVD-Tracker{cvd_id}-{cvd_name} Measurement Stopped The measurement session was stopped at {timestamp}.\nYou can access the web application at: {website_url}.\nDetails: CVD-ID: {cvd_id} CVD-Name: {cvd_name}\nSession-ID: {session_id} Start: {start_time} End: {end_time} Duration: {duration} Reason: {reason}\nCamera: Index {camera_index} Sensitivity: {sensitivity} ROI enabled: {roi_enabled} '
+      body: |
+        CVD-Tracker{cvd_id}-{cvd_name} Measurement Stopped
+        The measurement session was stopped at {timestamp}.
+
+        You can access the web application at: {website_url}.
+
+        Details:
+           CVD-ID:         {cvd_id}
+           CVD-Name:       {cvd_name}
+           Website URL:    {website_url}
+
+           Session-ID:     {session_id}
+           Start:          {start_time}
+           End:            {end_time}
+           Duration:       {duration}
+           Reason:         {reason}
+
+           Camera: Index   {camera_index}
+           Sensitivity:    {sensitivity}
+           ROI enabled:    {roi_enabled}
   groups: {}
   active_groups: []
   notifications:

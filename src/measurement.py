@@ -20,6 +20,12 @@ if TYPE_CHECKING:
 from .alert_history import append_history_entry, get_history_dir, to_history_image_storage_path
 from .config import get_logger
 
+
+def resolve_measurement_stop_event(reason: str | None) -> str:
+    """Map a stop reason to the user-facing measurement lifecycle event."""
+    return "end" if (reason or "").lower() == "timeout" else "stop"
+
+
 class MeasurementController:
     """
     Steuert den Messablauf, überwacht Bewegung und löst Alerts aus.
@@ -53,9 +59,14 @@ class MeasurementController:
         self.last_motion_time: Optional[datetime] = None
         self.alert_triggered = False
         self.alert_trigger_time: Optional[datetime] = None
+        self._alert_generation = 0
+        self._alert_dispatch_in_progress = False
+        self._alert_dispatch_generation: Optional[int] = None
+        self._last_alert_attempt_monotonic: Optional[float] = None
         
         # -- Async Helpers --
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="MeasCtrl")
+        self._event_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="MeasCtrlEvents")
         
         # -- Motion History for Debouncing --
         self._motion_history: list[tuple[float, bool]] = []
@@ -80,6 +91,81 @@ class MeasurementController:
                 self._motion_callbacks.append(callback)
                 self.logger.debug(f"Registered motion callback: {callback}")
 
+    def _reset_alert_tracking_locked(self) -> None:
+        self._alert_generation += 1
+        self.alert_triggered = False
+        self.alert_trigger_time = None
+        self._alert_dispatch_in_progress = False
+        self._alert_dispatch_generation = None
+        self._last_alert_attempt_monotonic = None
+
+    def _is_alert_task_current_locked(self, session_id: str, alert_generation: int) -> bool:
+        return (
+            self.is_session_active
+            and self.session_id == session_id
+            and self._alert_generation == alert_generation
+        )
+
+    def _is_abort_requested(self, session_id: str, alert_generation: int) -> bool:
+        """Return whether an in-flight alert should abort based on current session state."""
+        with self.session_lock:
+            return not self._is_alert_task_current_locked(session_id, alert_generation)
+
+    def _sync_email_alert_state(self, *, max_attempts: int = 3) -> None:
+        """Synchronize the email alert session state without holding session_lock."""
+        if not self.email_system:
+            return
+
+        for _ in range(max_attempts):
+            with self.session_lock:
+                target_session_id = self.session_id if self.is_session_active else None
+                target_generation = self._alert_generation
+
+            try:
+                self.email_system.reset_alert_state(session_id=target_session_id)
+            except Exception as exc:
+                self.logger.error(f"Failed to sync email alert state: {exc}")
+                return
+
+            with self.session_lock:
+                current_session_id = self.session_id if self.is_session_active else None
+                current_generation = self._alert_generation
+
+            if (
+                current_session_id == target_session_id
+                and current_generation == target_generation
+            ):
+                return
+
+        self.logger.debug(
+            "Email alert state changed during sync; controller state moved while reset_alert_state was running"
+        )
+
+    def _submit_measurement_event_locked(
+        self,
+        *,
+        event: str,
+        session_id: Optional[str],
+        start_time: Optional[datetime],
+        end_time: Optional[datetime] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Queue lifecycle emails while session_lock still defines the event order."""
+        if not self.email_system:
+            return
+
+        try:
+            self._event_executor.submit(
+                self.email_system.send_measurement_event,
+                event=event,
+                session_id=session_id,
+                start_time=start_time,
+                end_time=end_time,
+                reason=reason,
+            )
+        except RuntimeError as exc:
+            self.logger.error(f"Failed to queue measurement event '{event}': {exc}")
+
     def start_session(self, session_id: Optional[str] = None) -> bool:
         """Startet eine neue Mess-Session."""
         with self.session_lock:
@@ -93,24 +179,23 @@ class MeasurementController:
             
             # Reset Alert State
             self.last_motion_time = datetime.now()
-            self.alert_triggered = False
-            self.alert_trigger_time = None
+            self._reset_alert_tracking_locked()
             
             with self._history_lock:
                 self._motion_history.clear()
             
             self.logger.info(f"Session {self.session_id} started")
-            
-            # Notify Email System
-            if self.email_system:
-                self._executor.submit(
-                    self.email_system.send_measurement_event,
-                    event="start",
-                    session_id=self.session_id,
-                    start_time=self.session_start_time
-                )
-            
-            return True
+            current_session_id = self.session_id
+            current_start_time = self.session_start_time
+            self._submit_measurement_event_locked(
+                event="start",
+                session_id=current_session_id,
+                start_time=current_start_time,
+            )
+
+        self._sync_email_alert_state()
+         
+        return True
 
     def stop_session(self, *, reason: str | None = None) -> bool:
         """Stoppt die aktuelle Session."""
@@ -125,23 +210,25 @@ class MeasurementController:
                 duration = timedelta(0)
             
             self.logger.info(f"Session {self.session_id} stopped. Duration: {duration}")
-            
-            # Notify Email System
-            if self.email_system:
-                self._executor.submit(
-                    self.email_system.send_measurement_event,
-                    event="stop",
-                    session_id=self.session_id,
-                    start_time=self.session_start_time,
-                    end_time=end_time,
-                    reason=reason
-                )
-            
+            current_session_id = self.session_id
+            current_start_time = self.session_start_time
+            stop_event = resolve_measurement_stop_event(reason)
+             
+            self._reset_alert_tracking_locked()
             self.is_session_active = False
             self.session_id = None
             self.session_start_time = None
-            
-            return True
+            self._submit_measurement_event_locked(
+                event=stop_event,
+                session_id=current_session_id,
+                start_time=current_start_time,
+                end_time=end_time,
+                reason=reason,
+            )
+
+        self._sync_email_alert_state()
+        
+        return True
 
     def on_motion_detected(self, frame: np.ndarray, result: MotionResult) -> None:
         """Callback von der Kamera bei jedem verarbeiteten Frame."""
@@ -171,8 +258,7 @@ class MeasurementController:
                 self.last_motion_time = datetime.now()
                 if self.alert_triggered:
                     self.logger.info("Motion detected - Alert reset")
-                    self.alert_triggered = False
-                    self.alert_trigger_time = None
+                self._reset_alert_tracking_locked()
             else:
                 # Check for Alert Condition (pass session state captured under lock)
                 self._check_alert_trigger_locked(current_session_id)
@@ -192,30 +278,57 @@ class MeasurementController:
                 self.logger.debug(f"Motion callback error: {exc}")
 
     def _check_alert_trigger_locked(self, session_id: str) -> None:
-        """Prüft ob ein Alert ausgelöst werden muss. MUST be called while holding session_lock."""
-        if self.alert_triggered:
+        """Check whether the alert condition is active and dispatch if needed."""
+        # With no email system configured, a raised alert only affects local state/history.
+        # Returning early avoids re-processing the same no-motion condition on every frame.
+        if self.alert_triggered and self.email_system is None:
             return
-            
+
         if self.last_motion_time is None:
             self.last_motion_time = datetime.now()
             return
 
         time_since_motion = (datetime.now() - self.last_motion_time).total_seconds()
-        
+
         if time_since_motion >= self.config.alert_delay_seconds:
-            # Double check with history to avoid noise triggers
             if self._confirm_no_motion(duration=2.0):
-                # Re-verify session is still active before triggering (race condition prevention)
                 if not self.is_session_active or self.session_id != session_id:
                     self.logger.debug("Session ended before alert could be triggered")
                     return
-                    
-                self.logger.warning(f"ALERT: No motion for {time_since_motion:.1f}s")
-                self.alert_triggered = True
-                self.alert_trigger_time = datetime.now()
-                
-                # Trigger Alert Action
-                self._executor.submit(self.trigger_alert_sync, session_id)
+
+                if not self.alert_triggered:
+                    self.logger.warning(f"ALERT: No motion for {time_since_motion:.1f}s")
+                    self.alert_triggered = True
+                    self.alert_trigger_time = datetime.now()
+
+                current_generation = self._alert_generation
+                if self._alert_dispatch_in_progress:
+                    if self._alert_dispatch_generation == current_generation:
+                        return
+                    self.logger.debug(
+                        "Clearing stale alert dispatch flag for generation %s (current %s)",
+                        self._alert_dispatch_generation,
+                        current_generation,
+                    )
+                    self._alert_dispatch_in_progress = False
+                    self._alert_dispatch_generation = None
+
+                if self.email_system is not None and not self.email_system.can_send_alert(session_id=session_id):
+                    return
+
+                if self.email_system is None and self._last_alert_attempt_monotonic is not None:
+                    return
+
+                check_interval = max(0.1, float(getattr(self.config, 'alert_check_interval', 5.0)))
+                now_monotonic = time.monotonic()
+                if self._last_alert_attempt_monotonic is not None:
+                    if (now_monotonic - self._last_alert_attempt_monotonic) < check_interval:
+                        return
+
+                self._alert_dispatch_in_progress = True
+                self._alert_dispatch_generation = current_generation
+                self._last_alert_attempt_monotonic = now_monotonic
+                self._executor.submit(self.trigger_alert_sync, session_id, current_generation)
 
     def _confirm_no_motion(self, duration: float) -> bool:
         """Bestätigt Bewegungslosigkeit anhand der Historie."""
@@ -241,15 +354,19 @@ class MeasurementController:
                 
         return True
 
-    def trigger_alert_sync(self, session_id: str) -> bool:
-        """Execute alert side effects and always persist the alert history entry."""
-        # Snapshot holen mit Validation
+    def trigger_alert_sync(self, session_id: str, alert_generation: int) -> bool:
+        """Execute alert side effects if the scheduled alert is still current."""
+        with self.session_lock:
+            if not self._is_alert_task_current_locked(session_id, alert_generation):
+                self.logger.info("Skipping stale alert task for session %s", session_id)
+                return False
+            last_motion_time = self.last_motion_time
+
         frame = None
         if self.camera:
             try:
                 if hasattr(self.camera, 'take_snapshot'):
                     frame = self.camera.take_snapshot()
-                    # Validate frame type
                     if frame is not None and not isinstance(frame, np.ndarray):
                         self.logger.error(f"take_snapshot returned invalid type: {type(frame)}")
                         frame = None
@@ -260,28 +377,42 @@ class MeasurementController:
                 frame = None
 
         email_sent = False
-        if not self.email_system:
-            self.logger.warning("No email system configured; alert will only be written to history")
-        else:
-            try:
-                email_sent = bool(self.email_system.send_motion_alert(
-                    last_motion_time=self.last_motion_time,
-                    session_id=session_id,
-                    camera_frame=frame,
-                ))
-
-                if email_sent:
-                    self.logger.info("Alert email sent successfully")
-                else:
-                    self.logger.error("Failed to send alert email")
-            except Exception as e:
-                self.logger.error(f"Error while sending alert email: {e}")
-
-        # Save to History (JSON)
         try:
+            with self.session_lock:
+                if not self._is_alert_task_current_locked(session_id, alert_generation):
+                    self.logger.info(
+                        "Skipping stale alert task for session %s after session state changed",
+                        session_id,
+                    )
+                    return False
+                last_motion_time = self.last_motion_time
+
+            if not self.email_system:
+                self.logger.warning("No email system configured; alert will only be written to history")
+            else:
+                try:
+                    email_sent = bool(self.email_system.send_motion_alert(
+                        last_motion_time=last_motion_time,
+                        session_id=session_id,
+                        camera_frame=frame,
+                        abort_checker=lambda: self._is_abort_requested(session_id, alert_generation),
+                    ))
+
+                    if email_sent:
+                        self.logger.info("Alert email sent successfully")
+                    else:
+                        self.logger.error("Failed to send alert email")
+                except Exception as e:
+                    self.logger.error(f"Error while sending alert email: {e}")
+
             self._save_alert_to_history(session_id, frame, email_sent=email_sent)
         except Exception as e:
             self.logger.error(f"Failed to save alert history: {e}")
+        finally:
+            with self.session_lock:
+                if self._alert_dispatch_generation == alert_generation:
+                    self._alert_dispatch_in_progress = False
+                    self._alert_dispatch_generation = None
 
         return email_sent
 
@@ -351,6 +482,8 @@ class MeasurementController:
             active = self.is_session_active
             start_time = self.session_start_time
             sid = self.session_id
+            last_motion_time = self.last_motion_time
+            alert_triggered = self.alert_triggered
         
         duration_str = ""
         if active and start_time:
@@ -362,14 +495,14 @@ class MeasurementController:
             duration_str = f"{hours:02}:{minutes:02}:{seconds:02}"
             
         time_since_motion = 0.0
-        if self.last_motion_time:
-            time_since_motion = (datetime.now() - self.last_motion_time).total_seconds()
+        if last_motion_time:
+            time_since_motion = (datetime.now() - last_motion_time).total_seconds()
 
         return {
             "is_active": active,
             "session_id": sid,
             "duration": duration_str,
-            "alert_triggered": self.alert_triggered,
+            "alert_triggered": alert_triggered,
             "time_since_motion": time_since_motion,
             "alert_countdown": max(0, self.config.alert_delay_seconds - time_since_motion)
         }
@@ -378,6 +511,7 @@ class MeasurementController:
         """Cleanup resources."""
         self.logger.info("Cleaning up MeasurementController")
         self.stop_session(reason="shutdown")
+        self._event_executor.shutdown(wait=True, cancel_futures=False)
         self._executor.shutdown(wait=False)
 
 
