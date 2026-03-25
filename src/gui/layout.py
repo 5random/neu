@@ -1,7 +1,13 @@
+import logging
+from urllib.parse import urlsplit, urlunsplit
+
 from nicegui import ui, app
-from src.config import get_global_config
+from src.config import AppConfig, get_global_config, save_global_config
 from .constants import StorageKeys
 from .storage import get_ui_pref, get_ui_storage, set_ui_pref
+
+logger = logging.getLogger('gui.layout')
+_RUNTIME_WEBSITE_URL_KEY = 'cvd.runtime_website_url'
 
 _OVERLAY_HEAD_HTML = """
 <style>
@@ -14,7 +20,12 @@ _OVERLAY_HEAD_HTML = """
 """
 
 
-def compute_gui_title(cfg: object | None = None, *, cvd_id: object | None = None, cvd_name: object | None = None) -> str:
+def compute_gui_title(
+    cfg: AppConfig | None = None,
+    *,
+    cvd_id: object | None = None,
+    cvd_name: object | None = None,
+) -> str:
     """Compute the browser/UI title from the configured template and metadata."""
     try:
         resolved_cfg = cfg or get_global_config()
@@ -39,8 +50,81 @@ def install_overlay_styles() -> None:
     ui.add_head_html(_OVERLAY_HEAD_HTML)
 
 
+def _normalize_runtime_website_url(raw_url: object | None) -> str | None:
+    """Normalize an absolute request URL to the app base URL."""
+    text = str(raw_url or '').strip()
+    if not text:
+        return None
+
+    try:
+        parts = urlsplit(text)
+    except Exception:
+        return None
+
+    if not parts.scheme or not parts.netloc:
+        return None
+
+    path = parts.path or '/'
+    if not path.endswith('/'):
+        if path.count('/') > 1:
+            path = path.rsplit('/', 1)[0] + '/'
+        else:
+            path = '/'
+
+    return urlunsplit((parts.scheme, parts.netloc, path or '/', '', ''))
+
+
+def _resolve_runtime_website_url(client: object | None = None) -> str | None:
+    """Resolve the current app base URL from the active NiceGUI client."""
+    active_client = client
+    if active_client is None:
+        try:
+            active_client = ui.context.client
+        except Exception:
+            active_client = None
+
+    request = getattr(active_client, 'request', None) if active_client is not None else None
+    for candidate in (getattr(request, 'base_url', None), getattr(request, 'url', None)):
+        normalized = _normalize_runtime_website_url(candidate)
+        if normalized:
+            return normalized
+    return None
+
+
+def sync_runtime_website_url(*, client: object | None = None, persist: bool = True) -> str | None:
+    """Sync the current app base URL into runtime state and email config."""
+    resolved_url = _resolve_runtime_website_url(client=client)
+    if not resolved_url:
+        return None
+
+    try:
+        current_runtime = str(app.storage.general.get(_RUNTIME_WEBSITE_URL_KEY, '') or '').strip()
+        if current_runtime != resolved_url:
+            app.storage.general[_RUNTIME_WEBSITE_URL_KEY] = resolved_url
+    except Exception:
+        logger.debug('Failed to update runtime website URL storage', exc_info=True)
+
+    cfg = get_global_config()
+    email_cfg = getattr(cfg, 'email', None) if cfg is not None else None
+    if email_cfg is None:
+        return resolved_url
+
+    current_configured = str(getattr(email_cfg, 'website_url', '') or '').strip()
+    if current_configured == resolved_url:
+        return resolved_url
+
+    email_cfg.website_url = resolved_url
+    if persist:
+        if save_global_config():
+            logger.info('Updated email.website_url to %s', resolved_url)
+        else:
+            logger.warning('Failed to persist adaptive email.website_url=%s', resolved_url)
+    return resolved_url
+
+
 def build_header() -> None:
     install_overlay_styles()
+    sync_runtime_website_url(persist=True)
     current_title = compute_gui_title()
     ui.page_title(current_title)
     with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):

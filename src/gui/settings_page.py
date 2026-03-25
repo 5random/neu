@@ -485,6 +485,3 @@ body .q-tooltip, .q-tooltip { z-index: 11000 !important; }
             _open_section(anchor_id, section_id)
 
     ui.timer(0.2, _open_requested_section_on_load, once=True, immediate=False)
-
-    # Issue #8 fix: Removed disconnect cleanup - preferences should persist
-

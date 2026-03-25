@@ -250,7 +250,6 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
             
     # Render directly without wrapping in an extra Card; parent page will provide cards
     with ui.column().classes('w-full gap-4'):
-
         # ── Gruppe: Bildqualität ────────────────────────────────────────
         ui.label('Image Quality')\
             .style("align-self:flex-start; display:block;")\

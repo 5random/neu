@@ -7,11 +7,11 @@
 # Metadata
 # ---------------------------------------------------------------------------
 metadata:
-  version: 1.0
+  version: '1.0'
   description: CVD-Tracker
   cvd_id: 0
-  cvd_name: Instanzs
-  released_at: 2023-01-01
+  cvd_name: Instanz
+  released_at: '2023-01-01'
 
 # ---------------------------------------------------------------------------
 # Webcam
@@ -46,7 +46,7 @@ webcam:
 # UVC Controls
 # ---------------------------------------------------------------------------
 uvc_controls:
-  brightness: -13
+  brightness: 0
   hue: 0
   contrast: 16
   saturation: 64
@@ -54,7 +54,7 @@ uvc_controls:
   gamma: 164
   white_balance:
     auto: true
-    value: 3400
+    value: 4000
   gain: 10
   backlight_compensation: 42
   exposure:
@@ -66,12 +66,12 @@ uvc_controls:
 # ---------------------------------------------------------------------------
 motion_detection:
   region_of_interest:
-    enabled: true
-    x: 340
-    y: 163
-    width: 1367
-    height: 736
-  sensitivity: 0.55
+    enabled: false
+    x: 100
+    y: 100
+    width: 300
+    height: 200
+  sensitivity: 0.1
   background_learning_rate: 0.005
   min_contour_area: 252
 
@@ -99,43 +99,92 @@ measurement:
 # E‑Mail
 # ---------------------------------------------------------------------------
 email:
-  website_url: http://134.28.91.48:8080
+  website_url: http://localhost:8080/
   recipients:
-    - CHANGE_ME@example.com
+    - user@example.com
   smtp_server: mail.tuhh.de
   smtp_port: 25
   sender_email: CHANGE_ME@tuhh.de
   templates:
     alert:
       subject: 'CVD-TRACKER{cvd_id}-{cvd_name}-Alert: no motion detected - {timestamp}'
-      body: " CVD-Tracker{cvd_id} {cvd_name}: Alert! Movement has not been detected since: {last_motion_time}! Please check the issue via the web application at: {website_url}.\nDetails: CVD-ID: {cvd_id} CVD-Name: {cvd_name}\nSession-ID: {session_id} Last motion at: {last_motion_time} Start: {start_time} End: {end_time} Duration: {duration} Reason: {reason}\nCamera: Index {camera_index} Sensitivity: {sensitivity} ROI enabled: {roi_enabled}\nAttached is the current webcam image. "
-    test:
-      subject: 'CVD-TRACKER{cvd_id}-{cvd_name}: Test email - {timestamp}'
-      body: " This is a test email from CVD-TRACKER{cvd_id}-{cvd_name} sent at {timestamp}. If you received this email, the email configuration is correct.\nYou can access the web application at: {website_url}.\nDetails: CVD-ID: {cvd_id} CVD-Name: {cvd_name} "
+      body: |-
+        Movement has not been detected since {timestamp}!
+        Please check the issue via the web application at: {website_url}.
+
+        Details:
+        CVD-ID: {cvd_id}
+        CVD-Name: {cvd_name}
+        Session-ID: {session_id}
+        Last motion registered at: {last_motion_time}
+        Camera: Index {camera_index}
+        Sensitivity: {sensitivity}
+        ROI enabled: {roi_enabled}
+
+        Attached is the current webcam image.
     measurement_start:
       subject: 'CVD-TRACKER{cvd_id}-{cvd_name}: Measurement started - {timestamp}'
-      body: " CVD-Tracker{cvd_id}-{cvd_name} Measurement Started A new measurement session has started at {timestamp}.\nYou can monitor the session via the web application at: {website_url}.\nDetails:\nCVD-ID: {cvd_id} CVD-Name: {cvd_name}\nSession-ID: {session_id} Start: {start_time} End: {end_time} Duration: {duration}\nCamera: Index {camera_index} Sensitivity: {sensitivity} ROI enabled: {roi_enabled} "
+      body: |+
+        CVD-Tracker{cvd_id}-{cvd_name} Measurement Started
+        A new measurement session has started at {timestamp}.
+
+        You can monitor the session via the web application at: {website_url}.
+
+        Details:
+           CVD-ID:         {cvd_id}
+           CVD-Name:       {cvd_name}
+           Website URL:    {website_url}
+
+           Session-ID:     {session_id}
+           Last motion registered at: {last_motion_time}
+           Start:          {start_time}
+           End:            {end_time}
+           Duration:       {duration}
+           Reason:         {reason}
+
+           Camera: Index   {camera_index}
+           Sensitivity:    {sensitivity}
+           ROI enabled:    {roi_enabled}
+
     measurement_end:
       subject: 'CVD-TRACKER{cvd_id}-{cvd_name}: Measurement ended - {timestamp}'
-      body: " CVD-Tracker{cvd_id}-{cvd_name} Measurement Ended The measurement session has ended at {timestamp}.\nYou can access the web application at: {website_url}.\nDetails: CVD-ID: {cvd_id} CVD-Name: {cvd_name}\nSession-ID: {session_id} Start: {start_time} End: {end_time} Duration: {duration} Reason: {reason}\nCamera: Index {camera_index} Sensitivity: {sensitivity} ROI enabled: {roi_enabled} "
+      body: |
+        CVD-Tracker{cvd_id}-{cvd_name} Measurement Ended
+        The measurement session has ended at {timestamp}.
+
+        You can monitor the session via the web application at: {website_url}.
+
+        Details:
+           CVD-ID:         {cvd_id}
+           CVD-Name:       {cvd_name}
+           Website URL:    {website_url}
+
+           Session-ID:     {session_id}
+           Last motion registered at: {last_motion_time}
+           Start:          {start_time}
+           End:            {end_time}
+           Duration:       {duration}
+           Reason:         {reason}
+
+           Camera: Index   {camera_index}
+           Sensitivity:    {sensitivity}
+           ROI enabled:    {roi_enabled}
     measurement_stop:
       subject: 'CVD-TRACKER{cvd_id}-{cvd_name}: Measurement stopped - {timestamp}'
-      body: " CVD-Tracker{cvd_id}-{cvd_name} Measurement Stopped The measurement session was stopped at {timestamp}.\nYou can access the web application at: {website_url}.\nDetails: CVD-ID: {cvd_id} CVD-Name: {cvd_name}\nSession-ID: {session_id} Start: {start_time} End: {end_time} Duration: {duration} Reason: {reason}\nCamera: Index {camera_index} Sensitivity: {sensitivity} ROI enabled: {roi_enabled} "
-  groups:
-    '1':
-      - CHANGE_ME@example.com
-  active_groups:
-    - '1'
+      body: ' CVD-Tracker{cvd_id}-{cvd_name} Measurement Stopped The measurement session was stopped at {timestamp}.\nYou can access the web application at: {website_url}.\nDetails: CVD-ID: {cvd_id} CVD-Name: {cvd_name}\nSession-ID: {session_id} Start: {start_time} End: {end_time} Duration: {duration} Reason: {reason}\nCamera: Index {camera_index} Sensitivity: {sensitivity} ROI enabled: {roi_enabled} '
+  groups: {}
+  active_groups: []
   notifications:
     on_start: true
     on_end: true
+    on_stop: true
   recipient_prefs: {}
 
 # ---------------------------------------------------------------------------
 # GUI
 # ---------------------------------------------------------------------------
 gui:
-  title: CVD-Tracker{cvd_id}-{cvd_name}
+  title: CVD-Tracker-{cvd_id}-{cvd_name}
   host: localhost
   port: 8080
   auto_open_browser: false

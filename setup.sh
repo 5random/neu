@@ -12,7 +12,7 @@ CONDA_CHANNEL="${CONDA_CHANNEL:-conda-forge}"
 CLONE_URL="${CLONE_URL:-https://github.com/5random/neu.git}"  # zum Vergleich der Origin-URL
 CLONE_DIR_DEFAULT="${SCRIPT_DIR}"                              # Repo ist schon geklont: default = Ort des Skripts
 CLONE_DIR="${CLONE_DIR:-$CLONE_DIR_DEFAULT}"
-PORT="${PORT:-8080}"                                           # App nutzt aktuell fest 8080 in main.py
+PORT="${PORT:-8080}"                                           # App lauscht aktuell fest auf 8080 in main.py
 SERVICE_NAME="${SERVICE_NAME:-cvd_tracker}"
 
 # micromamba Binärpfad – wird nach detect_user auf USER_HOME angepasst, falls nicht explizit gesetzt
@@ -33,11 +33,18 @@ AUTO_UPDATE="${AUTO_UPDATE:-1}"
 # -----------------------------------------------------------------------------
 msg() { echo -e "\n[setup] $*"; }
 
+ensure_supported_port() {
+  if [[ "$PORT" != "8080" ]]; then
+    msg "WARNUNG: PORT=${PORT} wird ignoriert, da main.py aktuell fest auf 8080 lauscht. Verwende 8080."
+    PORT="8080"
+  fi
+}
+
 detect_user() {
   if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
     RUN_USER="$SUDO_USER"
   else
-    RUN_USER="$USER"
+    RUN_USER="${USER:-$(id -un)}"
   fi
   # robustes HOME des Zielusers
   if USER_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"; then
@@ -103,16 +110,27 @@ install_micromamba() {
     return
   fi
 
+  if ! command -v curl >/dev/null 2>&1; then
+    msg "curl fehlt; installiere curl und CA-Zertifikate..."
+    sudo apt update
+    sudo apt install -y --no-install-recommends curl ca-certificates
+  fi
+
   msg "Installiere micromamba für Benutzer '${RUN_USER}'..."
-  sudo -u "$RUN_USER" bash -lc "curl -Ls https://micro.mamba.pm/install.sh | bash"
+  sudo -H -u "$RUN_USER" bash -lc "curl -Ls https://micro.mamba.pm/install.sh | bash"
   if [[ ! -x "$MICROMAMBA_BIN" ]]; then
     echo "micromamba nicht gefunden unter $MICROMAMBA_BIN" >&2
     exit 1
   fi
 }
 
+mamba_env_exists() {
+  [[ -d "${MAMBA_ROOT_PREFIX}/envs/${ENV_NAME}" ]]
+}
+
 find_env_file() {
   local candidates=(
+    # Note: 'enviroment.yaml' included to handle common typo in some repos
     "${CLONE_DIR}/enviroment.yaml"
     "${CLONE_DIR}/environment.yml"
     "${CLONE_DIR}/environment.yaml"
@@ -124,6 +142,7 @@ find_env_file() {
       break
     fi
   done
+
   if [[ -n "$ENV_FILE" ]]; then
     msg "Gefundene Umgebungsdatei: $ENV_FILE"
   else
@@ -136,7 +155,7 @@ create_mamba_env() {
   find_env_file
 
   if [[ -n "$ENV_FILE" ]]; then
-    if "$MICROMAMBA_BIN" --root-prefix "$MAMBA_ROOT_PREFIX" env list | grep -qE "^[[:space:]]*$ENV_NAME[[:space:]]"; then
+    if mamba_env_exists; then
       msg "Umgebung '$ENV_NAME' existiert. Aktualisiere via $ENV_FILE ..."
       "$MICROMAMBA_BIN" --root-prefix "$MAMBA_ROOT_PREFIX" env update -n "$ENV_NAME" -f "$ENV_FILE"
     else
@@ -144,7 +163,7 @@ create_mamba_env() {
       "$MICROMAMBA_BIN" --root-prefix "$MAMBA_ROOT_PREFIX" env create -n "$ENV_NAME" -f "$ENV_FILE"
     fi
   else
-    if "$MICROMAMBA_BIN" --root-prefix "$MAMBA_ROOT_PREFIX" env list | grep -qE "^[[:space:]]*$ENV_NAME[[:space:]]"; then
+    if mamba_env_exists; then
       msg "Umgebung '$ENV_NAME' existiert bereits. Überspringe Erstellung."
     else
       "$MICROMAMBA_BIN" --root-prefix "$MAMBA_ROOT_PREFIX" create -y -n "$ENV_NAME" -c "$CONDA_CHANNEL" \
@@ -174,13 +193,13 @@ verify_repo() {
 
   # Upstream sicherstellen (falls fehlt)
   if ! git -C "$CLONE_DIR" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-    if git -C "$CLONE_DIR" ls-remote --heads origin "$branch" >/dev/null 2>&1; then
+    if git -C "$CLONE_DIR" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
       git -C "$CLONE_DIR" branch --set-upstream-to="origin/${branch}" "$branch" || true
     fi
   fi
 
   # Fetch und Vergleich
-  sudo -u "$RUN_USER" git -C "$CLONE_DIR" fetch --all --prune || true
+  sudo -H -u "$RUN_USER" git -C "$CLONE_DIR" fetch --all --prune || true
 
   read -r ahead behind <<<"$(git -C "$CLONE_DIR" rev-list --left-right --count HEAD...@{u} 2>/dev/null || echo "0 0")"
 
@@ -194,7 +213,7 @@ verify_repo() {
   if [[ "${behind:-0}" -gt 0 ]]; then
     if [[ "${AUTO_UPDATE}" == "1" ]]; then
       msg "Remote ist neuer; führe fast-forward Pull aus..."
-      sudo -u "$RUN_USER" git -C "$CLONE_DIR" pull --ff-only || {
+      sudo -H -u "$RUN_USER" git -C "$CLONE_DIR" pull --ff-only || {
         msg "Fast-forward Pull fehlgeschlagen. Bitte manuell prüfen."
         return 1
       }
@@ -212,6 +231,8 @@ verify_repo() {
 
 install_python_requirements() {
   msg "Installiere Python-Abhängigkeiten via pip in der mamba-Umgebung"
+  find_env_file
+
   if [[ ! -f "$CLONE_DIR/requirements.txt" ]]; then
     echo "requirements.txt nicht gefunden unter $CLONE_DIR/requirements.txt" >&2
     exit 1
@@ -227,7 +248,7 @@ install_python_requirements() {
   local TMP_REQ
   TMP_REQ="$(mktemp)"
   sed -E '/^\s*($|#)/d' "$CLONE_DIR/requirements.txt" \
-    | grep -Eiv "^\s*(${FILTER_PKGS})(\s*[<>=!]=.*)?\s*$" \
+    | { grep -Eiv "^\s*(${FILTER_PKGS})(\s*[<>=!~]=.*)?\s*$" || true; } \
     > "$TMP_REQ"
 
   if [[ -s "$TMP_REQ" ]]; then
@@ -304,7 +325,7 @@ Environment=OMP_NUM_THREADS=1
 Environment=OPENBLAS_NUM_THREADS=1
 Environment=MKL_NUM_THREADS=1
 Environment=NUMEXPR_NUM_THREADS=1
-ExecStart=${MICROMAMBA_BIN} --root-prefix ${MAMBA_ROOT_PREFIX} run -n ${ENV_NAME} python ${CLONE_DIR}/main.py --config ${CLONE_DIR}/config/config.yaml
+ExecStart="${MICROMAMBA_BIN}" --root-prefix "${MAMBA_ROOT_PREFIX}" run -n "${ENV_NAME}" python "${CLONE_DIR}/main.py" --config "${CLONE_DIR}/config/config.yaml"
 Restart=on-failure
 RestartSec=5
 
@@ -333,6 +354,7 @@ print_hints() {
 
 full_setup() {
   detect_user
+  ensure_supported_port
   require_64bit_arm
   show_mac_addresses
   install_system_packages
@@ -365,7 +387,9 @@ OPTIONS=(
   "Beenden"
 )
 
-echo "CVD-Tracker Setup (mamba/micromamba)"
+echo "CVD-Tracker Setup"
+detect_user
+ensure_supported_port
 select opt in "${OPTIONS[@]}"; do
   case "$REPLY" in
     1) full_setup ;;

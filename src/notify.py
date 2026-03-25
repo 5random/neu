@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 import requests
 import math
+from nicegui import app
 from datetime import datetime, timedelta
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -32,6 +33,8 @@ from typing import Optional, List, Dict, Any, TYPE_CHECKING
 import logging
 
 from .config import EmailConfig, MeasurementConfig, AppConfig, get_logger
+
+_RUNTIME_WEBSITE_URL_KEY = 'cvd.runtime_website_url'
 
 
 class EMailSystem:
@@ -142,8 +145,8 @@ class EMailSystem:
             self._close_smtp_connection()
 
     def __del__(self) -> None:
-        self.close()
-    
+        if hasattr(self, '_smtp_lock'):
+            self.close()    
     def refresh_config(self) -> None:
         """
         Aktualisiert die Konfigurationsreferenzen.
@@ -173,6 +176,15 @@ class EMailSystem:
         """
         with self._state_lock:
             return self.app_cfg.email
+
+    def _resolve_website_url(self) -> str:
+        """Resolve the best available app URL for email templates."""
+        configured_url = str(getattr(self._get_current_email_config(), 'website_url', '') or '').strip()
+        try:
+            runtime_url = str(app.storage.general.get(_RUNTIME_WEBSITE_URL_KEY, '') or '').strip()
+        except Exception:
+            runtime_url = ''
+        return runtime_url or configured_url
 
     def _get_effective_recipients(self) -> List[str]:
         """Return effective recipients using current email config.
@@ -240,7 +252,7 @@ class EMailSystem:
             "timestamp": ts_str,
             "session_id": session_id or "unknown",
             "last_motion_time": last_motion_str,
-            "website_url": getattr(current_email_config, "website_url", "") or "",
+            "website_url": self._resolve_website_url(),
             "camera_index": camera_index,
             "sensitivity": sensitivity,
             "roi_enabled": roi_enabled,
@@ -308,7 +320,7 @@ class EMailSystem:
                 subject = f"CVD-Alert: No motion detected - {timestamp}"
                 body = (
                     f"Motion has not been detected since {timestamp}!\n"
-                    f"Please check the website at: {current_email_config.website_url}\n\n"
+                    f"Please check the website at: {self._resolve_website_url()}\n\n"
                     f"Details:\n"
                     f"Session-ID: {session_id or 'unknown'}\n"
                     f"Camera: Index currently not available\n"
@@ -880,7 +892,7 @@ class EMailSystem:
             self.logger.info(f"   Sender: {current_email_config.sender_email}")
             recipients_for_log = self._get_effective_recipients()
             self.logger.info(f"   Recipients: {recipients_for_log}")
-            self.logger.info(f"   Website URL: {current_email_config.website_url}")
+            self.logger.info(f"   Website URL: {self._resolve_website_url()}")
             self.logger.info("=" * 50)
 
             # Build subject/body from configured test template (includes metadata placeholders)
@@ -922,7 +934,7 @@ class EMailSystem:
             current_email_config = self._get_current_email_config()
             self.logger.error("=" * 50)
             self.logger.error(f"💥 TEST EMAIL FAILED: {type(exc).__name__}")
-            self.logger.error("0" * 50)
+            self.logger.error("=" * 50)            
             self.logger.error(f"   Error: {exc}")
             self.logger.error(f"   📡 CONFIG USED:")
             self.logger.error(f"      Server: {current_email_config.smtp_server}")
@@ -1056,7 +1068,6 @@ def create_email_system_from_config(
     from .config import load_config
     
     if config is None:
-        from .config import load_config
         config = load_config()
     return EMailSystem(config.email, config.measurement, config, logger)
 

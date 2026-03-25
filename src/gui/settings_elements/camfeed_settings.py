@@ -10,6 +10,36 @@ from src.cam.motion import MotionDetector
 logger = get_logger('gui.camfeed')
 
 
+def _resolve_capture_dimensions(camera: Optional[Camera]) -> Tuple[int, int]:
+    """Resolve editor dimensions from the static config and fall back to live status if available."""
+    configured_dimensions: Optional[Tuple[int, int]] = None
+
+    if camera is not None:
+        try:
+            profile = camera.get_configured_capture_profile()
+            resolution = profile.get('resolution') or {}
+            width = int(resolution.get('width', 0) or 0)
+            height = int(resolution.get('height', 0) or 0)
+            if width > 0 and height > 0:
+                configured_dimensions = (width, height)
+        except Exception:
+            logger.debug('Could not resolve configured capture dimensions', exc_info=True)
+
+        try:
+            status = camera.get_camera_status()
+            resolution = status.get('resolution') or {}
+            width = int(resolution.get('width', 0) or 0)
+            height = int(resolution.get('height', 0) or 0)
+            if width > 0 and height > 0:
+                return width, height
+        except Exception:
+            logger.debug('Could not resolve live capture dimensions', exc_info=True)
+
+    if configured_dimensions is not None:
+        return configured_dimensions
+    return 720, 405
+
+
 def create_camfeed_content(camera: Optional[Camera] = None) -> None:
     """Render the live camera feed with an integrated ROI editor.
 
@@ -24,15 +54,8 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
         return
 
     # Determine image resolution to preserve aspect ratio
-    IMG_W, IMG_H = 720, 405
+    IMG_W, IMG_H = _resolve_capture_dimensions(camera)
     MIN_ROI_SIZE_PX = 30  # unified minimum ROI edge length for live validation
-    try:
-        status = camera.get_camera_status()
-        if status and status.get('resolution'):
-            IMG_W = int(status['resolution']['width'])
-            IMG_H = int(status['resolution']['height'])
-    except Exception:
-        pass
 
     # ROI state and UI refs
     state: dict[str, Optional[Tuple[int, int]]] = {'p1': None, 'p2': None}

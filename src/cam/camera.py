@@ -733,6 +733,18 @@ class Camera:
 
     # ----------------- GUI-Integration Methoden ----------------------- #
 
+    def get_configured_capture_profile(self) -> dict:
+        """Return the statically configured webcam profile from the loaded config."""
+        resolution = self.webcam_config.get_default_resolution()
+        return {
+            "camera_index": int(self.webcam_config.camera_index),
+            "resolution": {
+                "width": int(resolution.width),
+                "height": int(resolution.height),
+            },
+            "fps": int(self.webcam_config.fps),
+        }
+
     def get_camera_status(self) -> dict:
         """Gibt aktuellen Kamera-Status für GUI zurück"""
         current_time = time.time()
@@ -744,11 +756,16 @@ class Camera:
         with self.capture_lock:
             video_capture_ref = self.video_capture
             is_connected = video_capture_ref is not None and video_capture_ref.isOpened()
+            configured_profile = self.get_configured_capture_profile()
 
             base_status: Dict[str, Any] = {
                 "connected": is_connected,
                 "resolution": None,
                 "fps": None,
+                "camera_index": configured_profile["camera_index"],
+                "configured_camera_index": configured_profile["camera_index"],
+                "configured_resolution": dict(configured_profile["resolution"]),
+                "configured_fps": configured_profile["fps"],
                 "backend": self.backend,
                 "frame_count": self.frame_count,
                 "is_running": self.is_running,
