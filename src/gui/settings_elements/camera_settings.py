@@ -93,6 +93,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
     def _build_scalar_card(
         *,
         title: str,
+        icon: str,
         name: str,
         range_key: str,
         fallback: dict[str, float],
@@ -110,7 +111,13 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
         value = float(raw_value) if is_float else int(raw_value)
 
         with ui.card().tight().classes('p-3 flex flex-col self-start w-full').style('align-items:stretch;'):
-            ui.label(f'{title}:').classes('font-semibold mb-1 self-start')
+            create_heading_row(
+                title,
+                icon=icon,
+                title_classes='font-semibold mb-1',
+                row_classes='items-center gap-2 self-start',
+                icon_classes='text-primary text-lg shrink-0',
+            )
             with ui.row().classes('items-center gap-2 w-full flex-nowrap'):
                 number_ctrl = (
                     ui.number(
@@ -268,6 +275,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
 
                 _build_scalar_card(
                     title='Brightness',
+                    icon='brightness_6',
                     name='brightness',
                     range_key='brightness',
                     fallback={'min': -64, 'max': 64, 'default': 0},
@@ -278,6 +286,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                 )
                 _build_scalar_card(
                     title='Contrast',
+                    icon='contrast',
                     name='contrast',
                     range_key='contrast',
                     fallback={'min': 0, 'max': 64, 'default': 16},
@@ -288,6 +297,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                 )
                 _build_scalar_card(
                     title='Saturation',
+                    icon='palette',
                     name='saturation',
                     range_key='saturation',
                     fallback={'min': 0, 'max': 128, 'default': 64},
@@ -298,6 +308,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                 )
                 _build_scalar_card(
                     title='Sharpness',
+                    icon='center_focus_strong',
                     name='sharpness',
                     range_key='sharpness',
                     fallback={'min': 0, 'max': 14, 'default': 2},
@@ -308,6 +319,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                 )
                 _build_scalar_card(
                     title='Gamma',
+                    icon='functions',
                     name='gamma',
                     range_key='gamma',
                     fallback={'min': 72, 'max': 500, 'default': 164},
@@ -318,6 +330,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                 )
                 _build_scalar_card(
                     title='Gain',
+                    icon='equalizer',
                     name='gain',
                     range_key='gain',
                     fallback={'min': 0, 'max': 100, 'default': 10},
@@ -328,6 +341,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                 )
                 _build_scalar_card(
                     title='Backlight Compensation',
+                    icon='wb_incandescent',
                     name='backlight_compensation',
                     range_key='backlight_compensation',
                     fallback={'min': 0, 'max': 160, 'default': 42},
@@ -338,6 +352,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                 )
                 _build_scalar_card(
                     title='Hue',
+                    icon='color_lens',
                     name='hue',
                     range_key='hue',
                     fallback={'min': -180, 'max': 180, 'default': 0},
