@@ -5,6 +5,7 @@ from src.config import get_global_config, save_global_config, get_logger
 from src.notify import EMailSystem
 from src.gui.util import schedule_bg
 from nicegui import Client
+from src.gui.settings_elements.ui_helpers import create_action_button, create_heading_row
 
 logger = get_logger("gui.email_settings")
 
@@ -568,7 +569,13 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
         
         # ---------------------- Overview ------------------------------ #
         with ui.card().classes("w-full p-4"):
-            ui.label("Overview").classes("text-h6 font-bold mb-2")
+            create_heading_row(
+                "Overview",
+                icon="dashboard",
+                title_classes="text-h6 font-bold mb-2",
+                row_classes="items-center gap-2",
+                icon_classes="text-primary text-xl shrink-0",
+            )
             with ui.grid(columns=2).classes("gap-x-8 gap-y-2"):
                 with ui.row().classes("items-baseline gap-2"):
                     ui.label("Total recipients:").classes("text-subtitle2 text-grey-7")
@@ -582,17 +589,35 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
         # Lists
         with ui.grid(columns=2).classes("w-full gap-4"):
             with ui.card().classes("w-full p-2"):
-                ui.label("All Recipients").classes("text-caption font-bold mb-1")
+                create_heading_row(
+                    "All Recipients",
+                    icon="list_alt",
+                    title_classes="text-caption font-bold mb-1",
+                    row_classes="items-center gap-2",
+                    icon_classes="text-primary text-base shrink-0",
+                )
                 recipient_list = ui.list().props("dense separator")
             with ui.card().classes("w-full p-2"):
-                ui.label("Effective (Active)").classes("text-caption font-bold mb-1")
+                create_heading_row(
+                    "Effective (Active)",
+                    icon="done_all",
+                    title_classes="text-caption font-bold mb-1",
+                    row_classes="items-center gap-2",
+                    icon_classes="text-primary text-base shrink-0",
+                )
                 eff_recipient_list = ui.list().props("dense separator")
 
         ui.separator()
 
         # ---------------------- Recipients ---------------------------- #
         with ui.row().classes("w-full items-center justify-between"):
-            ui.label("Recipients").classes("text-h6")
+            create_heading_row(
+                "Recipients",
+                icon="alternate_email",
+                title_classes="text-h6",
+                row_classes="items-center gap-2",
+                icon_classes="text-primary text-xl shrink-0",
+            )
             delete_btn = ui.button("Delete Selected", icon="delete", color="negative", on_click=delete_selected)
             delete_btn.disable()
 
@@ -651,13 +676,25 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
         ui.separator()
 
         # ---------------------- Groups -------------------------------- #
-        ui.label("Groups").classes("text-h6")
+        create_heading_row(
+            "Groups",
+            icon="groups",
+            title_classes="text-h6",
+            row_classes="items-center gap-2",
+            icon_classes="text-primary text-xl shrink-0",
+        )
         
         # Group Management (Create/Delete)
         with ui.row().classes("w-full gap-4 items-start"):
             # Left: Group Selector & Actions
             with ui.card().classes("flex-1 p-4"):
-                ui.label("Manage Groups").classes("font-bold mb-2")
+                create_heading_row(
+                    "Manage Groups",
+                    icon="group_work",
+                    title_classes="font-bold mb-2",
+                    row_classes="items-center gap-2",
+                    icon_classes="text-primary text-lg shrink-0",
+                )
                 with ui.row().classes("w-full gap-2"):
                     group_select = ui.select(
                         options=list(state["groups"].keys()),
@@ -745,7 +782,13 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
 
             # Right: Active Groups
             with ui.card().classes("flex-1 p-4"):
-                ui.label("Active Groups").classes("font-bold mb-2")
+                create_heading_row(
+                    "Active Groups",
+                    icon="how_to_reg",
+                    title_classes="font-bold mb-2",
+                    row_classes="items-center gap-2",
+                    icon_classes="text-primary text-lg shrink-0",
+                )
                 ui.label("Recipients in active groups will receive emails.").classes("text-caption text-grey mb-2")
                 
                 active_groups_select = ui.select(
@@ -764,15 +807,21 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                         refresh_overview()
                     _update_active_groups_apply_state()
                 
-                active_groups_apply_btn = ui.button("Apply", icon="done", on_click=_apply_active_groups)
+                active_groups_apply_btn = create_action_button('apply', on_click=_apply_active_groups)
                 active_groups_select.on('update:model-value', lambda _: _update_active_groups_apply_state())
                 _update_active_groups_apply_state()
 
         ui.separator()
 
         # ---------------------- Notifications ------------------------- #
-        ui.label("Global Notifications").classes("text-h6")
-        with ui.row().classes("items-center gap-4"):
+        create_heading_row(
+            "Global Notifications",
+            icon="notifications_active",
+            title_classes="text-h6",
+            row_classes="items-center gap-2",
+            icon_classes="text-primary text-xl shrink-0",
+        )
+        with ui.row().classes("items-center gap-4 flex-wrap"):
             notify_start_cb = ui.checkbox(
                 'Send email on measurement start',
                 value=bool(state["notifications"].get("on_start", False))
@@ -789,7 +838,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                     ui.notify("Notification settings applied", color="positive", position='bottom-right')
                     refresh_overview()
                 _update_notifications_apply_state()
-            notifications_apply_btn = ui.button("Apply", icon="done", color="primary")
+            notifications_apply_btn = create_action_button('apply')
             notifications_apply_btn.on('click', lambda _=None: apply_notifications())
             notify_start_cb.on('update:model-value', lambda _=None: _update_notifications_apply_state())
             notify_end_cb.on('update:model-value', lambda _=None: _update_notifications_apply_state())
@@ -798,7 +847,13 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
         ui.separator()
 
         # ---------------------- SMTP ---------------------------------- #
-        ui.label("SMTP").classes("text-subtitle2 text-grey-7 mt-3")
+        create_heading_row(
+            "SMTP",
+            icon="mail",
+            title_classes="text-subtitle2 text-grey-7",
+            row_classes="items-center gap-2 mt-3",
+            icon_classes="text-grey-7 text-lg shrink-0",
+        )
         with ui.row().classes("items-center gap-2 w-full flex-wrap"):
             sender_inp = (
                 ui.input("Sender")
@@ -848,7 +903,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
         update_status_icon()
 
         with ui.row().classes("w-full justify-end mt-1"):
-            ui.button("Save SMTP", icon="save", color="primary", on_click=manual_save)
+            create_action_button('save', label='Save SMTP', on_click=manual_save)
 
     # Initialize groups UI after controls are created
     def _init_groups() -> None:

@@ -2,11 +2,13 @@ from typing import Optional, Callable, Any
 from nicegui import ui
 from src.config import get_global_config, save_global_config, get_logger
 from src.measurement import MeasurementController
+from src.gui.settings_elements.ui_helpers import create_action_button, create_heading_row
 
 logger = get_logger('gui.measurement')
 
 def create_measurement_card(
     measurement_controller: Optional[MeasurementController] = None,
+    show_header: bool = True,
     **_: object,
 ) -> None:
     """Render measurement-related settings not exposed on the default page/card.
@@ -43,7 +45,14 @@ def create_measurement_card(
         'enable_motion_summary_logs': bool(getattr(m, 'enable_motion_summary_logs', True)),
     }
 
-    ui.label('Measurement Settings').classes('text-h6 font-semibold mb-2')
+    if show_header:
+        create_heading_row(
+            'Measurement Settings',
+            icon='straighten',
+            title_classes='text-h6 font-semibold mb-2',
+            row_classes='items-center gap-2',
+            icon_classes='text-primary text-xl shrink-0',
+        )
     value_classes = 'w-[7rem] min-w-[7rem] max-w-[7rem] shrink-0'
     slider_classes = 'flex-1 min-w-[10rem] max-w-full'
 
@@ -285,7 +294,7 @@ def create_measurement_card(
 
     # Apply bar
     with ui.row().classes('items-center q-gutter-sm q-mt-sm justify-end'):
-        apply_btn = ui.button('Apply', on_click=lambda _: _persist()).props('color=primary')
+        apply_btn = create_action_button('apply', on_click=lambda _: _persist())
         apply_btn.disable()
 
     # Wire change handlers

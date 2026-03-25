@@ -12,6 +12,7 @@ from src.alert_history import (
     resolve_history_image_path,
 )
 from src.config import get_logger
+from src.gui.settings_elements.ui_helpers import SECTION_ICONS, create_action_button, create_heading_row
 
 logger = get_logger('gui.history')
 
@@ -117,12 +118,18 @@ def create_history_card() -> None:
             return False
 
     with ui.card().classes('w-full h-full'):
-        with ui.row().classes('w-full items-center justify-between'):
-            ui.label('Alert History').classes('text-h6')
-            with ui.row().classes('gap-2'):
+        with ui.row().classes('w-full items-center justify-between gap-2 flex-wrap'):
+            create_heading_row(
+                'Alert History',
+                icon=SECTION_ICONS['history'],
+                title_classes='text-h6',
+                row_classes='items-center gap-2',
+                icon_classes='text-primary text-xl shrink-0',
+            )
+            with ui.row().classes('gap-2 flex-wrap'):
                 ui.button(icon='download', on_click=download_history).props('flat round').tooltip('Download history.json')
                 ui.button(icon='refresh', on_click=lambda: refresh_table(notify=True)).props('flat round').tooltip('Refresh')
-                ui.button(icon='delete', color='negative', on_click=clear_history).props('flat round').tooltip('Clear History')
+                create_action_button('clear', label='Clear History', icon='delete', on_click=clear_history)
 
         # Columns for the table
         columns: list[dict[str, Any]] = [

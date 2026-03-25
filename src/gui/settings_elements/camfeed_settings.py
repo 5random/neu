@@ -6,6 +6,7 @@ from nicegui import ui
 from src.cam.camera import Camera
 from src.config import get_logger, save_global_config, get_global_config
 from src.cam.motion import MotionDetector
+from src.gui.settings_elements.ui_helpers import create_action_button, create_heading_row
 
 logger = get_logger('gui.camfeed')
 
@@ -501,6 +502,13 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
 
     # Layout: Live image with toolbar under it
     with ui.column().classes('w-full gap-2'):
+        create_heading_row(
+            'Live Camera Feed & ROI',
+            icon='center_focus_strong',
+            title_classes='text-h6 font-semibold',
+            row_classes='items-center gap-2',
+            icon_classes='text-primary text-xl shrink-0',
+        )
         # Ensure correct aspect ratio for coordinate mapping
         # Avoid fixed aspect-ratio (can desync if camera stream resolution differs); let the image keep its natural ratio
         ratio_style = "width:100%;height:auto;"
@@ -564,11 +572,11 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
             ui.timer(0.2, _refresh_stream)
 
         # Toolbar: ROI enable, save/reset, coords and labels
-        with ui.row().classes('items-center gap-2 w-full'):
+        with ui.row().classes('items-center gap-2 w-full flex-wrap'):
             roi_enabled_checkbox = ui.checkbox('ROI enabled', value=True).tooltip('Enable/disable Region of Interest')
             roi_enabled_checkbox.on('change', lambda e: update_roi_enabled(bool(getattr(e, 'value', True))))
-            ui.button(icon='save', color='primary', on_click=save_roi).props('round').tooltip('save')
-            ui.button(icon='restart_alt', color='secondary', on_click=reset_roi).props('round').tooltip('reset')
+            create_action_button('save', label='Save ROI', on_click=save_roi, tooltip='Save ROI')
+            create_action_button('reset', label='Reset ROI', on_click=reset_roi, tooltip='Reset ROI')
             ui.space()
             coords_label = ui.label('(-, -)').classes('text-sm font-mono text-gray-500')
 

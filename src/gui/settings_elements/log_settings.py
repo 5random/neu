@@ -13,6 +13,7 @@ from typing import Optional, Any
 from nicegui import ui, app
 
 from src.config import get_logger
+from src.gui.settings_elements.ui_helpers import create_action_button, create_heading_row, create_section_heading
 
 logger = get_logger('gui.logs')
 LOG_LEVELS = {
@@ -133,18 +134,32 @@ def create_log_settings() -> None:
 
     # --- UI Layout ---
     with ui.column().classes('w-full gap-4 items-stretch'):
-        ui.label('Logs').classes('text-subtitle1 font-semibold').props('id=logs')
-        ui.label('Package and download recent application logs for troubleshooting.').classes('text-body2')
+        create_section_heading(
+            'Logs',
+            icon='receipt_long',
+            caption='Package and download recent application logs for troubleshooting.',
+            anchor_id='logs',
+            title_classes='text-subtitle1 font-semibold',
+            row_classes='items-center gap-2',
+            icon_classes='text-primary text-xl shrink-0',
+        )
         with ui.row().classes('w-full items-center gap-2'):
             ui.button('Download Logs (ZIP)', icon='download', on_click=download_logs_as_zip).props('color=primary')
 
         ui.separator()
-        ui.label('Live Log (from cvd_tracker)').classes('text-subtitle1 font-semibold')
+        create_heading_row(
+            'Live Log (from cvd_tracker)',
+            icon='terminal',
+            title_classes='text-subtitle1 font-semibold',
+            row_classes='items-center gap-2',
+            icon_classes='text-primary text-lg shrink-0',
+        )
 
         # Controls row
         with ui.row().classes('w-full items-center gap-3 flex-wrap'):
             paused_switch = ui.switch('Pause').props('color=primary')
-            clear_btn = ui.button('Clear', icon='clear')
+            auto_scroll_switch = ui.switch('Auto-scroll', value=True).props('color=positive')
+            clear_btn = create_action_button('clear')
             level_select = ui.select(
                 list(LOG_LEVELS.keys()),
                 value='INFO',
@@ -204,11 +219,28 @@ def create_log_settings() -> None:
         def current_level() -> int:
             return LOG_LEVELS.get(str(level_select.value), logging.INFO)
 
+        def scroll_to_latest() -> None:
+            if not bool(getattr(auto_scroll_switch, 'value', True)):
+                return
+            ui.run_javascript(f'''
+            (() => {{
+                const log = getElement({live_log.id});
+                if (!log || !log.$refs || !log.$refs.qRef) return;
+                log.shouldScroll = true;
+                log.$nextTick(() => {{
+                    try {{
+                        log.$refs.qRef.setScrollPosition('vertical', Number.MAX_SAFE_INTEGER, 0);
+                    }} catch (e) {{ /* ignore */ }}
+                }});
+            }})();
+            ''')
+
         def render_log_view() -> None:
             live_log.clear()
             filtered = [msg for level, msg in all_entries if level >= current_level()]
             for msg in filtered[-2000:]:
                 live_log.push(msg)
+            scroll_to_latest()
 
         def on_clear() -> None:
             all_entries.clear()
@@ -224,6 +256,7 @@ def create_log_settings() -> None:
 
         clear_btn.on('click', on_clear)
         level_select.on('update:model-value', on_level_change)
+        auto_scroll_switch.on('update:model-value', lambda e: scroll_to_latest() if bool(getattr(e, 'value', False)) else None)
         render_log_view()
 
         # Drain queue into the UI in the client context
@@ -242,6 +275,8 @@ def create_log_settings() -> None:
                 if level >= threshold:
                     live_log.push(msg)
                 drained += 1
+            if drained:
+                scroll_to_latest()
 
         # Ensure only one drain timer per client; cancel a previous one if present
         try:

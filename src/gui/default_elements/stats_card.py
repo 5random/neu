@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from src.alert_history import get_history_file, load_history_entries, parse_history_timestamp
 from src.config import get_logger
+from src.gui.settings_elements.ui_helpers import SECTION_ICONS, create_heading_row
 
 logger = get_logger('gui.stats')
 
@@ -54,7 +55,13 @@ def create_stats_card() -> None:
         }
 
     with ui.card().classes('w-full h-full'):
-        ui.label('Alert Statistics (Events/Hour)').classes('text-h6')
+        create_heading_row(
+            'Alert Statistics (Events/Hour)',
+            icon=SECTION_ICONS['stats'],
+            title_classes='text-h6',
+            row_classes='items-center gap-2',
+            icon_classes='text-primary text-xl shrink-0',
+        )
         
         chart = ui.echart({
             'tooltip': {'trigger': 'axis'},

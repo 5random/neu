@@ -6,6 +6,7 @@ from src.cam.camera import Camera
 from src.gui.util import schedule_bg, cancel_task_safely
 from src.config import get_logger, get_global_config, save_global_config
 from src.gui.bindings import bind_number_slider
+from src.gui.settings_elements.ui_helpers import create_action_button, create_heading_row
 
 logger = get_logger('gui.uvc_sliders')
 
@@ -251,9 +252,13 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
     # Render directly without wrapping in an extra Card; parent page will provide cards
     with ui.column().classes('w-full gap-4'):
         # ── Gruppe: Bildqualität ────────────────────────────────────────
-        ui.label('Image Quality')\
-            .style("align-self:flex-start; display:block;")\
-            .classes('text-h6 font-semibold mb-2')
+        create_heading_row(
+            'Image Quality',
+            icon='tune',
+            title_classes='text-h6 font-semibold mb-2',
+            row_classes='items-center gap-2 self-start',
+            icon_classes='text-primary text-xl shrink-0',
+        )
 
         with ui.grid(columns=2)\
                 .style("grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));"
@@ -353,7 +358,13 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                 with ui.card().tight()\
                         .style("align-self:start;")\
                         .classes('p-3 flex flex-col gap-2 w-full'):
-                    ui.label('White Balance').classes('font-semibold mb-1')
+                    create_heading_row(
+                        'White Balance',
+                        icon='wb_sunny',
+                        title_classes='font-semibold mb-1',
+                        row_classes='items-center gap-2',
+                        icon_classes='text-primary text-lg shrink-0',
+                    )
                     wb_auto_value = bool(current.get('auto_white_balance', 1))
                     wb_auto = ui.checkbox('Auto white balance', value=wb_auto_value).tooltip('Enable automatic white balance adjustment')
 
@@ -404,7 +415,13 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                 with ui.card().tight()\
                         .style("align-self:start;")\
                         .classes('p-3 flex flex-col gap-2 w-full'):
-                    ui.label('Exposure').classes('font-semibold mb-1')
+                    create_heading_row(
+                        'Exposure',
+                        icon='exposure',
+                        title_classes='font-semibold mb-1',
+                        row_classes='items-center gap-2',
+                        icon_classes='text-primary text-lg shrink-0',
+                    )
                     exp_auto_value = _to_bool_auto_exposure(current.get('auto_exposure', 1))
                     exp_auto = ui.checkbox('Auto exposure', value=exp_auto_value).tooltip('Enable automatic exposure adjustment')
 
@@ -457,13 +474,18 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
 
     # Reset Button
     with ui.row().classes('gap-4'):
-        save_btn = ui.button(icon='save', color='primary')\
-            .classes('flex-1 text-gray-500').props('round')\
-            .tooltip('save settings')
-        reset_btn = ui.button(
-            icon='restore',
-            color='secondary'
-        ).classes('flex-1 text-gray-500').props('round').tooltip('reset settings')
+        save_btn = create_action_button(
+            'save',
+            label='Save',
+            classes='flex-1 font-medium',
+            tooltip='Save settings',
+        )
+        reset_btn = create_action_button(
+            'reset',
+            label='Reset',
+            classes='flex-1 font-medium',
+            tooltip='Reset settings',
+        )
 
         if camera:
             def save_settings() -> None:

@@ -66,11 +66,11 @@ uvc_controls:
 # ---------------------------------------------------------------------------
 motion_detection:
   region_of_interest:
-    enabled: false
-    x: 100
-    y: 100
-    width: 300
-    height: 200
+    enabled: true
+    x: 374
+    y: 248
+    width: 1000
+    height: 511
   sensitivity: 0.1
   background_learning_rate: 0.005
   min_contour_area: 252

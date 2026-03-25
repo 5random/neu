@@ -15,6 +15,7 @@ from src.config import (
     get_logger,
     sync_runtime_config_instances,
 )
+from src.gui.settings_elements.ui_helpers import create_action_button, create_section_heading
 
 logger = get_logger("gui.config_settings")
 
@@ -241,10 +242,15 @@ def create_config_settings(
     ]
 
     with ui.column().classes("w-full gap-3"):
-        ui.label("Configuration").classes("text-subtitle1 font-semibold").props("id=config")
-        ui.label(
-            "Download the active config.yaml or upload another config.yaml to analyse which settings can be imported safely."
-        ).classes("text-body2")
+        create_section_heading(
+            "Configuration",
+            icon="description",
+            caption="Download the active config.yaml or upload another config.yaml to analyse which settings can be imported safely.",
+            anchor_id="config",
+            title_classes="text-subtitle1 font-semibold",
+            row_classes="items-center gap-2",
+            icon_classes="text-primary text-xl shrink-0",
+        )
 
         with ui.row().classes("w-full gap-2 items-center flex-wrap"):
             ui.button("Download config.yaml", icon="download", on_click=download_config_yaml).props("color=primary")
@@ -260,18 +266,20 @@ def create_config_settings(
         error_label = ui.label("").classes("text-body2 text-negative")
 
         with ui.row().classes("gap-2 flex-wrap"):
-            apply_selected_btn = ui.button(
-                "Apply selected settings",
+            apply_selected_btn = create_action_button(
+                'apply',
+                label="Apply selected settings",
                 icon="done_all",
                 on_click=lambda: _apply_selected(
                     [row.get("path") for row in (ready_table.selected or []) if row.get("path")] if ready_table is not None else []
                 ),
-            ).props("color=positive")
-            apply_all_btn = ui.button(
-                "Apply all valid settings",
+            )
+            apply_all_btn = create_action_button(
+                'apply',
+                label="Apply all valid settings",
                 icon="publish",
                 on_click=lambda: _apply_selected(None),
-            ).props("color=positive outline")
+            )
             apply_selected_btn.disable()
             apply_all_btn.disable()
 

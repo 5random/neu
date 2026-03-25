@@ -5,6 +5,7 @@ from nicegui import ui
 
 from src.update import check_update
 from src.config import get_logger
+from src.gui.settings_elements.ui_helpers import create_section_heading
 
 logger = get_logger('gui.update_settings')
 
@@ -17,8 +18,14 @@ def create_update_settings() -> None:
     """
 
     with ui.column().classes('gap-3'):
-        ui.label('Software Update').classes('text-subtitle1 font-semibold')
-        ui.label('Check for updates and install them if available.').classes('text-body2')
+        create_section_heading(
+            'Software Update',
+            icon='system_update',
+            caption='Check for updates and install them if available.',
+            title_classes='text-subtitle1 font-semibold',
+            row_classes='items-center gap-2',
+            icon_classes='text-primary text-xl shrink-0',
+        )
 
         status_label = ui.label('').classes('text-body2')
 

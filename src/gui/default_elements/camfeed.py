@@ -6,6 +6,7 @@ from pathlib import Path
 
 from src.cam.camera import Camera
 from src.config import get_logger
+from src.gui.settings_elements.ui_helpers import SECTION_ICONS, create_heading_row
 
 logger = get_logger('gui.camfeed')
 
@@ -15,7 +16,13 @@ def create_camfeed_content() -> None:
         with ui.card().style("align-self:stretch; justify-content:center; align-items:start;"):
                 # Header with quick link to related settings
                 with ui.row().classes('items-center justify-between w-full'):
-                    ui.label('Camera Feed').classes('text-h6 font-semibold mb-2')
+                    create_heading_row(
+                        'Camera Feed',
+                        icon=SECTION_ICONS['camera'],
+                        title_classes='text-h6 font-semibold mb-2',
+                        row_classes='items-center gap-2',
+                        icon_classes='text-primary text-xl shrink-0',
+                    )
                     ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings#camera')) \
                         .props('flat round dense').tooltip('Open camera settings')
                 # Preserve natural aspect ratio to avoid distortion

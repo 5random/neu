@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Optional, Any
 from src.measurement import MeasurementController
 from src.cam.camera import Camera
 from src.config import get_logger
+from src.gui.settings_elements.ui_helpers import SECTION_ICONS, create_heading_row
 logger = get_logger('gui.motion_status')
 
 def create_motion_status_element(camera: Camera | None, measurement_controller: Optional['MeasurementController'] = None) -> None:
@@ -17,7 +18,13 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
         # Fallback-UI ohne Kamera-Integration (kompakter)
         with ui.card().classes('w-full shadow-2 q-pa-sm'):
             with ui.row().classes('items-center justify-between w-full'):
-                ui.label('Motion Detection Status').classes('text-h6 font-semibold mb-1')
+                create_heading_row(
+                    'Motion Detection Status',
+                    icon=SECTION_ICONS['motion'],
+                    title_classes='text-h6 font-semibold mb-1',
+                    row_classes='items-center gap-2',
+                    icon_classes='text-primary text-xl shrink-0',
+                )
                 ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings#camera')) \
                     .props('flat round dense').tooltip('Open camera & motion settings')
             ui.label('Camera not available - motion detection disabled').classes('text-warning')
@@ -33,7 +40,13 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
     # Kompaktere Karte: keine Vollhöhe, reduzierte Innenabstände
     with ui.card().classes('w-full shadow-2 q-pa-sm'):
         with ui.row().classes('items-center justify-between w-full'):
-            ui.label('Motion Detection Status').classes('text-h6 font-semibold mb-1')
+            create_heading_row(
+                'Motion Detection Status',
+                icon=SECTION_ICONS['motion'],
+                title_classes='text-h6 font-semibold mb-1',
+                row_classes='items-center gap-2',
+                icon_classes='text-primary text-xl shrink-0',
+            )
             ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings#camera')) \
                 .props('flat round dense').tooltip('Open camera & motion settings')
         # Schlankes Layout: geringere vertikale Abstände

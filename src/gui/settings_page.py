@@ -20,6 +20,7 @@ from src.gui.settings_elements.log_settings import create_log_settings
 from src.gui.settings_elements.config_settings import create_config_settings
 from src.gui.settings_elements.update_settings import create_update_settings
 from src.gui.settings_elements.metadata_settings import create_metadata_settings
+from src.gui.settings_elements.ui_helpers import SECTION_ICONS, create_action_button, create_heading_row
 from src.gui.constants import StorageKeys
 from src.gui.storage import delete_ui_pref, get_runtime_ui_pref, get_ui_pref, set_runtime_ui_pref, set_ui_pref
 
@@ -111,13 +112,16 @@ def settings_page(request: Request) -> None:
 
     # Left drawer with quick links; initialize model value explicitly
     with ui.left_drawer(value=_initial_drawer_open).classes('w-64 p-2 cvd-quicklinks-drawer') as left_drawer:
-        def _quick_link(label: str, anchor_id: str, section_id: str) -> None:
+        def _quick_link(label: str, icon: str, anchor_id: str, section_id: str) -> None:
             anchor_to_section[anchor_id] = section_id
             def _handle_click(_event: Any, _anchor: str = anchor_id, _section: str = section_id) -> None:
                 _open_section(_anchor, _section)
-            link = ui.link(label, f'#{anchor_id}') \
-                .classes('cvd-quick-link block px-2 py-1 rounded') \
-                .props(f'data-anchor={anchor_id} data-section={section_id}')
+            with ui.link('', f'#{anchor_id}') as link:
+                link.classes('cvd-quick-link block px-2 py-1 rounded')
+                link.props(f'data-anchor={anchor_id} data-section={section_id}')
+                with ui.row().classes('cvd-quick-link-content items-center gap-3 min-w-0'):
+                    ui.icon(icon).classes('cvd-quick-link-icon')
+                    ui.label(label).classes('cvd-quick-link-label')
             link.on(
                 'click',
                 _handle_click,
@@ -128,14 +132,14 @@ def settings_page(request: Request) -> None:
         left_drawer.props('id=cvd-quicklinks')
         ui.label('Quick Links').classes('text-bold pl-2 pt-2 cvd-quicklinks-title')
         # Anchor links to scroll to sections and expand the owning card if necessary
-        _quick_link('Camera', 'camera', 'camera')
-        _quick_link('Motion Detection', 'motion', 'camera')
-        _quick_link('Measurement', 'measurement', 'measurement')
-        _quick_link('E-Mail', 'email', 'email')
-        _quick_link('Configuration', 'config', 'config')
-        _quick_link('Metadata', 'metadata', 'metadata')
-        _quick_link('Update', 'update', 'update')
-        _quick_link('Logs', 'logs', 'logs')
+        _quick_link('Camera', SECTION_ICONS['camera'], 'camera', 'camera')
+        _quick_link('Motion Detection', SECTION_ICONS['motion'], 'motion', 'camera')
+        _quick_link('Measurement', SECTION_ICONS['measurement'], 'measurement', 'measurement')
+        _quick_link('E-Mail', SECTION_ICONS['email'], 'email', 'email')
+        _quick_link('Configuration', SECTION_ICONS['config'], 'config', 'config')
+        _quick_link('Metadata', SECTION_ICONS['metadata'], 'metadata', 'metadata')
+        _quick_link('Update', SECTION_ICONS['update'], 'update', 'update')
+        _quick_link('Logs', SECTION_ICONS['logs'], 'logs', 'logs')
 
     # Sticky menu button to toggle the left drawer for navigation
     with ui.page_sticky(position='top-left', x_offset=12, y_offset=12).classes('cvd-sticky').style('z-index:10000'):
@@ -184,7 +188,7 @@ def settings_page(request: Request) -> None:
                             except Exception:
                                 reset_dialog.close()
                                 ui.notify('Failed to reset preferences', type='negative', position='bottom-right')
-                        ui.button('Reset', on_click=_confirm_reset).props('color=negative')
+                        create_action_button('reset', on_click=_confirm_reset)
                         ui.button('Cancel', on_click=reset_dialog.close)
 
             ui.button(icon='settings_backup_restore', on_click=reset_dialog.open).props('fab color=warning').tooltip('Reset UI preferences for this browser')
@@ -195,27 +199,29 @@ def settings_page(request: Request) -> None:
     if not isinstance(collapse_state, dict):
         collapse_state = {}
 
-    def _collapsible_card(section_id: str, title: str, default_collapsed: bool = True) -> ui.column:
+    def _collapsible_card(section_id: str, title: str, *, icon: str, default_collapsed: bool = True) -> ui.column:
         """Create a collapsible card with runtime-scoped UI state.
 
         Returns the content container to populate inside the card.
         """
         collapsed = bool(collapse_state.get(section_id, default_collapsed))
         
-        # Issue #7 fix: Validate section_id and escape title
+        # Issue #7 fix: Validate section_id
         import re
-        import html
         if not re.match(r'^[a-zA-Z0-9_-]+$', section_id):
             logger.warning(f"Invalid section_id '{section_id}', using 'section'")
             section_id = 'section'
-        title_escaped = html.escape(title)
 
         with ui.card().classes('w-full').props(f'flat bordered id=cvd-card-{section_id}'):
             # Header with ID (for anchor/IntersectionObserver) and toggle
-            with ui.row().classes('items-center justify-between'):
-                ui.html(
-                    f'<div id="{section_id}" class="text-h6 font-semibold mb-2">{title_escaped}</div>',
-                    sanitize=False,
+            with ui.row().classes('items-center justify-between gap-2'):
+                create_heading_row(
+                    title,
+                    icon=icon,
+                    anchor_id=section_id,
+                    title_classes='text-h6 font-semibold',
+                    row_classes='items-center gap-3 min-w-0',
+                    icon_classes='text-primary text-xl shrink-0',
                 )
 
                 def _toggle() -> None:
@@ -240,18 +246,33 @@ def settings_page(request: Request) -> None:
             section_openers[section_id] = _ensure_open
         return content
 
-    def _collapsible_lazy_card(section_id: str, title: str, render_fn: Callable[[Any], None], default_collapsed: bool = True) -> ui.column:
+    def _collapsible_lazy_card(
+        section_id: str,
+        title: str,
+        *,
+        icon: str,
+        render_fn: Callable[[Any], None],
+        default_collapsed: bool = True,
+    ) -> ui.column:
         """Create a collapsible card that renders its content lazily on first expand.
 
         render_fn receives a NiceGUI container to populate when needed.
         """
         collapsed = bool(collapse_state.get(section_id, default_collapsed))
         rendered = False
+        import re
+        if not re.match(r'^[a-zA-Z0-9_-]+$', section_id):
+            logger.warning(f"Invalid section_id '{section_id}', using 'section'")
+            section_id = 'section'
         with ui.card().classes('w-full').props(f'flat bordered id=cvd-card-{section_id}'):
-            with ui.row().classes('items-center justify-between'):
-                ui.html(
-                    f'<div id="{section_id}" class="text-h6 font-semibold mb-2">{title}</div>',
-                    sanitize=False,
+            with ui.row().classes('items-center justify-between gap-2'):
+                create_heading_row(
+                    title,
+                    icon=icon,
+                    anchor_id=section_id,
+                    title_classes='text-h6 font-semibold',
+                    row_classes='items-center gap-3 min-w-0',
+                    icon_classes='text-primary text-xl shrink-0',
                 )
 
                 def _toggle() -> None:
@@ -299,38 +320,82 @@ def settings_page(request: Request) -> None:
                 with ui.column().classes('gap-3 min-w-0 w-full self-start'):
                     create_camfeed_content(camera)
                     ui.separator()
-                    ui.label('Motion Detection').classes('text-subtitle1 font-semibold').props('id=motion')
+                    create_heading_row(
+                        'Motion Detection',
+                        icon=SECTION_ICONS['motion'],
+                        anchor_id='motion',
+                        title_classes='text-subtitle1 font-semibold',
+                        row_classes='items-center gap-2',
+                        icon_classes='text-primary text-lg shrink-0',
+                    )
                     create_motiondetection_card(camera)
                 with ui.column().classes('gap-3 min-w-0 w-full self-start'):
                     create_uvc_content(camera)
 
         # Default heavy camera section to collapsed on startup (renders lazily)
-        _collapsible_lazy_card('camera', 'Camera', _render_camera, default_collapsed=True)
+        _collapsible_lazy_card(
+            'camera',
+            'Camera',
+            icon=SECTION_ICONS['camera'],
+            render_fn=_render_camera,
+            default_collapsed=True,
+        )
 
-        measurement_card = _collapsible_card('measurement', 'Measurement', default_collapsed=True)
+        measurement_card = _collapsible_card(
+            'measurement',
+            'Measurement',
+            icon=SECTION_ICONS['measurement'],
+            default_collapsed=True,
+        )
         with measurement_card:
             create_measurement_card(measurement_controller=measurement_controller)
 
-        email_card = _collapsible_card('email', 'E-Mail Notifications', default_collapsed=True)
+        email_card = _collapsible_card(
+            'email',
+            'E-Mail Notifications',
+            icon=SECTION_ICONS['email'],
+            default_collapsed=True,
+        )
         with email_card:
             create_emailcard(email_system=email_system)
 
-        metadata_card = _collapsible_card('metadata', 'Metadata', default_collapsed=True)
+        metadata_card = _collapsible_card(
+            'metadata',
+            'Metadata',
+            icon=SECTION_ICONS['metadata'],
+            default_collapsed=True,
+        )
         with metadata_card:
             create_metadata_settings()
 
-        config_card = _collapsible_card('config', 'Configuration', default_collapsed=True)
+        config_card = _collapsible_card(
+            'config',
+            'Configuration',
+            icon=SECTION_ICONS['config'],
+            default_collapsed=True,
+        )
         with config_card:
             create_config_settings()
 
-        update_card = _collapsible_card('update', 'Update', default_collapsed=True)
+        update_card = _collapsible_card(
+            'update',
+            'Update',
+            icon=SECTION_ICONS['update'],
+            default_collapsed=True,
+        )
         with update_card:
             create_update_settings()
 
         def _render_logs(_container: Any) -> None:
             create_log_settings()
         # Logs can be heavy; default to collapsed
-        _collapsible_lazy_card('logs', 'Logs', _render_logs, default_collapsed=True)
+        _collapsible_lazy_card(
+            'logs',
+            'Logs',
+            icon=SECTION_ICONS['logs'],
+            render_fn=_render_logs,
+            default_collapsed=True,
+        )
 
     # No local footer: global footer is used
     if build_footer is not None:
@@ -356,6 +421,21 @@ body.body--dark #cvd-quicklinks {
     border-right: 1px solid rgba(255,255,255,0.08);
 }
 #cvd-quicklinks .cvd-quicklinks-title {
+    color: inherit;
+}
+#cvd-quicklinks .cvd-quick-link-content {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    min-width: 0;
+}
+#cvd-quicklinks .cvd-quick-link-icon {
+    color: currentColor;
+    opacity: 0.88;
+    flex-shrink: 0;
+    font-size: 1.05rem;
+}
+#cvd-quicklinks .cvd-quick-link-label {
     color: inherit;
 }
 #cvd-quicklinks a.cvd-quick-link {

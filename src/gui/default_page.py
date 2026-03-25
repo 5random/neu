@@ -12,6 +12,7 @@ from src.gui.settings_elements.camera_settings import create_uvc_content
 from src.gui.settings_elements.motion_detection_settings import create_motiondetection_card
 from src.gui.settings_elements.measurement_settings import create_measurement_card
 from src.gui.settings_elements.email_settings import create_emailcard
+from src.gui.settings_elements.ui_helpers import SECTION_ICONS, create_heading_row
 
 from src.config import get_logger
 
@@ -52,24 +53,51 @@ def index_page() -> None:
             with ui.column().classes('flex-1 gap-4 min-w-[300px]'):
                 # Measurement
                 with ui.card().classes('w-full'):
-                    ui.label('Measurement').classes('text-h6')
-                    create_measurement_card(measurement_controller=get_measurement_controller())
+                    create_heading_row(
+                        'Measurement',
+                        icon=SECTION_ICONS['measurement'],
+                        title_classes='text-h6',
+                        row_classes='items-center gap-2',
+                        icon_classes='text-primary text-xl shrink-0',
+                    )
+                    create_measurement_card(
+                        measurement_controller=get_measurement_controller(),
+                        show_header=False,
+                    )
                 
                 # Motion Settings
                 with ui.card().classes('w-full'):
-                    ui.label('Motion Detection').classes('text-h6')
-                    create_motiondetection_card(camera=get_camera())
+                    create_heading_row(
+                        'Motion Detection',
+                        icon=SECTION_ICONS['motion'],
+                        title_classes='text-h6',
+                        row_classes='items-center gap-2',
+                        icon_classes='text-primary text-xl shrink-0',
+                    )
+                    create_motiondetection_card(camera=get_camera(), show_header=False)
 
             # Column 3
             with ui.column().classes('flex-1 gap-4 min-w-[300px]'):
                 # UVC Controls
                 with ui.card().classes('w-full'):
-                    ui.label('Camera Controls').classes('text-h6')
+                    create_heading_row(
+                        'Camera Controls',
+                        icon=SECTION_ICONS['camera'],
+                        title_classes='text-h6',
+                        row_classes='items-center gap-2',
+                        icon_classes='text-primary text-xl shrink-0',
+                    )
                     create_uvc_content(camera=get_camera())
                 
                 # Email Settings
                 with ui.card().classes('w-full'):
-                    ui.label('Email Settings').classes('text-h6')
+                    create_heading_row(
+                        'Email Settings',
+                        icon=SECTION_ICONS['email'],
+                        title_classes='text-h6',
+                        row_classes='items-center gap-2',
+                        icon_classes='text-primary text-xl shrink-0',
+                    )
                     create_emailcard(email_system=get_email_system())
 
     # 3. Footer

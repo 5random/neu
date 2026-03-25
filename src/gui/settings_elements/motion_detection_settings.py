@@ -8,11 +8,12 @@ from src.cam.camera import Camera, MotionDetector
 from src.gui.util import schedule_bg
 from src.config import get_global_config, save_global_config, get_logger
 from src.gui.bindings import bind_number_slider
+from src.gui.settings_elements.ui_helpers import create_heading_row
 
 logger = get_logger('gui.motion')
 
 
-def create_motiondetection_card(camera: Optional[Camera] = None) -> None:
+def create_motiondetection_card(camera: Optional[Camera] = None, *, show_header: bool = True) -> None:
     """Motion Detection settings: Sensitivity only.
 
     All ROI functionality has been moved to camfeed_settings.create_camfeed_content.
@@ -84,9 +85,22 @@ def create_motiondetection_card(camera: Optional[Camera] = None) -> None:
         except Exception:
             pass
 
-    ui.label('Motion Detection Settings').classes('text-h6 font-semibold mb-2')
+    if show_header:
+        create_heading_row(
+            'Motion Detection Settings',
+            icon='sensors',
+            title_classes='text-h6 font-semibold mb-2',
+            row_classes='items-center gap-2',
+            icon_classes='text-primary text-xl shrink-0',
+        )
     with ui.card().classes('w-full').style('align-items:center;'):
-        ui.label('Sensitivity:').classes('font-semibold mb-2 self-start')
+        create_heading_row(
+            'Sensitivity',
+            icon='tune',
+            title_classes='font-semibold mb-2',
+            row_classes='items-center gap-2 self-start',
+            icon_classes='text-primary text-lg shrink-0',
+        )
         with ui.row().classes('justify-center gap-4 w-full'):
             sensitivity_number = (
                 ui.number(
