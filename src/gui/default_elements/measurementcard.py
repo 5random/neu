@@ -108,8 +108,8 @@ def create_measurement_card(
         if hasattr(measurement_config, 'get_session_timeout_seconds'):
             try:
                 return max(0, int(measurement_config.get_session_timeout_seconds()))
-            except Exception:
-                logger.warning('Invalid measurement config timeout; falling back to legacy minutes')
+            except Exception as e:
+                logger.warning('Invalid measurement config timeout; falling back to legacy minutes: %s', e)
 
         raw_seconds = getattr(measurement_config, 'session_timeout_seconds', 0)
         try:
@@ -616,12 +616,15 @@ def create_measurement_card(
                                         
                                         raw_val = getattr(select, 'value', [])
                                         selected = list(raw_val) if isinstance(raw_val, (list, tuple, set)) else []
-                                        
+                                         
                                         conf.email.active_groups = selected
-                                        save_global_config()
+                                        if not save_global_config():
+                                            logger.error('Failed to save recipient group selection')
+                                            ui.notify('Failed to update recipients', color='negative')
+                                            return
                                         if email_system:
                                             email_system.refresh_config()
-                                        
+                                         
                                         ui.notify('Recipients updated', color='positive', position='bottom-right')
                                         _update_apply_groups_state()
                                     except Exception as e:
@@ -748,10 +751,6 @@ def create_measurement_card(
 
     ui.timer(1.0, tick)
 
-    sync_duration_controls(bool(initial_status.get('is_active', False)))
-    update_duration_ui()
-    _request_view_refresh(initial_status)
-    style_start_button(initial_status)
     sync_duration_controls(bool(initial_status.get('is_active', False)))
     update_duration_ui()
     _request_view_refresh(initial_status)
