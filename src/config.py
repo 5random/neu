@@ -190,6 +190,7 @@ class MeasurementConfig:
     image_format: str
     image_quality: int
     alert_delay_seconds: int
+    session_timeout_seconds: int = 0
     # New alert/runtime tuning parameters (optional with safe defaults)
     max_alerts_per_session: int = 5
     alert_check_interval: float = 5.0
@@ -203,12 +204,28 @@ class MeasurementConfig:
     # History path for alert events (Issue #10)
     history_path: str = "data/history"
 
+    def get_session_timeout_seconds(self) -> int:
+        """Return the effective hard session timeout in seconds."""
+        raw_seconds = int(getattr(self, "session_timeout_seconds", 0) or 0)
+        if raw_seconds > 0:
+            return raw_seconds
+        raw_minutes = int(getattr(self, "session_timeout_minutes", 0) or 0)
+        return max(0, raw_minutes * 60)
+
+    def set_session_timeout_seconds(self, seconds: int) -> None:
+        """Persist timeout in both the new seconds field and the legacy minutes field."""
+        normalized_seconds = max(0, int(seconds or 0))
+        self.session_timeout_seconds = normalized_seconds
+        self.session_timeout_minutes = ((normalized_seconds + 59) // 60) if normalized_seconds > 0 else 0
+
     def validate(self) -> List[str]:
         errors: List[str] = []
         if self.alert_delay_seconds < 30:
             errors.append("alert_delay_seconds < 30")
         if self.session_timeout_minutes < 0:
             errors.append("session_timeout_minutes < 0")
+        if self.session_timeout_seconds < 0:
+            errors.append("session_timeout_seconds < 0")
         if self.max_alerts_per_session < 1:
             errors.append("max_alerts_per_session must be ≥ 1")
         if self.alert_check_interval <= 0:
@@ -759,6 +776,7 @@ _CONFIG_IMPORT_PATHS: Dict[str, List[str]] = {
     "measurement": [
         "measurement.auto_start",
         "measurement.session_timeout_minutes",
+        "measurement.session_timeout_seconds",
         "measurement.save_alert_images",
         "measurement.image_save_path",
         "measurement.image_format",
@@ -1485,6 +1503,7 @@ def _analyze_measurement_section(imported_data: Dict[str, Any], collector: _Conf
     allowed_keys = {
         "auto_start",
         "session_timeout_minutes",
+        "session_timeout_seconds",
         "save_alert_images",
         "image_save_path",
         "image_format",
@@ -1512,6 +1531,15 @@ def _analyze_measurement_section(imported_data: Dict[str, Any], collector: _Conf
         seen_paths=seen_paths,
         converter=_coerce_int,
         validator=lambda value: _validate_min(value, 0, label="session_timeout_minutes"),
+    )
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="session_timeout_seconds",
+        path="measurement.session_timeout_seconds",
+        seen_paths=seen_paths,
+        converter=_coerce_int,
+        validator=lambda value: _validate_min(value, 0, label="session_timeout_seconds"),
     )
     _process_scalar_field(collector, section_data, key="save_alert_images", path="measurement.save_alert_images", seen_paths=seen_paths, converter=_coerce_bool)
     _process_scalar_field(
@@ -2014,8 +2042,10 @@ def sync_runtime_config_instances(
 
     if measurement_controller is not None and _paths_include_prefix(applied_paths, "measurement"):
         try:
-            if hasattr(measurement_controller, "config"):
-                measurement_controller.config = config.measurement
+            if hasattr(measurement_controller, "update_config"):
+                measurement_controller.update_config(config.measurement)
+            else:
+                raise AttributeError("measurement controller does not support update_config()")
             result.refreshed_targets.append("measurement_controller")
         except Exception as exc:
             result.errors.append(f"measurement controller sync failed: {exc}")
@@ -2231,7 +2261,7 @@ def _create_default_config() -> AppConfig:
             sensitivity=0.1, background_learning_rate=0.005, min_contour_area=252
         ),
         measurement=MeasurementConfig(
-            auto_start=False, session_timeout_minutes=60, save_alert_images=True,
+            auto_start=False, session_timeout_minutes=60, session_timeout_seconds=3600, save_alert_images=True,
             image_save_path="./alerts/", image_format="jpg", image_quality=85,
             alert_delay_seconds=300,
             max_alerts_per_session=5,

@@ -13,7 +13,7 @@ from src.config import get_global_config, get_logger
 
 from src.gui.settings_elements.camera_settings import create_uvc_content
 from src.gui.settings_elements.motion_detection_settings import create_motiondetection_card
-from src.gui.settings_elements.measurement_settings import create_measurement_card
+from src.gui.settings_elements.measurement_settings import create_measurement_settings_card
 from src.gui.settings_elements.email_settings import create_emailcard
 from src.gui.settings_elements.camfeed_settings import create_camfeed_content
 from src.gui.settings_elements.log_settings import create_log_settings
@@ -348,7 +348,7 @@ def settings_page(request: Request) -> None:
             default_collapsed=True,
         )
         with measurement_card:
-            create_measurement_card(measurement_controller=measurement_controller)
+            create_measurement_settings_card(measurement_controller=measurement_controller)
 
         email_card = _collapsible_card(
             'email',

@@ -6,14 +6,14 @@ from pathlib import Path
 
 from src.cam.camera import Camera
 from src.config import get_logger
-from src.gui.settings_elements.ui_helpers import SECTION_ICONS, create_heading_row
+from src.gui.ui_helpers import SECTION_ICONS, create_heading_row
 
 logger = get_logger('gui.camfeed')
 
 def create_camfeed_content() -> None:
         # Kamera initialisieren
         logger.info("Creating camera feed")
-        with ui.card().style("align-self:stretch; justify-content:center; align-items:start;"):
+        with ui.card().classes('w-full').style("align-self:stretch; justify-content:center; align-items:start;"):
                 # Header with quick link to related settings
                 with ui.row().classes('items-center justify-between w-full'):
                     create_heading_row(

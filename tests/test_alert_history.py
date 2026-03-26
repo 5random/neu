@@ -64,7 +64,85 @@ def test_measurement_history_stores_relative_posix_image_path(tmp_path):
     assert entry['email_sent'] is False
     assert entry['image_path']
     assert '\\' not in entry['image_path']
+    assert '/' not in entry['image_path']
     assert not entry['image_path'].startswith(str(tmp_path))
+    assert (tmp_path / entry['image_path']).exists()
+
+    controller.cleanup()
+
+
+def test_measurement_history_sanitizes_session_id_for_alert_image_filename(tmp_path):
+    cfg = _create_default_config()
+    cfg.measurement.history_path = str(tmp_path)
+
+    controller = MeasurementController(cfg.measurement, email_system=None, camera=None)
+    frame = np.zeros((8, 8, 3), dtype=np.uint8)
+    session_id = 'foo/../../../bar'
+
+    controller._save_alert_to_history(session_id, frame, email_sent=False)
+
+    entries = json.loads((tmp_path / 'history.json').read_text(encoding='utf-8'))
+    assert len(entries) == 1
+
+    entry = entries[0]
+    assert entry['session_id'] == session_id
+    assert entry['image_path'].endswith('_foo_bar.jpg')
+    assert '/' not in entry['image_path']
+    assert '\\' not in entry['image_path']
+
+    saved_images = list(tmp_path.glob('*.jpg'))
+    assert len(saved_images) == 1
+    assert saved_images[0].parent == tmp_path
+    assert saved_images[0].name == entry['image_path']
+
+    controller.cleanup()
+
+
+def test_measurement_history_sanitizes_windows_style_session_id_for_alert_image_filename(tmp_path):
+    cfg = _create_default_config()
+    cfg.measurement.history_path = str(tmp_path)
+
+    controller = MeasurementController(cfg.measurement, email_system=None, camera=None)
+    frame = np.zeros((8, 8, 3), dtype=np.uint8)
+    session_id = r'foo\..\..\..\bar'
+
+    controller._save_alert_to_history(session_id, frame, email_sent=False)
+
+    entries = json.loads((tmp_path / 'history.json').read_text(encoding='utf-8'))
+    assert len(entries) == 1
+
+    entry = entries[0]
+    assert entry['session_id'] == session_id
+    assert entry['image_path'].endswith('_foo_bar.jpg')
+    assert '/' not in entry['image_path']
+    assert '\\' not in entry['image_path']
+
+    saved_images = list(tmp_path.glob('*.jpg'))
+    assert len(saved_images) == 1
+    assert saved_images[0].parent == tmp_path
+    assert saved_images[0].name == entry['image_path']
+
+    controller.cleanup()
+
+
+def test_measurement_history_uses_fallback_when_session_id_sanitizes_to_empty(tmp_path):
+    cfg = _create_default_config()
+    cfg.measurement.history_path = str(tmp_path)
+
+    controller = MeasurementController(cfg.measurement, email_system=None, camera=None)
+    frame = np.zeros((8, 8, 3), dtype=np.uint8)
+    session_id = r'...///\\:::'
+
+    controller._save_alert_to_history(session_id, frame, email_sent=False)
+
+    entries = json.loads((tmp_path / 'history.json').read_text(encoding='utf-8'))
+    assert len(entries) == 1
+
+    entry = entries[0]
+    assert entry['session_id'] == session_id
+    assert entry['image_path'].endswith('_session.jpg')
+    assert '/' not in entry['image_path']
+    assert '\\' not in entry['image_path']
     assert (tmp_path / entry['image_path']).exists()
 
     controller.cleanup()

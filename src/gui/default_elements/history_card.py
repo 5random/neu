@@ -12,7 +12,7 @@ from src.alert_history import (
     resolve_history_image_path,
 )
 from src.config import get_logger
-from src.gui.settings_elements.ui_helpers import SECTION_ICONS, create_action_button, create_heading_row
+from src.gui.ui_helpers import SECTION_ICONS, create_action_button, create_heading_row
 
 logger = get_logger('gui.history')
 

@@ -62,7 +62,11 @@ class Camera:
         self._init_complete = threading.Event()  # Signals when async init is done
         self.is_running = False
         self.frame_thread: Optional[threading.Thread] = None  # Initialize before use
-        self.motion_callback: Optional[Callable[[np.ndarray, MotionResult], None]] = None
+        self._motion_callbacks: Dict[
+            Callable[[np.ndarray, MotionResult], None],
+            Callable[[np.ndarray, MotionResult], None],
+        ] = {}
+        self._motion_callbacks_lock = threading.Lock()
 
         # -- Motion Detection --
         self.motion_detector: Optional[MotionDetector] = None
@@ -582,12 +586,11 @@ class Camera:
                 try:
                     motion_result = self.motion_detector.detect_motion(original_frame)
                     self.last_motion_result = motion_result
-                    if self.motion_callback:
-                        self.motion_callback(frame_copy, motion_result)
+                    self._dispatch_motion_callbacks(frame_copy, motion_result)
                 except Exception as exc:
                     self.logger.error(f"Motion-Detection-Error: {exc}")
 
-        elif self.motion_callback:
+        elif self._has_motion_callbacks():
             # Fallback: Alten Callback-Stil unterstützen für Rückwärtskompatibilität
             try:
                 # Erstelle Dummy MotionResult für Kompatibilität und speichere
@@ -598,7 +601,7 @@ class Camera:
                     roi_used=False,
                 )
                 self.last_motion_result = dummy_result
-                self.motion_callback(original_frame, dummy_result)
+                self._dispatch_motion_callbacks(original_frame, dummy_result)
                 self.logger.debug("Motion callback called with dummy result")
             except Exception as exc:
                 self.logger.error(f"Dummy-Motion-Callback-Error: {exc}")
@@ -607,7 +610,7 @@ class Camera:
         """Handle camera disconnection gracefully."""
         self.logger.warning("Camera disconnected, trying to reconnect...")
         
-        if self.motion_callback:
+        if self._has_motion_callbacks():
             try:
                 # Dummy-Frame für Callback
                 dummy_frame = self.get_current_frame()
@@ -624,7 +627,7 @@ class Camera:
                 )
                 
                 # Callback aufrufen um GUI/MeasurementController zu benachrichtigen
-                self.motion_callback(dummy_frame, disconnect_result)
+                self._dispatch_motion_callbacks(dummy_frame, disconnect_result)
                 self.logger.debug("Motion callback notified about disconnect")
             except Exception as exc:
                 self.logger.error(f"Error notifying motion callback about disconnect: {exc}")
@@ -667,8 +670,22 @@ class Camera:
 
 
     # ---------------- Motion-Detection Steuerung --------------------- #
+    def _has_motion_callbacks(self) -> bool:
+        with self._motion_callbacks_lock:
+            return bool(self._motion_callbacks)
+
+    def _dispatch_motion_callbacks(self, frame: np.ndarray, motion_result: MotionResult) -> None:
+        with self._motion_callbacks_lock:
+            callbacks = list(self._motion_callbacks.values())
+
+        for callback in callbacks:
+            try:
+                callback(frame, motion_result)
+            except Exception as exc:
+                self.logger.error(f"Motion callback dispatch error: {exc}")
+
     def enable_motion_detection(self, callback: Callable[[np.ndarray, MotionResult], None]) -> None:
-        """Aktiviert die Bewegungserkennung und setzt den Callback."""
+        """Aktiviert die Bewegungserkennung und registriert einen Listener."""
         if not self.motion_detector:
             try:
                 self.motion_detector = MotionDetector(self.app_config.motion_detection)
@@ -696,13 +713,27 @@ class Camera:
             except Exception as exc:
                 self.logger.error(f"Motion-Callback-Error: {exc}")
 
-        self.motion_callback = safe_callback
-        self.motion_enabled = True
+        with self._motion_callbacks_lock:
+            self._motion_callbacks[callback] = safe_callback
+            self.motion_enabled = bool(self._motion_callbacks)
+            callback_count = len(self._motion_callbacks)
 
-    def disable_motion_detection(self) -> None:
-        """Deaktiviert die Bewegungserkennung."""
-        self.motion_enabled = False
-        self.motion_callback = None
+        self.logger.debug("Motion callback registered; total listeners=%s", callback_count)
+
+    def disable_motion_detection(
+        self,
+        callback: Optional[Callable[[np.ndarray, MotionResult], None]] = None,
+    ) -> None:
+        """Deaktiviert die Bewegungserkennung oder entfernt einen einzelnen Listener."""
+        with self._motion_callbacks_lock:
+            if callback is None:
+                self._motion_callbacks.clear()
+            else:
+                self._motion_callbacks.pop(callback, None)
+            self.motion_enabled = bool(self._motion_callbacks)
+            callback_count = len(self._motion_callbacks)
+
+        self.logger.debug("Motion callback unregistered; total listeners=%s", callback_count)
 
     def is_motion_active(self) -> bool:
         """Gibt zurück, ob die Bewegungserkennung aktiv ist."""
@@ -1003,6 +1034,9 @@ class Camera:
             except Exception as e:
                 self.logger.debug(f"Error cleaning up motion detector: {e}")
             self.motion_detector = None
+        with self._motion_callbacks_lock:
+            self._motion_callbacks.clear()
+            self.motion_enabled = False
         
         # Clear frame pool (Issue #5)
         if hasattr(self, '_frame_pool'):

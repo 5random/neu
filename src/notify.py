@@ -168,7 +168,7 @@ class EMailSystem:
             self.last_alert_time = None
             self.alerts_sent_count = 0
             self._alert_session_id = session_id
-            self.logger.info("Alert state reset for session %s", session_id or "<none>")
+            self.logger.debug("Alert state reset for session %s", session_id or "<none>")
 
     def can_send_alert(self, session_id: Optional[str] = None) -> bool:
         with self._state_lock:
@@ -553,7 +553,7 @@ class EMailSystem:
         current_email_config = self._get_current_email_config()
         flags = getattr(current_email_config, 'notifications', None)
         if not flags:
-            self.logger.info(
+            self.logger.debug(
                 "notifications disabled or missing for email config (sender=%s, id=%s)",
                 getattr(current_email_config, 'sender_email', 'unknown'),
                 id(current_email_config),
@@ -562,7 +562,7 @@ class EMailSystem:
         enabled_key = {'start': 'on_start', 'end': 'on_end', 'stop': 'on_stop'}[event]
         enabled = bool(flags.get(enabled_key, False))
         if not enabled:
-            self.logger.info("notification flag %s disabled for event '%s'", enabled_key, event)
+            self.logger.debug("notification flag %s disabled for event '%s'", enabled_key, event)
             return False
 
         try:
@@ -635,6 +635,83 @@ class EMailSystem:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(self._executor, self.send_measurement_event, event, session_id, start_time, end_time, reason)
 
+    def _log_batch_header(
+        self,
+        recipients: list[str],
+        max_retries: int,
+        config: 'EmailConfig',
+    ) -> None:
+        """Log the start of an email batch with configuration details."""
+        self.logger.info("=" * 50)
+        self.logger.info("\U0001F4E7 STARTING EMAIL BATCH SEND!")
+        self.logger.info("=" * 50)
+        self.logger.info("\U0001F4CA EMAIL CONFIGURATION:")
+        self.logger.info("   SMTP Server: %s", config.smtp_server)
+        self.logger.info("   SMTP Port: %s", config.smtp_port)
+        self.logger.info("   Sender Email: %s", config.sender_email)
+        self.logger.info("   Recipients: %s (%d total)", recipients, len(recipients))
+        self.logger.info("   Max Retries: %d", max_retries)
+        self.logger.info("   Connection Timeout: %ss", self._connection_timeout)
+        self.logger.info("=" * 50)
+
+    def _log_smtp_attempt_error(
+        self,
+        attempt: int,
+        max_retries: int,
+        exc: Exception,
+        config: 'EmailConfig',
+        recipients: list[str],
+        *,
+        critical: bool = False,
+    ) -> None:
+        """Log a failed SMTP send attempt with connection details."""
+        if critical:
+            self.logger.error("\u274c CRITICAL ERROR: %s", type(exc).__name__)
+        else:
+            self.logger.error(
+                "\u274c SMTP ATTEMPT %d/%d FAILED: %s",
+                attempt + 1,
+                max_retries,
+                type(exc).__name__,
+            )
+        self.logger.error("   Error: %s", exc)
+        self.logger.error("   \U0001F4E1 CONNECTION DETAILS:")
+        self.logger.error("      Server: %s", config.smtp_server)
+        self.logger.error("      Port: %s", config.smtp_port)
+        self.logger.error("      Sender: %s", config.sender_email)
+        self.logger.error("      Timeout: %ss", self._connection_timeout)
+        self.logger.error("      Recipients: %s", recipients)
+
+    def _log_batch_result(
+        self,
+        success_count: int,
+        total: int,
+        config: 'EmailConfig',
+        recipients: list[str],
+    ) -> None:
+        """Log the final result of an email batch."""
+        self.logger.info("=" * 50)
+        if success_count > 0:
+            self.logger.info("\u2705 EMAIL BATCH COMPLETED SUCCESSFULLY")
+            self.logger.info("   \U0001F4CA Results: %d/%d emails sent", success_count, total)
+            self.logger.info(
+                "   \U0001F4E1 Used config: Server: %s; Port: %s",
+                config.smtp_server,
+                config.smtp_port,
+            )
+            self.logger.info("   \U0001F4E4 Sender: %s", config.sender_email)
+        else:
+            self.logger.error("\u274c EMAIL BATCH FAILED COMPLETELY")
+            self.logger.error("   \U0001F4CA Results: 0/%d emails sent", total)
+            self.logger.error(
+                "   \U0001F4E1 Failed config: Server: %s; Port: %s",
+                config.smtp_server,
+                config.smtp_port,
+            )
+            self.logger.error("   \U0001F4E4 Failed sender: %s", config.sender_email)
+            self.logger.error("   \U0001F3AF Target recipients: %s", recipients)
+        self.logger.info("=" * 50)
+
     def _send_emails_batch(
         self,
         messages: list[tuple[str, MIMEMultipart]],
@@ -651,17 +728,7 @@ class EMailSystem:
         recipients = [r for r, _ in messages]
         success_count = 0
 
-        self.logger.info("=" * 50)
-        self.logger.info("📧 STARTING EMAIL BATCH SEND!")
-        self.logger.info("=" * 50)
-        self.logger.info(f"📊 EMAIL CONFIGURATION:")
-        self.logger.info(f"   SMTP Server: {current_email_config.smtp_server}")
-        self.logger.info(f"   SMTP Port: {current_email_config.smtp_port}")
-        self.logger.info(f"   Sender Email: {current_email_config.sender_email}")
-        self.logger.info(f"   Recipients: {recipients} ({len(recipients)} total)")
-        self.logger.info(f"   Max Retries: {max_retries}")
-        self.logger.info(f"   Connection Timeout: {self._connection_timeout}s")
-        self.logger.info("=" * 50)
+        self._log_batch_header(recipients, max_retries, current_email_config)
 
         for attempt in range(max_retries):
             try:
@@ -686,7 +753,6 @@ class EMailSystem:
                                                 "Alert send aborted after %s successful recipient(s)",
                                                 success_count,
                                             )
-                                            return success_count
                                         raise
                                 failed = smtp.sendmail(
                                     current_email_config.sender_email,
@@ -697,11 +763,13 @@ class EMailSystem:
                                     failed_total.update(failed)
                                 else:
                                     success_count += 1
+                            except AlertSendAborted:
+                                raise
                             except Exception as exc:
                                 failed_total[r] = str(exc)
 
                         if failed_total:
-                            self.logger.warning(f"Failed to send email to: {failed_total}")
+                            self.logger.warning("Failed to send email to: %s", failed_total)
 
                 if success_count > 0:
                     break
@@ -709,54 +777,42 @@ class EMailSystem:
             except AlertSendAborted:
                 raise
             except (smtplib.SMTPException, ConnectionError, OSError) as exc:
-                self.logger.error(f"❌ SMTP ATTEMPT {attempt + 1} FAILED: {type(exc).__name__}")
-                self.logger.error(f"   Error: {exc}")
-                self.logger.error(f"   📡 CONNECTION DETAILS:")
-                self.logger.error(f"      Server: {current_email_config.smtp_server}")
-                self.logger.error(f"      Port: {current_email_config.smtp_port}")
-                self.logger.error(f"      Sender: {current_email_config.sender_email}")
-                self.logger.error(f"      Timeout: {self._connection_timeout}s")
-                self.logger.error(f"      Recipients: {recipients}")
+                self._log_smtp_attempt_error(
+                    attempt,
+                    max_retries,
+                    exc,
+                    current_email_config,
+                    recipients,
+                )
 
                 with self._smtp_lock:
                     self._close_smtp_connection()
                 if attempt < max_retries - 1:
                     wait_time = 2 ** attempt
-                    self.logger.info(f"Retrying in {wait_time} seconds...")
-                    time.sleep(2 ** attempt)
+                    self.logger.info("Retrying in %s seconds...", wait_time)
+                    time.sleep(wait_time)
                     continue
                 else:
                     self.logger.error(
-                        f"SMTP-connection failed after {max_retries} attempts: {exc}"
+                        "SMTP-connection failed after %s attempts: %s",
+                        max_retries,
+                        exc,
                     )
             except Exception as exc:
-                self.logger.error(f"❌ CRITICAL ERROR: {type(exc).__name__}")
-                self.logger.error(f"   Error: {exc}")
-                self.logger.error(f"   📡 CONNECTION DETAILS:")
-                self.logger.error(f"      Server: {current_email_config.smtp_server}")
-                self.logger.error(f"      Port: {current_email_config.smtp_port}")
-                self.logger.error(f"      Sender: {current_email_config.sender_email}")
-                self.logger.error(f"      Timeout: {self._connection_timeout}s")
-                self.logger.error(f"      Recipients: {recipients}")
+                self._log_smtp_attempt_error(
+                    attempt,
+                    max_retries,
+                    exc,
+                    current_email_config,
+                    recipients,
+                    critical=True,
+                )
 
                 with self._smtp_lock:
                     self._close_smtp_connection()
                 break
 
-        self.logger.info("=" * 50)
-        if success_count > 0:
-            self.logger.info(f"✅ EMAIL BATCH COMPLETED SUCCESSFULLY")
-            self.logger.info(f"   📊 Results: {success_count}/{len(recipients)} emails sent")
-            self.logger.info(f"   📡 Used config: Server: {current_email_config.smtp_server}; Port: {current_email_config.smtp_port}")
-            self.logger.info(f"   📤 Sender: {current_email_config.sender_email}")
-        else:
-            self.logger.error(f"❌ EMAIL BATCH FAILED COMPLETELY")
-            self.logger.error(f"   📊 Results: 0/{len(recipients)} emails sent")
-            self.logger.error(f"   📡 Failed config: Server: {current_email_config.smtp_server}; Port: {current_email_config.smtp_port}")
-            self.logger.error(f"   📤 Failed sender: {current_email_config.sender_email}")
-            self.logger.error(f"   🎯 Target recipients: {recipients}")
-
-        self.logger.info("=" * 50)
+        self._log_batch_result(success_count, len(recipients), current_email_config, recipients)
         return success_count
 
     def _should_send_alert_unsafe(self) -> bool:

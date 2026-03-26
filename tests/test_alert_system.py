@@ -512,6 +512,52 @@ def test_stop_session_invalidates_queued_alerts(monkeypatch):
         controller.cleanup()
 
 
+def test_alert_trigger_uses_single_config_snapshot(monkeypatch):
+    cfg = _create_default_config()
+    cfg.measurement.alert_delay_seconds = 1
+    cfg.measurement.alert_check_interval = 1000.0
+    queued_calls = []
+
+    class _EmailSystem:
+        def can_send_alert(self, session_id=None):
+            return True
+
+        def send_motion_alert(self, **kwargs):
+            return True
+
+        def reset_alert_state(self, session_id=None):
+            return None
+
+        def send_measurement_event(self, **kwargs):
+            return True
+
+    replacement_cfg = _create_default_config()
+    replacement_cfg.measurement.alert_delay_seconds = 1
+    replacement_cfg.measurement.alert_check_interval = 0.1
+
+    controller = MeasurementController(cfg.measurement, email_system=_EmailSystem(), camera=None)
+    try:
+        controller._executor.submit = lambda fn, *args, **kwargs: queued_calls.append((fn, args, kwargs))
+        controller.is_session_active = True
+        controller.session_id = "session-1"
+        controller.last_motion_time = datetime.now() - timedelta(seconds=2)
+        controller._last_alert_attempt_monotonic = 100.0
+
+        def _swap_config_mid_check(duration):
+            controller.update_config(replacement_cfg.measurement)
+            return True
+
+        monkeypatch.setattr(controller, "_confirm_no_motion", _swap_config_mid_check)
+        monkeypatch.setattr("src.measurement.time.monotonic", lambda: 100.2)
+
+        with controller.session_lock:
+            controller._check_alert_trigger_locked("session-1")
+
+        assert queued_calls == []
+    finally:
+        controller.cleanup()
+
+
 def test_stop_session_aborts_inflight_alert_send(monkeypatch):
     import threading
 

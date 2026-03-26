@@ -80,17 +80,18 @@ motion_detection:
 # ---------------------------------------------------------------------------
 measurement:
   auto_start: false
-  session_timeout_minutes: 60
+  session_timeout_minutes: 1
   save_alert_images: true
   image_save_path: ./alerts/
   image_format: jpg
   image_quality: 85
   alert_delay_seconds: 300
+  session_timeout_seconds: 60
   max_alerts_per_session: 5
   alert_check_interval: 5.0
   alert_cooldown_seconds: 300
   alert_include_snapshot: true
-  inactivity_timeout_minutes: 60
+  inactivity_timeout_minutes: 120
   motion_summary_interval_seconds: 60
   enable_motion_summary_logs: true
   history_path: data/history
@@ -102,7 +103,7 @@ email:
   website_url: http://localhost:8080/
   recipients:
     - user@example.com
-  smtp_server: mail.tuhh.de
+  smtp_server: joke
   smtp_port: 25
   sender_email: CHANGE_ME@tuhh.de
   templates:

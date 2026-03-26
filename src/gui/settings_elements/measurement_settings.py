@@ -2,11 +2,12 @@ from typing import Optional, Callable, Any
 from nicegui import ui
 from src.config import get_global_config, save_global_config, get_logger
 from src.measurement import MeasurementController
+from src.gui import instances
 from src.gui.settings_elements.ui_helpers import create_action_button, create_heading_row
 
 logger = get_logger('gui.measurement')
 
-def create_measurement_card(
+def create_measurement_settings_card(
     measurement_controller: Optional[MeasurementController] = None,
     show_header: bool = True,
     **_: object,
@@ -190,7 +191,10 @@ def create_measurement_card(
             if save_global_config():
                 # Live-apply to running controller if provided
                 if measurement_controller is not None:
-                    measurement_controller.config = mc
+                    measurement_controller.update_config(mc)
+                email_system = instances.get_email_system()
+                if email_system is not None:
+                    email_system.refresh_config()
                 state = new_state
                 apply_btn.disable()
                 ui.notify('Measurement settings saved', type='positive', position='bottom-right')

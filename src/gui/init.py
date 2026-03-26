@@ -1,15 +1,13 @@
 from typing import Optional
 import logging
-import numpy as np
 
-from src.config import AppConfig, load_config, set_global_config, get_global_config
+from src.config import AppConfig, load_config, set_global_config, get_logger
 from src.cam.camera import Camera
-from src.cam.motion import MotionResult
 from src.measurement import create_measurement_controller_from_config, MeasurementController
 from src.notify import create_email_system_from_config, EMailSystem
 from src.gui import instances
 
-logger = logging.getLogger('gui.init')
+logger = logging.getLogger('cvd_tracker.gui.init')
 
 def init_application(config_path: str = "config/config.yaml") -> None:
     """Initialize the application components and store them in instances registry."""
@@ -34,7 +32,7 @@ def init_application(config_path: str = "config/config.yaml") -> None:
     camera: Optional[Camera] = None
     try:
         logger.info('Initializing Camera...')
-        camera = Camera(config, logger=logging.getLogger('camera'))
+        camera = Camera(config, logger=get_logger('camera'))
         # Note: wait_for_init might be needed if async, but Camera ctor seems sync enough for object creation.
         # The actual frame capture start might happen later or here.
         # Existing code in gui_.py calls wait_for_init.
@@ -68,15 +66,8 @@ def init_application(config_path: str = "config/config.yaml") -> None:
                 config=config,
                 email_system=email_system,
                 camera=camera,
-                logger=logger,
+                logger=get_logger('measurement'),
             )
-            
-            # Link motion detection
-            def on_motion(frame: np.ndarray, motion_result: MotionResult) -> None:
-                if measurement_controller:
-                    measurement_controller.on_motion_detected(frame, motion_result)
-
-            camera.enable_motion_detection(on_motion)
             logger.info("Measurement controller initialized successfully")
         else:
             logger.warning("Skipping MeasurementController init because Camera is missing")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime, timedelta
 import asyncio
-from nicegui import ui, background_tasks
+from nicegui import ui
 
 from src.notify import EMailSystem
 from src.config import get_global_config, save_global_config, get_logger
@@ -14,10 +14,27 @@ if TYPE_CHECKING:
 
 logger = get_logger('gui.measurement')
 
+
+def _derive_elapsed_duration(start_time: datetime) -> timedelta:
+    """Return elapsed time using a current timestamp that matches start_time awareness."""
+    if start_time.tzinfo is not None and start_time.utcoffset() is not None:
+        return datetime.now(tz=start_time.tzinfo) - start_time
+    return datetime.now() - start_time
+
+
+def _calculate_session_progress_ratio(elapsed: timedelta, session_max: timedelta) -> float:
+    """Return a clamped progress ratio for the current session timeout window."""
+    max_seconds = session_max.total_seconds()
+    if max_seconds <= 0:
+        return 0.0
+    return max(0.0, min(elapsed.total_seconds() / max_seconds, 1.0))
+
+
 def create_measurement_card(
     measurement_controller: Optional['MeasurementController'] = None,
     camera: Camera | None = None,
     email_system: EMailSystem | None = None,
+    show_recipients: bool = True,
     **kwargs: Any,
 ) -> None:
     # Back-compat
@@ -34,62 +51,270 @@ def create_measurement_card(
     logger.info("Creating measurement card")
     
     if measurement_controller is None:
+        logger.warning('Measurement card received no shared controller; creating a local controller instance')
         if email_system is None:
             email_system = EMailSystem(config.email, config.measurement, config)
-        measurement_controller = MeasurementController(config.measurement, email_system, camera)
+        from src.measurement import MeasurementController as RuntimeMeasurementController
+
+        measurement_controller = RuntimeMeasurementController(
+            config.measurement,
+            email_system,
+            camera,
+        )
     else:
         if email_system is not None and measurement_controller.email_system != email_system:
             measurement_controller.email_system = email_system
+    runtime_camera = camera or getattr(measurement_controller, 'camera', None)
+    logger.debug(
+        'Measurement card wiring: controller_available=%s controller_id=%s camera_available=%s',
+        measurement_controller is not None,
+        id(measurement_controller) if measurement_controller is not None else 'none',
+        runtime_camera is not None,
+    )
 
     # ------------------------- Zustände -------------------------
 
+    DURATION_UNIT_SECONDS = {'s': 1, 'min': 60, 'h': 3600, 'd': 86400}
+    DURATION_UNIT_OPTIONS = {
+        's': 'Seconds',
+        'min': 'Minutes',
+        'h': 'Hours',
+        'd': 'Days',
+    }
+    DURATION_UNIT_SUFFIXES = {'s': 's', 'min': 'min', 'h': 'h', 'd': 'd'}
+    DURATION_UNIT_STEP = {'s': 1.0, 'min': 0.1, 'h': 0.01, 'd': 0.001}
+    DURATION_UNIT_PRECISION = {'s': 0, 'min': 1, 'h': 2, 'd': 3}
+    DEFAULT_DURATION_SECONDS = 60
+    MIN_DURATION_SECONDS = 1
+
     last_measurement: datetime | None = None
-
-    def on_motion(_: Any) -> None:
-        async def _refresh() -> None:
-            update_view.refresh()
-        schedule_bg(_refresh(), name='refresh_view')
-
-    if measurement_controller is not None:
-        measurement_controller.register_motion_callback(on_motion)
+    status_error_logged = False
+    refresh_error_logged = False
 
     # ------------------- Hilfsfunktionen ----------------------
     def fmt(td: timedelta) -> str:
-        secs = int(td.total_seconds())
+        secs = max(0, int(td.total_seconds()))
         h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
         return f'{h:02}:{m:02}:{s:02}'
 
-    @ui.refreshable
-    def update_view() -> None:
-        """Aktualisiert Laufzeit, Fortschritt, Labels."""
+    def _coerce_duration_value(value: Any, *, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _get_config_session_timeout_seconds() -> int:
+        measurement_config = measurement_controller.config if measurement_controller is not None else config.measurement
+        if hasattr(measurement_config, 'get_session_timeout_seconds'):
+            try:
+                return max(0, int(measurement_config.get_session_timeout_seconds()))
+            except Exception:
+                logger.warning('Invalid measurement config timeout; falling back to legacy minutes')
+
+        raw_seconds = getattr(measurement_config, 'session_timeout_seconds', 0)
+        try:
+            timeout_seconds = max(0, int(raw_seconds or 0))
+        except (TypeError, ValueError):
+            timeout_seconds = 0
+
+        if timeout_seconds > 0:
+            return timeout_seconds
+
+        raw_minutes = getattr(measurement_config, 'session_timeout_minutes', 0)
+        try:
+            return max(0, int(raw_minutes or 0) * 60)
+        except (TypeError, ValueError):
+            logger.warning('Invalid legacy measurement timeout minutes: %r', raw_minutes)
+            return 0
+
+    def _get_session_timeout_seconds(status: dict[str, Any]) -> int:
+        raw_value = status.get('session_timeout_seconds', _get_config_session_timeout_seconds())
+        try:
+            timeout_seconds = max(0, int(raw_value or 0))
+        except (TypeError, ValueError):
+            logger.warning('Invalid session_timeout_seconds in measurement status: %r', raw_value)
+            timeout_seconds = 0
+
+        if timeout_seconds > 0:
+            return timeout_seconds
+
+        raw_minutes = status.get('session_timeout_minutes', 0)
+        try:
+            return max(0, int(raw_minutes or 0) * 60)
+        except (TypeError, ValueError):
+            logger.warning('Invalid legacy session_timeout_minutes in measurement status: %r', raw_minutes)
+            return 0
+
+    def _get_duration_unit(unit: Any) -> str:
+        return str(unit) if unit in DURATION_UNIT_SECONDS else 'min'
+
+    def _get_duration_step(unit: str) -> float:
+        return DURATION_UNIT_STEP[_get_duration_unit(unit)]
+
+    def _round_duration_value(value: float, unit: str) -> float:
+        precision = DURATION_UNIT_PRECISION[_get_duration_unit(unit)]
+        return round(value, precision)
+
+    def _get_unit_min_value(unit: str) -> float:
+        normalized_unit = _get_duration_unit(unit)
+        return max(
+            MIN_DURATION_SECONDS / DURATION_UNIT_SECONDS[normalized_unit],
+            _get_duration_step(normalized_unit),
+        )
+
+    def _seconds_to_duration_value(total_seconds: int, unit: str) -> float:
+        normalized_unit = _get_duration_unit(unit)
+        value = max(0, int(total_seconds or 0)) / DURATION_UNIT_SECONDS[normalized_unit]
+        return _round_duration_value(value, normalized_unit)
+
+    def _pick_duration_unit(total_seconds: int) -> str:
+        if total_seconds <= 0:
+            return 'min'
+        for unit in ('d', 'h', 'min', 's'):
+            divisor = DURATION_UNIT_SECONDS[unit]
+            if total_seconds % divisor == 0:
+                return unit
+        return 's'
+
+    def _get_elapsed_duration(status: dict[str, Any]) -> timedelta | None:
+        elapsed = status.get('duration')
+        if elapsed is None:
+            return None
+        if isinstance(elapsed, timedelta):
+            return elapsed
+        logger.warning('Invalid duration type in measurement status: %s', type(elapsed).__name__)
+        return None
+
+    def _resolve_elapsed_duration(status: dict[str, Any]) -> timedelta | None:
+        elapsed = _get_elapsed_duration(status)
+        if elapsed is not None:
+            return elapsed
+
+        start_time = _get_session_start_time(status)
+        if bool(status.get('is_active', False)) and start_time is not None:
+            derived = _derive_elapsed_duration(start_time)
+            return max(derived, timedelta(0))
+        return None
+
+    def _get_session_start_time(status: dict[str, Any]) -> datetime | None:
+        start_time = status.get('session_start_time')
+        if start_time is None or isinstance(start_time, datetime):
+            return start_time
+        logger.warning('Invalid session_start_time type in measurement status: %s', type(start_time).__name__)
+        return None
+
+    def _safe_get_status() -> dict[str, Any]:
+        nonlocal status_error_logged
+
+        timeout_seconds = _get_config_session_timeout_seconds()
+        fallback_status = {
+            'is_active': False,
+            'session_id': None,
+            'session_start_time': None,
+            'duration': None,
+            'alert_triggered': False,
+            'session_timeout_seconds': timeout_seconds,
+            'session_timeout_minutes': getattr(measurement_controller.config, 'session_timeout_minutes', 0)
+            if measurement_controller is not None
+            else 0,
+            'recent_motion_detected': False,
+            'time_since_motion': 0.0,
+            'alert_countdown': None,
+        }
+
         if measurement_controller is None:
+            return fallback_status
+
+        try:
+            status = measurement_controller.get_session_status()
+        except Exception:
+            if not status_error_logged:
+                logger.exception('Failed to read measurement status for dashboard card')
+                status_error_logged = True
+            return fallback_status
+
+        if status_error_logged:
+            logger.info('Measurement status retrieval recovered')
+            status_error_logged = False
+        return status
+
+    def _request_view_refresh(status: dict[str, Any] | None = None) -> None:
+        nonlocal refresh_error_logged
+
+        try:
+            _update_view(status)
+        except Exception:
+            if not refresh_error_logged:
+                logger.exception('Measurement card refresh failed')
+                refresh_error_logged = True
             return
-        status = measurement_controller.get_session_status()
-        config = get_global_config()
 
-        elapsed = status['duration']
-        session_active = status['is_active']
-        session_max = (timedelta(minutes=status['session_timeout_minutes']) if status['session_timeout_minutes'] > 0
-                       else None)
+        if refresh_error_logged:
+            logger.info('Measurement card refresh recovered')
+            refresh_error_logged = False
 
-        if session_active and elapsed:
+    def _apply_duration_controls_from_seconds(total_seconds: int, session_active: bool) -> None:
+        normalized_seconds = max(0, int(total_seconds or 0))
+        selected_unit = _pick_duration_unit(normalized_seconds or DEFAULT_DURATION_SECONDS)
+        enable_limit.value = normalized_seconds > 0
+        duration_unit.value = selected_unit
+        duration_input.value = _seconds_to_duration_value(
+            normalized_seconds or DEFAULT_DURATION_SECONDS,
+            selected_unit,
+        )
+        update_duration_ui()
+        sync_duration_controls(session_active)
+
+    initial_status = _safe_get_status()
+    initial_start_time = _get_session_start_time(initial_status)
+    if initial_start_time is not None:
+        last_measurement = initial_start_time
+
+    def _update_view(status: dict[str, Any] | None = None) -> None:
+        """Aktualisiert Laufzeit, Fortschritt und Status-Labels."""
+        nonlocal last_measurement
+        if status is None:
+            status = _safe_get_status()
+        elapsed = _resolve_elapsed_duration(status)
+        session_active = bool(status.get('is_active', False))
+        session_timeout_seconds = _get_session_timeout_seconds(status)
+        session_max = (
+            timedelta(seconds=session_timeout_seconds)
+            if session_timeout_seconds > 0
+            else None
+        )
+        session_start_time = _get_session_start_time(status)
+
+        if session_start_time is not None:
+            last_measurement = session_start_time
+
+        if session_active and elapsed is not None:
             if session_max:
+                remaining = max(session_max - elapsed, timedelta(0))
                 timer_label.text = f'{fmt(elapsed)} / {fmt(session_max)}'
-                ratio = min(elapsed.total_seconds() / session_max.total_seconds(), 1.0)
+                ratio = _calculate_session_progress_ratio(elapsed, session_max)
                 progress.value = ratio
-                percent_label.text = f'{ratio*100:5.1f} %'
+                elapsed_label.text = fmt(elapsed)
+                remaining_label.text = fmt(remaining)
                 progress_row.visible = True
             else:
                 timer_label.text = fmt(elapsed)
+                progress.value = 0.0
+                elapsed_label.text = fmt(elapsed)
+                remaining_label.text = '-'
                 progress_row.visible = False
         else:
             timer_label.text = '-'
+            progress.value = 0.0
+            elapsed_label.text = '-'
+            remaining_label.text = '-'
             progress_row.visible = False
-        
-        camera_status = camera.is_camera_available() if camera else False
+
+        sync_duration_controls(session_active)
+
+        camera_status = runtime_camera.is_camera_available() if runtime_camera else False
 
         if camera_status:
-            # Motion-Status anzeigen
             motion = status.get('recent_motion_detected', False)
             motion_label.text = 'Motion detected' if motion else 'No motion'
             motion_label.classes(remove='text-negative text-warning text-grey', add='text-primary' if motion else 'text-grey')
@@ -97,13 +322,22 @@ def create_measurement_card(
             motion_label.text = 'Camera unavailable'
             motion_label.classes(remove='text-grey text-primary', add='text-warning')
 
-        # Alert-Info anzeigen
-        if camera_status and status.get('recent_motion_detected'):
+        if not session_active:
+            if not camera_status:
+                alert_label.text = 'Check Camera'
+                alert_label.classes(remove='text-negative text-positive text-grey', add='text-warning')
+            else:
+                alert_label.text = 'Idle'
+                alert_label.classes(remove='text-negative text-positive text-warning', add='text-grey')
+        elif camera_status and status.get('recent_motion_detected'):
             alert_label.text = 'Safe (Motion)'
             alert_label.classes(remove='text-negative text-grey text-warning', add='text-positive')
         else:
             countdown = status.get('alert_countdown')
-            if countdown is not None and countdown > 0:
+            if status.get('alert_triggered'):
+                alert_label.text = 'Alert triggered'
+                alert_label.classes(remove='text-positive text-grey text-warning', add='text-negative')
+            elif countdown is not None and countdown > 0:
                 alert_label.text = f'Alert in {fmt(timedelta(seconds=countdown))}'
                 alert_label.classes(remove='text-positive text-grey text-warning', add='text-negative')
             elif not camera_status:
@@ -113,17 +347,42 @@ def create_measurement_card(
                 alert_label.text = 'Monitoring...'
                 alert_label.classes(remove='text-negative text-positive text-warning', add='text-grey')
 
-        # --- letzte Messung ------------
         last_label.text = (
-            f'Last: {last_measurement.strftime("%H:%M:%S")}'
-            if last_measurement else 'Last: -'
+            last_measurement.strftime('%H:%M:%S')
+            if last_measurement else '-'
         )
 
+        timer_label.update()
+        progress.update()
+        elapsed_label.update()
+        remaining_label.update()
+        progress_row.update()
+        motion_label.update()
+        alert_label.update()
+        last_label.update()
 
-    def style_start_button() -> None:
-        if measurement_controller is None:
+
+    configured_timeout_seconds = _get_config_session_timeout_seconds()
+    initial_duration_unit = _pick_duration_unit(configured_timeout_seconds or DEFAULT_DURATION_SECONDS)
+
+    def sync_duration_controls(session_active: bool) -> None:
+        if session_active:
+            enable_limit.disable()
+            duration_input.disable()
+            duration_unit.disable()
             return
-        if measurement_controller.get_session_status()['is_active']:
+
+        enable_limit.enable()
+        if enable_limit.value:
+            duration_input.enable()
+            duration_unit.enable()
+        else:
+            duration_input.disable()
+            duration_unit.disable()
+
+    def style_start_button(status: dict[str, Any] | None = None) -> None:
+        current_status = _safe_get_status() if status is None else status
+        if current_status['is_active']:
             start_stop_btn.icon = 'stop'
             start_stop_btn.props('color=negative')
             start_stop_btn.tooltip('Stop Session')
@@ -131,54 +390,89 @@ def create_measurement_card(
             start_stop_btn.icon = 'play_arrow'
             start_stop_btn.props('color=positive')
             start_stop_btn.tooltip('Start Session')
-
-    
-    # ---------------- Konstanten ----------------
-    MIN_BASE_SEC = max(config.measurement.alert_delay_seconds, 5 * 60)  # >= 5 min
-    MIN_HOUR_SEC = 3600  # 1 Stunde in Sekunden
+        sync_duration_controls(bool(current_status.get('is_active', False)))
+        start_stop_btn.update()
 
     # ---------------- UI-Update -----------------
 
     def update_duration_ui(_: Any = None) -> None:
         """Aktualisiert die UI-Elemente für die Dauer."""
-        unit = duration_unit.value if duration_unit.value in {'s', 'min', 'h'} else 's'
-        mult = {'s': 1, 'min': 60, 'h': 3600}[unit]
-        min_val = MIN_BASE_SEC / mult
-        if unit == 'h':
-            min_val = 1
+        unit = _get_duration_unit(duration_unit.value)
+        min_val = _get_unit_min_value(unit)
+        step = _get_duration_step(unit)
+        suffix = DURATION_UNIT_SUFFIXES[unit]
+        current_value = _coerce_duration_value(duration_input.value, default=min_val)
+        normalized_value = _round_duration_value(max(current_value, min_val), unit)
 
-        duration_input.label = f'Duration'
-        duration_input.props(f'suffix="{unit}" min={min_val}')
+        duration_input.label = 'Duration'
         duration_input.min = float(min_val)
-        if duration_input.value is not None and duration_input.value < min_val:
-            duration_input.value = min_val
+        duration_input.suffix = suffix
+        duration_input._props['step'] = step
+        if duration_input.value != normalized_value:
+            duration_input.value = normalized_value
+        duration_input.update()
 
     def persist_settings() -> None:
         """Persist measurement duration settings to the config."""
-        config = get_global_config()
-        if not config or duration_input.value is None:
+        runtime_config = get_global_config()
+        if not runtime_config:
             return
-        
+        cfg = runtime_config.measurement
+        previous_timeout_seconds = max(0, int(getattr(cfg, 'session_timeout_seconds', 0) or 0))
+        previous_timeout_minutes = max(0, int(getattr(cfg, 'session_timeout_minutes', 0) or 0))
+
+        def _restore_previous_timeout() -> None:
+            cfg.session_timeout_seconds = previous_timeout_seconds
+            cfg.session_timeout_minutes = previous_timeout_minutes
+            restored_seconds = (
+                max(0, int(cfg.get_session_timeout_seconds()))
+                if hasattr(cfg, 'get_session_timeout_seconds')
+                else max(0, previous_timeout_minutes * 60)
+            )
+            current_status = _safe_get_status()
+            _apply_duration_controls_from_seconds(
+                restored_seconds,
+                bool(current_status.get('is_active', False)),
+            )
+            _request_view_refresh(current_status)
+            ui.notify('Failed to save measurement duration', color='negative')
+
         if not enable_limit.value:
             # Limit deaktiviert ⇒ 0 Minuten speichern
-            config.measurement.session_timeout_minutes = 0
-            save_global_config()
+            if hasattr(cfg, 'set_session_timeout_seconds'):
+                cfg.set_session_timeout_seconds(0)
+            else:
+                cfg.session_timeout_minutes = 0
+                cfg.session_timeout_seconds = 0
+            if not save_global_config():
+                _restore_previous_timeout()
+                return
             if measurement_controller is not None:
-                measurement_controller.config = config.measurement
+                measurement_controller.update_config(cfg)
+            _request_view_refresh()
             return
 
-        unit = duration_unit.value if duration_unit.value in {'s', 'min', 'h'} else 's'
-        mult = {'s': 1, 'min': 60, 'h': 3600}[unit]
-        seconds = int(duration_input.value * mult)
-        if unit == 'h':
-            seconds = max(seconds, MIN_HOUR_SEC)
-        seconds = max(seconds, MIN_BASE_SEC)  # Minimum Dauer einhalten
+        unit = _get_duration_unit(duration_unit.value)
+        raw_value = _coerce_duration_value(duration_input.value, default=_get_unit_min_value(unit))
+        seconds = max(MIN_DURATION_SECONDS, int(round(raw_value * DURATION_UNIT_SECONDS[unit])))
 
-        cfg = config.measurement
-        cfg.session_timeout_minutes = max(5, seconds // 60)  # Minimum 5 Minuten
-        save_global_config()
+        if hasattr(cfg, 'set_session_timeout_seconds'):
+            cfg.set_session_timeout_seconds(seconds)
+        else:
+            cfg.session_timeout_seconds = seconds
+            cfg.session_timeout_minutes = (seconds + 59) // 60
+
+        if hasattr(cfg, 'get_session_timeout_seconds'):
+            normalized_seconds = max(0, int(cfg.get_session_timeout_seconds()))
+        else:
+            normalized_seconds = max(0, int(getattr(cfg, 'session_timeout_minutes', 0) or 0) * 60)
+        duration_input.value = _seconds_to_duration_value(normalized_seconds, unit)
+        if not save_global_config():
+            _restore_previous_timeout()
+            return
         if measurement_controller is not None:
-            measurement_controller.config = cfg
+            measurement_controller.update_config(cfg)
+        _request_view_refresh()
 
 
     # -------------------------- UI ------------------------------
@@ -200,32 +494,23 @@ def create_measurement_card(
             with ui.column().classes('gap-1 flex-1'):
                 with ui.row().classes('items-center gap-2'):
                     enable_limit = ui.checkbox(
-                        'Max Duration', value=config.measurement.session_timeout_minutes > 0
+                        'Max Duration', value=configured_timeout_seconds > 0
                     ).props('dense').tooltip('Enable automatic session timeout')
                 
                 with ui.row().classes('items-center gap-2 no-wrap'):
                     duration_input = ui.number(
-                        value=(
-                            config.measurement.session_timeout_minutes * 60
-                            if config.measurement.session_timeout_minutes > 0
-                            else 60
+                        value=_seconds_to_duration_value(
+                            configured_timeout_seconds or DEFAULT_DURATION_SECONDS,
+                            initial_duration_unit,
                         ),
-                        min=MIN_BASE_SEC,
-                        format='%.0f',
+                        min=_get_unit_min_value(initial_duration_unit),
+                        step=_get_duration_step(initial_duration_unit),
                     ).props('dense outlined hide-bottom-space').classes('w-24')
 
                     duration_unit = ui.select(
-                        options=['s', 'min', 'h'],
-                        value='s',
+                        options=DURATION_UNIT_OPTIONS,
+                        value=initial_duration_unit,
                     ).props('dense outlined options-dense').classes('w-20')
-
-            # Respect enable/disable state
-            if enable_limit.value:
-                duration_input.enable()
-                duration_unit.enable()
-            else:
-                duration_input.disable()
-                duration_unit.disable()
 
             update_duration_ui()
 
@@ -235,9 +520,15 @@ def create_measurement_card(
         with ui.column().classes('w-full items-center gap-1 mb-4'):
             timer_label = ui.label('-').classes('text-h4 font-mono font-bold text-primary')
             
-            with ui.row().classes('w-full items-center gap-2 no-wrap') as progress_row:
-                progress = ui.linear_progress(value=0.0, color='primary', show_value=False).classes('flex-1 h-2 rounded')
-                percent_label = ui.label('0 %').classes('text-caption font-mono min-w-[3rem] text-right')
+            with ui.row().classes('w-full items-center gap-3 no-wrap') as progress_row:
+                elapsed_label = ui.label('-').classes('text-caption font-mono min-w-[5.5rem] text-grey-7')
+                with ui.element('div').classes('flex-1 w-full min-w-0'):
+                    progress = (
+                        ui.linear_progress(value=0.0, size='12px', color='primary', show_value=False)
+                        .props('rounded track-color=grey-4')
+                        .classes('w-full')
+                    )
+                remaining_label = ui.label('-').classes('text-caption font-mono min-w-[5.5rem] text-right text-grey-7')
             progress_row.visible = False
 
         ui.separator().classes('mb-4')
@@ -253,124 +544,128 @@ def create_measurement_card(
             ui.label('Last Run:').classes('text-caption font-bold text-grey-7')
             last_label = ui.label('-').classes('text-caption text-grey')
 
-        ui.separator().classes('my-4')
+        if show_recipients:
+            ui.separator().classes('my-4')
 
-        # Recipient Groups (Async Load)
-        groups_select: Optional[ui.select] = None
-        _last_groups_opts: list[str] = []
-        groups_build_lock = asyncio.Lock()
-        apply_btn: Optional[ui.button] = None
+            # Recipient Groups (Async Load)
+            groups_select: Optional[ui.select] = None
+            _last_groups_opts: list[str] = []
+            groups_build_lock = asyncio.Lock()
+            apply_btn: Optional[ui.button] = None
 
-        def _update_apply_groups_state() -> None:
-            nonlocal groups_select, apply_btn
-            try:
-                if apply_btn is None or groups_select is None:
-                    return
-                conf = get_global_config()
-                if not conf or not getattr(conf, 'email', None):
-                    apply_btn.disable()
-                    return
-                raw_val = getattr(groups_select, 'value', [])
-                selected = set((raw_val or [])) if isinstance(raw_val, (list, tuple, set)) else {raw_val}
-                current = set(getattr(conf.email, 'active_groups', []) or [])
-                if selected == current:
-                    apply_btn.disable()
-                else:
-                    apply_btn.enable()
-            except Exception as e:
-                logger.error(f"Error updating apply groups state: {e}")
+            def _update_apply_groups_state() -> None:
+                nonlocal groups_select, apply_btn
+                try:
+                    if apply_btn is None or groups_select is None:
+                        return
+                    conf = get_global_config()
+                    if not conf or not getattr(conf, 'email', None):
+                        apply_btn.disable()
+                        return
+                    raw_val = getattr(groups_select, 'value', [])
+                    selected = set((raw_val or [])) if isinstance(raw_val, (list, tuple, set)) else {raw_val}
+                    current = set(getattr(conf.email, 'active_groups', []) or [])
+                    if selected == current:
+                        apply_btn.disable()
+                    else:
+                        apply_btn.enable()
+                except Exception as e:
+                    logger.error(f"Error updating apply groups state: {e}")
 
-        with ui.column().classes('w-full gap-2') as groups_container:
-            ui.label('Active Recipients').classes('text-caption font-bold text-grey-7')
-            loading_lbl = ui.label('Loading...').classes('text-caption text-grey italic')
+            with ui.column().classes('w-full gap-2') as groups_container:
+                ui.label('Active Recipients').classes('text-caption font-bold text-grey-7')
+                loading_lbl = ui.label('Loading...').classes('text-caption text-grey italic')
 
-            async def _build_groups_ui() -> None:
-                nonlocal groups_select, _last_groups_opts, apply_btn
-                async with groups_build_lock:
-                    cfg = await asyncio.to_thread(get_global_config)
-                    opts = list(getattr(cfg.email, 'groups', {}).keys()) if cfg and cfg.email else []
-                    vals = list(getattr(cfg.email, 'active_groups', [])) if cfg and cfg.email else []
-                    _last_groups_opts = list(opts)
-                    
-                    try:
-                        with groups_container:
-                            loading_lbl.delete()
-                            with ui.row().classes('w-full items-center gap-2 no-wrap'):
-                                groups_select = ui.select(
-                                    options=opts,
-                                    value=vals,
-                                    multiple=True,
-                                    label='Select Groups'
-                                ).props('dense outlined use-chips').classes('flex-1')
+                async def _build_groups_ui() -> None:
+                    nonlocal groups_select, _last_groups_opts, apply_btn
+                    async with groups_build_lock:
+                        cfg = await asyncio.to_thread(get_global_config)
+                        opts = list(getattr(cfg.email, 'groups', {}).keys()) if cfg and cfg.email else []
+                        vals = list(getattr(cfg.email, 'active_groups', [])) if cfg and cfg.email else []
+                        _last_groups_opts = list(opts)
+                        
+                        try:
+                            with groups_container:
+                                loading_lbl.delete()
+                                with ui.row().classes('w-full items-center gap-2 no-wrap'):
+                                    groups_select = ui.select(
+                                        options=opts,
+                                        value=vals,
+                                        multiple=True,
+                                        label='Select Groups'
+                                    ).props('dense outlined use-chips').classes('flex-1')
 
-                                apply_btn = ui.button(icon='check', on_click=lambda: apply_groups()).props('round dense flat color=primary').tooltip('Apply Changes')
+                                    apply_btn = ui.button(icon='check', on_click=lambda: apply_groups()).props('round dense flat color=primary').tooltip('Apply Changes')
 
-                            def _on_groups_change(_: Any = None) -> None:
+                                def _on_groups_change(_: Any = None) -> None:
+                                    _update_apply_groups_state()
+                                groups_select.on('update:model-value', _on_groups_change)
+
+                                def apply_groups() -> None:
+                                    nonlocal apply_btn, groups_select
+                                    try:
+                                        button = apply_btn
+                                        select = groups_select
+                                        if button is None or select is None:
+                                            return
+
+                                        button.disable()
+                                        conf = get_global_config()
+                                        if not conf or not getattr(conf, 'email', None):
+                                            return
+                                        
+                                        raw_val = getattr(select, 'value', [])
+                                        selected = list(raw_val) if isinstance(raw_val, (list, tuple, set)) else []
+                                        
+                                        conf.email.active_groups = selected
+                                        save_global_config()
+                                        if email_system:
+                                            email_system.refresh_config()
+                                        
+                                        ui.notify('Recipients updated', color='positive', position='bottom-right')
+                                        _update_apply_groups_state()
+                                    except Exception as e:
+                                        logger.error(f"Failed to apply groups: {e}")
+                                        ui.notify('Failed to update recipients', color='negative')
+                                    finally:
+                                        _update_apply_groups_state()
+
                                 _update_apply_groups_state()
-                            groups_select.on('update:model-value', _on_groups_change)
+                                
+                        except Exception as e:
+                            logger.error(f"Error building groups UI: {e}")
 
-                            def apply_groups() -> None:
-                                nonlocal apply_btn, groups_select
-                                try:
-                                    button = apply_btn
-                                    select = groups_select
-                                    if button is None or select is None:
-                                        return
+                ui.timer(0.0, lambda: schedule_bg(_build_groups_ui(), name='build_groups_ui'), once=True)
 
-                                    button.disable()
-                                    conf = get_global_config()
-                                    if not conf or not getattr(conf, 'email', None):
-                                        return
-                                    
-                                    raw_val = getattr(select, 'value', [])
-                                    selected = list(raw_val) if isinstance(raw_val, (list, tuple, set)) else []
-                                    
-                                    conf.email.active_groups = selected
-                                    save_global_config()
-                                    if email_system:
-                                        email_system.refresh_config()
-                                    
-                                    ui.notify('Recipients updated', color='positive', position='bottom-right')
-                                    _update_apply_groups_state()
-                                except Exception as e:
-                                    logger.error(f"Failed to apply groups: {e}")
-                                    ui.notify('Failed to update recipients', color='negative')
-                                finally:
-                                    _update_apply_groups_state()
+            # Periodically refresh groups options
+            def _refresh_groups_ui() -> Any:
+                nonlocal _last_groups_opts, groups_select
+                try:
+                    if groups_select is None:
+                        return
+                    conf = get_global_config()
+                    if not conf or not getattr(conf, 'email', None):
+                        return
 
-                            _update_apply_groups_state()
-                            
-                    except Exception as e:
-                        logger.error(f"Error building groups UI: {e}")
-
-            ui.timer(0.0, lambda: schedule_bg(_build_groups_ui(), name='build_groups_ui'), once=True)
-
-        # Periodically refresh groups options
-        def _refresh_groups_ui() -> Any:
-            nonlocal _last_groups_opts, groups_select
-            try:
-                if groups_select is None: return
-                conf = get_global_config()
-                if not conf or not getattr(conf, 'email', None): return
-
-                new_opts = list(getattr(conf.email, 'groups', {}).keys())
-                if new_opts != _last_groups_opts:
-                    configured_active = list(getattr(conf.email, 'active_groups', []) or [])
-                    filtered_active = [g for g in configured_active if g in new_opts]
-                    groups_select.value = filtered_active
-                    groups_select.options = new_opts
-                    groups_select.update()
-                    _last_groups_opts = list(new_opts)
-                _update_apply_groups_state()
-            except Exception:
-                return True
-        ui.timer(5.0, _refresh_groups_ui)
+                    new_opts = list(getattr(conf.email, 'groups', {}).keys())
+                    if new_opts != _last_groups_opts:
+                        configured_active = list(getattr(conf.email, 'active_groups', []) or [])
+                        filtered_active = [g for g in configured_active if g in new_opts]
+                        groups_select.value = filtered_active
+                        groups_select.options = new_opts
+                        groups_select.update()
+                        _last_groups_opts = list(new_opts)
+                    _update_apply_groups_state()
+                except Exception:
+                    logger.debug('Groups refresh check failed', exc_info=True)
+                    return True
+            ui.timer(5.0, _refresh_groups_ui)
 
 
     # ----------------------- Event-Logik ------------------------
 
     is_updating = False
-    prev_unit: str = duration_unit.value if duration_unit.value in {'s', 'min', 'h'} else 's'
+    prev_unit: str = _get_duration_unit(duration_unit.value)
 
     def on_duration_input_change(_: Any) -> None:
         if is_updating:
@@ -380,28 +675,17 @@ def create_measurement_card(
 
     def on_duration_unit_change(e: Any) -> None:
         nonlocal is_updating, prev_unit
-        units = {'s': 1, 'min': 60, 'h': 3600}
-        old_unit = prev_unit if prev_unit in units else 's'
-        new_unit = duration_unit.value if duration_unit.value in units else 's'
+        old_unit = _get_duration_unit(prev_unit)
+        new_unit = _get_duration_unit(duration_unit.value)
 
-        seconds = 0.0
-        if duration_input.value is not None:
-            try:
-                seconds = float(duration_input.value) * units[old_unit]
-            except Exception:
-                seconds = 0.0
-
-        min_val = (MIN_BASE_SEC / units[new_unit])
-        if new_unit == 'h':
-            min_val = 1
-
-        new_value = seconds / units[new_unit] if seconds > 0 else min_val
-        if new_value < min_val:
-            new_value = min_val
+        current_value = _coerce_duration_value(duration_input.value, default=_get_unit_min_value(old_unit))
+        seconds = max(MIN_DURATION_SECONDS, int(round(current_value * DURATION_UNIT_SECONDS[old_unit])))
+        min_val = _get_unit_min_value(new_unit)
+        new_value = max(_seconds_to_duration_value(seconds, new_unit), min_val)
 
         is_updating = True
         prev_unit = new_unit
-        duration_input.value = new_value
+        duration_input.value = _round_duration_value(new_value, new_unit)
         update_duration_ui(e)
         is_updating = False
 
@@ -409,40 +693,53 @@ def create_measurement_card(
             persist_settings()
 
     def toggle_duration(_: Any) -> None:
-        if not measurement_controller.get_session_status()['is_active']:
-            if enable_limit.value:
-                duration_input.enable()
-                duration_unit.enable()
-            else:
-                duration_input.disable()
-                duration_unit.disable()
-
+        sync_duration_controls(bool(_safe_get_status().get('is_active', False)))
+        update_duration_ui()
+        persist_settings()
 
     def start_stop(_: Any) -> None:
         nonlocal last_measurement
-        status = measurement_controller.get_session_status()
+        if measurement_controller is None:
+            logger.warning('Measurement start/stop requested but no controller is available')
+            ui.notify('Measurement controller unavailable', color='negative')
+            return
+        status = _safe_get_status()
+        session_active = bool(status.get('is_active', False))
+        logger.info(
+            'Measurement button clicked: action=%s controller_id=%s active=%s',
+            'stop' if session_active else 'start',
+            id(measurement_controller),
+            session_active,
+        )
         if status['is_active']:
-            measurement_controller.stop_session(reason='manual')
+            stopped = measurement_controller.stop_session(reason='manual')
+            if not stopped:
+                logger.warning('Measurement stop request returned False for controller_id=%s', id(measurement_controller))
         else:
-            measurement_controller.start_session()
-            last_measurement = datetime.now()
-        update_view()
-        style_start_button()
+            started = measurement_controller.start_session()
+            if started:
+                logger.info('Measurement start request succeeded for controller_id=%s', id(measurement_controller))
+                started_status = _safe_get_status()
+                last_measurement = _get_session_start_time(started_status) or datetime.now()
+            else:
+                logger.warning('Measurement start request returned False for controller_id=%s', id(measurement_controller))
+        current_status = _safe_get_status()
+        _request_view_refresh(current_status)
+        style_start_button(current_status)
 
 
     def tick() -> None:
-        try:
-            measurement_controller.check_session_timeout()
-        except Exception:
-            logger.exception('measurement tick failed')
-        update_view.refresh()
-        style_start_button()
+        """Per-client UI refresh. Session timeout is checked centrally by the controller."""
+        if measurement_controller is None:
+            return
+        current_status = _safe_get_status()
+        _request_view_refresh(current_status)
+        style_start_button(current_status)
 
 
     # --------------------- Handler registrieren -----------------
     start_stop_btn.on('click', start_stop)
     enable_limit.on('update:model-value', toggle_duration)
-    enable_limit.on('update:model-value', lambda e: persist_settings())
      
     duration_input.on('blur', lambda e: persist_settings() if enable_limit.value else None)
     duration_input.on('keydown.enter', lambda e: persist_settings() if enable_limit.value else None)
@@ -451,5 +748,11 @@ def create_measurement_card(
 
     ui.timer(1.0, tick)
 
-    persist_settings()
-    style_start_button()
+    sync_duration_controls(bool(initial_status.get('is_active', False)))
+    update_duration_ui()
+    _request_view_refresh(initial_status)
+    style_start_button(initial_status)
+    sync_duration_controls(bool(initial_status.get('is_active', False)))
+    update_duration_ui()
+    _request_view_refresh(initial_status)
+    style_start_button(initial_status)

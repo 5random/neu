@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
+import re
 import threading
 import time
-import logging
+from collections import deque
 from datetime import datetime, timedelta
 from typing import Optional, Callable, TYPE_CHECKING, Any
 from concurrent.futures import ThreadPoolExecutor
@@ -23,7 +25,24 @@ from .config import get_logger
 
 def resolve_measurement_stop_event(reason: str | None) -> str:
     """Map a stop reason to the user-facing measurement lifecycle event."""
-    return "end" if (reason or "").lower() == "timeout" else "stop"
+    normalized_reason = (reason or "").lower()
+    return "end" if normalized_reason in {"timeout", "inactivity"} else "stop"
+
+
+def _sanitize_alert_filename_component(
+    value: object,
+    *,
+    fallback: str = "session",
+    max_length: int = 64,
+) -> str:
+    """Return a safe filename component derived from a session identifier."""
+    component = re.sub(r"[^A-Za-z0-9_-]", "_", str(value))
+    component = re.sub(r"_+", "_", component).strip("_")
+    if not component:
+        return fallback
+
+    truncated = component[:max_length].rstrip("_")
+    return truncated or fallback
 
 
 class MeasurementController:
@@ -54,6 +73,7 @@ class MeasurementController:
         self.is_session_active = False
         self.session_id: Optional[str] = None
         self.session_start_time: Optional[datetime] = None
+        self.recent_motion_detected = False
         
         # -- Alert State --
         self.last_motion_time: Optional[datetime] = None
@@ -69,17 +89,47 @@ class MeasurementController:
         self._event_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="MeasCtrlEvents")
         
         # -- Motion History for Debouncing --
-        self._motion_history: list[tuple[float, bool]] = []
+        self._motion_history: deque[tuple[float, bool]] = deque()
         self._history_lock = threading.Lock()
+        self._last_motion_summary_log_monotonic: Optional[float] = None
+        self._motion_summary_event_count = 0
+        self._motion_summary_motion_event_count = 0
         
         # -- GUI Motion Callbacks --
         self._motion_callbacks: list[Callable[[Any], None]] = []
         self._callbacks_lock = threading.Lock()
+        self._camera_motion_listener: Optional[Callable[[np.ndarray, MotionResult], None]] = None
+        self._timeout_stop_event = threading.Event()
+        self._timeout_thread = threading.Thread(
+            target=self._timeout_monitor_loop,
+            name="MeasCtrl-Timeout",
+            daemon=True,
+        )
+        self._timeout_thread.start()
 
         # Callbacks registrieren
         if self.camera:
-            self.camera.enable_motion_detection(self.on_motion_detected)
+            self._camera_motion_listener = self.on_motion_detected
+            self.camera.enable_motion_detection(self._camera_motion_listener)
             self.logger.info("Motion detection callback registered")
+
+        if getattr(self.config, 'auto_start', False):
+            try:
+                self.start_session()
+                self.logger.info("Measurement auto-start activated")
+            except Exception as exc:
+                self.logger.error(f"Failed to auto-start measurement session: {exc}")
+
+    def update_config(self, new_config: MeasurementConfig) -> None:
+        """Update the measurement config used by the running controller."""
+        with self.session_lock:
+            self.config = new_config
+        self.logger.debug("Measurement config updated")
+
+    def _get_config_snapshot(self) -> MeasurementConfig:
+        """Return a stable config reference for the duration of an operation."""
+        with self.session_lock:
+            return self.config
 
     def register_motion_callback(self, callback: Callable[[Any], None]) -> None:
         """Register a callback to be called when motion events are processed.
@@ -90,6 +140,15 @@ class MeasurementController:
             if callback not in self._motion_callbacks:
                 self._motion_callbacks.append(callback)
                 self.logger.debug(f"Registered motion callback: {callback}")
+
+    def unregister_motion_callback(self, callback: Callable[[Any], None]) -> None:
+        """Remove a previously registered GUI motion callback."""
+        with self._callbacks_lock:
+            try:
+                self._motion_callbacks.remove(callback)
+                self.logger.debug(f"Unregistered motion callback: {callback}")
+            except ValueError:
+                return
 
     def _reset_alert_tracking_locked(self) -> None:
         self._alert_generation += 1
@@ -110,6 +169,23 @@ class MeasurementController:
         """Return whether an in-flight alert should abort based on current session state."""
         with self.session_lock:
             return not self._is_alert_task_current_locked(session_id, alert_generation)
+
+    def _get_session_timeout_seconds(self, *, config: MeasurementConfig | None = None) -> int:
+        """Return the effective hard session timeout in seconds."""
+        if config is None:
+            config = self._get_config_snapshot()
+        if hasattr(config, "get_session_timeout_seconds"):
+            try:
+                return max(0, int(config.get_session_timeout_seconds()))
+            except Exception:
+                self.logger.warning("Invalid session timeout seconds configuration; falling back to minutes")
+
+        raw_minutes = getattr(config, "session_timeout_minutes", 0)
+        try:
+            return max(0, int(raw_minutes or 0) * 60)
+        except (TypeError, ValueError):
+            self.logger.warning("Invalid session_timeout_minutes configuration: %r", raw_minutes)
+            return 0
 
     def _sync_email_alert_state(self, *, max_attempts: int = 3) -> None:
         """Synchronize the email alert session state without holding session_lock."""
@@ -176,6 +252,9 @@ class MeasurementController:
             self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
             self.is_session_active = True
             self.session_start_time = datetime.now()
+            self._last_motion_summary_log_monotonic = None
+            self._motion_summary_event_count = 0
+            self._motion_summary_motion_event_count = 0
             
             # Reset Alert State
             self.last_motion_time = datetime.now()
@@ -213,7 +292,10 @@ class MeasurementController:
             current_session_id = self.session_id
             current_start_time = self.session_start_time
             stop_event = resolve_measurement_stop_event(reason)
-             
+            self._last_motion_summary_log_monotonic = None
+            self._motion_summary_event_count = 0
+            self._motion_summary_motion_event_count = 0
+              
             self._reset_alert_tracking_locked()
             self.is_session_active = False
             self.session_id = None
@@ -237,36 +319,33 @@ class MeasurementController:
         now_ts = time.time()
         with self._history_lock:
             self._motion_history.append((now_ts, result.motion_detected))
+            self._motion_summary_event_count += 1
+            if result.motion_detected:
+                self._motion_summary_motion_event_count += 1
             # Cleanup old history (> 10s)
             cutoff = now_ts - 10.0
             while self._motion_history and self._motion_history[0][0] < cutoff:
-                self._motion_history.pop(0)
+                self._motion_history.popleft()
 
         # 2. Check Session Logic and Process Motion within a single lock acquisition
         # to prevent race conditions where session is stopped between checks
+        session_active = False
         with self.session_lock:
-            if not self.is_session_active:
-                return
-            
+            self.recent_motion_detected = bool(result.motion_detected)
+            session_active = self.is_session_active
             current_session_id = self.session_id
-            
-            if current_session_id is None:
-                return
 
             # 3. Process Motion (within lock to ensure consistency)
-            if result.motion_detected:
+            if session_active and current_session_id is not None and result.motion_detected:
                 self.last_motion_time = datetime.now()
                 if self.alert_triggered:
                     self.logger.info("Motion detected - Alert reset")
                 self._reset_alert_tracking_locked()
-            else:
+            elif session_active and current_session_id is not None:
                 # Check for Alert Condition (pass session state captured under lock)
                 self._check_alert_trigger_locked(current_session_id)
 
-        # 4. Check Session Timeout (outside main lock to avoid deadlock)
-        self.check_session_timeout()
-        
-        # 5. Notify GUI callbacks (outside locks for safety, using snapshot)
+        # 4. Notify GUI callbacks (outside locks for safety, using snapshot)
         callbacks_snapshot = []
         with self._callbacks_lock:
             callbacks_snapshot = list(self._motion_callbacks)
@@ -277,8 +356,56 @@ class MeasurementController:
             except Exception as exc:
                 self.logger.debug(f"Motion callback error: {exc}")
 
+        self._maybe_log_motion_summary()
+
+    def _maybe_log_motion_summary(self) -> None:
+        """Emit periodic motion summary logs when enabled in the config."""
+        config = self._get_config_snapshot()
+        if not bool(getattr(config, 'enable_motion_summary_logs', False)):
+            return
+
+        interval_seconds = max(
+            5,
+            int(getattr(config, 'motion_summary_interval_seconds', 60) or 60),
+        )
+        now_monotonic = time.monotonic()
+        last_log = self._last_motion_summary_log_monotonic
+        if last_log is not None and (now_monotonic - last_log) < interval_seconds:
+            return
+
+        with self.session_lock:
+            session_active = self.is_session_active
+            session_id = self.session_id
+            recent_motion = self.recent_motion_detected
+            last_motion_time = self.last_motion_time
+
+        if not session_active:
+            return
+
+        with self._history_lock:
+            total_events = self._motion_summary_event_count
+            motion_events = self._motion_summary_motion_event_count
+            self._motion_summary_event_count = 0
+            self._motion_summary_motion_event_count = 0
+
+        time_since_motion = None
+        if last_motion_time is not None:
+            time_since_motion = (datetime.now() - last_motion_time).total_seconds()
+
+        self.logger.info(
+            "Motion summary | active=%s session_id=%s recent_motion=%s time_since_motion=%.1fs events=%s motion_events=%s",
+            session_active,
+            session_id or "-",
+            recent_motion,
+            time_since_motion if time_since_motion is not None else -1.0,
+            total_events,
+            motion_events,
+        )
+        self._last_motion_summary_log_monotonic = now_monotonic
+
     def _check_alert_trigger_locked(self, session_id: str) -> None:
         """Check whether the alert condition is active and dispatch if needed."""
+        config = self._get_config_snapshot()
         # With no email system configured, a raised alert only affects local state/history.
         # Returning early avoids re-processing the same no-motion condition on every frame.
         if self.alert_triggered and self.email_system is None:
@@ -290,7 +417,7 @@ class MeasurementController:
 
         time_since_motion = (datetime.now() - self.last_motion_time).total_seconds()
 
-        if time_since_motion >= self.config.alert_delay_seconds:
+        if time_since_motion >= config.alert_delay_seconds:
             if self._confirm_no_motion(duration=2.0):
                 if not self.is_session_active or self.session_id != session_id:
                     self.logger.debug("Session ended before alert could be triggered")
@@ -319,7 +446,7 @@ class MeasurementController:
                 if self.email_system is None and self._last_alert_attempt_monotonic is not None:
                     return
 
-                check_interval = max(0.1, float(getattr(self.config, 'alert_check_interval', 5.0)))
+                check_interval = max(0.1, float(getattr(config, 'alert_check_interval', 5.0)))
                 now_monotonic = time.monotonic()
                 if self._last_alert_attempt_monotonic is not None:
                     if (now_monotonic - self._last_alert_attempt_monotonic) < check_interval:
@@ -337,7 +464,7 @@ class MeasurementController:
         
         with self._history_lock:
             if not self._motion_history:
-                return True # No data -> assume no motion? Or wait? Assume yes for safety.
+                return False
             
             # Check if ANY motion occurred in the last 'duration' seconds
             for ts, motion in reversed(self._motion_history):
@@ -345,13 +472,6 @@ class MeasurementController:
                     break
                 if motion:
                     return False
-            
-            # If history is empty, we can't confirm "no motion". 
-            # Safe default: assume motion might be happening or system just started.
-            if not self._motion_history:
-                # no history -> cannot rule out motion, treat as motion possible
-                return False
-                
         return True
 
     def trigger_alert_sync(self, session_id: str, alert_generation: int) -> bool:
@@ -424,8 +544,10 @@ class MeasurementController:
         email_sent: bool,
     ) -> None:
         """Saves the alert event to a JSON history file and saves the image."""
-        history_dir = get_history_dir(self.config)
+        config = self._get_config_snapshot()
+        history_dir = get_history_dir(config)
         history_dir.mkdir(parents=True, exist_ok=True)
+        resolved_history_dir = history_dir.resolve(strict=False)
         
         timestamp = datetime.now()
         ts_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
@@ -433,20 +555,31 @@ class MeasurementController:
         
         image_path = ""
         if frame is not None:
-            image_filename = f"alert_{filename_ts}_{session_id}.jpg"
+            safe_session_id = _sanitize_alert_filename_component(session_id)
+            image_filename = f"alert_{filename_ts}_{safe_session_id}.jpg"
             image_full_path = history_dir / image_filename
+            resolved_image_path = image_full_path.resolve(strict=False)
             try:
-                # Convert RGB to BGR if needed? Camera usually returns BGR for OpenCV
-                # Assuming frame is BGR from cv2.VideoCapture
-                if cv2.imwrite(str(image_full_path), frame):
-                    image_path = to_history_image_storage_path(image_full_path, history_dir)
-                else:
-                    self.logger.error(
-                        f"Error saving alert image: cv2.imwrite returned False for {image_full_path}. "
-                        "Possible causes include disk full, invalid path, insufficient permissions, or invalid image data."
-                    )
-            except Exception as e:
-                self.logger.error(f"Error saving alert image: {e}")
+                resolved_image_path.relative_to(resolved_history_dir)
+            except ValueError:
+                self.logger.error(
+                    "Refusing to save alert image outside history directory: session_id=%r path=%s",
+                    session_id,
+                    resolved_image_path,
+                )
+            else:
+                try:
+                    # Convert RGB to BGR if needed? Camera usually returns BGR for OpenCV
+                    # Assuming frame is BGR from cv2.VideoCapture
+                    if cv2.imwrite(str(resolved_image_path), frame):
+                        image_path = to_history_image_storage_path(resolved_image_path, history_dir)
+                    else:
+                        self.logger.error(
+                            f"Error saving alert image: cv2.imwrite returned False for {resolved_image_path}. "
+                            "Possible causes include disk full, invalid path, insufficient permissions, or invalid image data."
+                        )
+                except Exception as e:
+                    self.logger.error(f"Error saving alert image: {e}")
 
         event_data = {
             "timestamp": ts_str,
@@ -465,16 +598,44 @@ class MeasurementController:
 
     def check_session_timeout(self) -> None:
         """Prüft ob die maximale Session-Dauer erreicht ist."""
+        stop_reason: str | None = None
         with self.session_lock:
             if not self.is_session_active or not self.session_start_time:
                 return
 
-            # Max duration check
-            if self.config.session_timeout_minutes > 0:
-                duration = datetime.now() - self.session_start_time
-                if duration.total_seconds() >= self.config.session_timeout_minutes * 60:
+            config = self.config
+            now = datetime.now()
+
+            inactivity_timeout_minutes = max(
+                0,
+                int(getattr(config, 'inactivity_timeout_minutes', 0) or 0),
+            )
+            if (
+                inactivity_timeout_minutes > 0
+                and self.last_motion_time is not None
+            ):
+                inactivity_duration = now - self.last_motion_time
+                if inactivity_duration.total_seconds() >= inactivity_timeout_minutes * 60:
+                    self.logger.info("Session inactivity timeout reached")
+                    stop_reason = "inactivity"
+
+            session_timeout_seconds = self._get_session_timeout_seconds(config=config)
+            if stop_reason is None and session_timeout_seconds > 0:
+                duration = now - self.session_start_time
+                if duration.total_seconds() >= session_timeout_seconds:
                     self.logger.info("Session timeout reached")
-                    self.stop_session(reason="timeout")
+                    stop_reason = "timeout"
+
+        if stop_reason is not None:
+            self.stop_session(reason=stop_reason)
+
+    def _timeout_monitor_loop(self) -> None:
+        """Background loop that checks session timeout once per second."""
+        while not self._timeout_stop_event.wait(1.0):
+            try:
+                self.check_session_timeout()
+            except Exception:
+                self.logger.exception("Timeout monitoring check failed")
 
     def get_session_status(self) -> dict:
         """Gibt den aktuellen Status für die GUI zurück."""
@@ -484,33 +645,56 @@ class MeasurementController:
             sid = self.session_id
             last_motion_time = self.last_motion_time
             alert_triggered = self.alert_triggered
-        
-        duration_str = ""
+            recent_motion_detected = self.recent_motion_detected
+            config = self.config
+
+        duration: timedelta | None = None
         if active and start_time:
             duration = datetime.now() - start_time
-            # Format HH:MM:SS
-            total_seconds = int(duration.total_seconds())
-            hours, remainder = divmod(total_seconds, 3600)
-            minutes, seconds = divmod(remainder, 60)
-            duration_str = f"{hours:02}:{minutes:02}:{seconds:02}"
-            
+
+        session_timeout_seconds = self._get_session_timeout_seconds(config=config)
+        session_timeout_minutes = max(
+            0,
+            int(getattr(config, 'session_timeout_minutes', 0) or 0),
+        )
+        if session_timeout_seconds > 0 and session_timeout_minutes <= 0:
+            session_timeout_minutes = (session_timeout_seconds + 59) // 60
+
         time_since_motion = 0.0
         if last_motion_time:
             time_since_motion = (datetime.now() - last_motion_time).total_seconds()
 
+        alert_countdown: float | None = None
+        if active:
+            alert_countdown = max(
+                0.0,
+                float(getattr(config, 'alert_delay_seconds', 0) or 0) - time_since_motion,
+            )
+
         return {
             "is_active": active,
             "session_id": sid,
-            "duration": duration_str,
+            "session_start_time": start_time,
+            "duration": duration,
             "alert_triggered": alert_triggered,
+            "session_timeout_seconds": session_timeout_seconds,
+            "session_timeout_minutes": session_timeout_minutes,
+            "recent_motion_detected": recent_motion_detected,
             "time_since_motion": time_since_motion,
-            "alert_countdown": max(0, self.config.alert_delay_seconds - time_since_motion)
+            "alert_countdown": alert_countdown
         }
 
     def cleanup(self) -> None:
         """Cleanup resources."""
         self.logger.info("Cleaning up MeasurementController")
+        self._timeout_stop_event.set()
+        if self.camera and self._camera_motion_listener is not None:
+            try:
+                self.camera.disable_motion_detection(self._camera_motion_listener)
+            except Exception as exc:
+                self.logger.debug(f"Failed to unregister camera motion callback: {exc}")
         self.stop_session(reason="shutdown")
+        self._timeout_thread.join(timeout=3.0)
         self._event_executor.shutdown(wait=True, cancel_futures=False)
         self._executor.shutdown(wait=False)
 

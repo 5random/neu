@@ -1,104 +1,44 @@
 from nicegui import ui
-from src.gui.layout import build_header, build_footer
-from src.gui.init import init_application
-from src.gui.instances import get_camera, get_measurement_controller, get_email_system
-from src.gui.default_elements.camfeed import create_camfeed_content
-from src.gui.default_elements.history_card import create_history_card
-from src.gui.default_elements.stats_card import create_stats_card
-from src.gui.default_elements.motion_status_element import create_motion_status_element
-
-# Import from settings_elements to avoid duplication
-from src.gui.settings_elements.camera_settings import create_uvc_content
-from src.gui.settings_elements.motion_detection_settings import create_motiondetection_card
-from src.gui.settings_elements.measurement_settings import create_measurement_card
-from src.gui.settings_elements.email_settings import create_emailcard
-from src.gui.settings_elements.ui_helpers import SECTION_ICONS, create_heading_row
 
 from src.config import get_logger
+from src.gui.default_elements.camfeed import create_camfeed_content
+from src.gui.default_elements.measurementcard import create_measurement_card
+from src.gui.default_elements.motion_sensitivity_card import (
+    create_motion_sensitivity_card,
+)
+from src.gui.default_elements.motion_status_element import create_motion_status_element
+from src.gui.instances import get_camera, get_email_system, get_measurement_controller
+from src.gui.layout import build_footer, build_header
 
 logger = get_logger('gui.index')
+
 
 @ui.page('/')
 def index_page() -> None:
     """Main dashboard page."""
-    
-    # 1. Header
+    camera = get_camera()
+    email_system = get_email_system()
+    measurement_controller = get_measurement_controller()
+
     build_header()
-    
-    # 2. Main Content
-    with ui.column().classes('w-full h-full p-4 gap-4'):
-        
-        # Top Row: Camera Feed & Motion Status
-        with ui.row().classes('w-full items-start gap-4'):
-             # Camera Feed (Left, larger)
-            with ui.column().classes('flex-grow basis-2/3'):
+
+    with ui.column().classes('w-full h-full p-4 gap-4 max-w-[1800px] mx-auto'):
+        with ui.row().classes('w-full items-stretch gap-4 flex-col xl:flex-row'):
+            with ui.column().classes('w-full flex-[1_1_0%] min-w-0'):
                 create_camfeed_content()
-            
-            # Motion Status (Right, smaller)
-            with ui.column().classes('flex-grow basis-1/3'):
-                 create_motion_status_element(camera=get_camera(), measurement_controller=get_measurement_controller())
 
-        # Masonry Grid for other cards
-        with ui.row().classes('w-full items-start gap-4'):
-            
-            # Column 1
-            with ui.column().classes('flex-1 gap-4 min-w-[300px]'):
-                # Stats
-                create_stats_card()
+            with ui.column().classes('w-full xl:w-[420px] xl:min-w-[420px] gap-4'):
+                create_motion_status_element(
+                    camera=camera,
+                    measurement_controller=measurement_controller,
+                )
+                create_motion_sensitivity_card(camera=camera)
+                create_measurement_card(
+                    measurement_controller=measurement_controller,
+                    camera=camera,
+                    email_system=email_system,
+                    show_recipients=False,
+                )
                 
-                # History
-                create_history_card()
 
-            # Column 2
-            with ui.column().classes('flex-1 gap-4 min-w-[300px]'):
-                # Measurement
-                with ui.card().classes('w-full'):
-                    create_heading_row(
-                        'Measurement',
-                        icon=SECTION_ICONS['measurement'],
-                        title_classes='text-h6',
-                        row_classes='items-center gap-2',
-                        icon_classes='text-primary text-xl shrink-0',
-                    )
-                    create_measurement_card(
-                        measurement_controller=get_measurement_controller(),
-                        show_header=False,
-                    )
-                
-                # Motion Settings
-                with ui.card().classes('w-full'):
-                    create_heading_row(
-                        'Motion Detection',
-                        icon=SECTION_ICONS['motion'],
-                        title_classes='text-h6',
-                        row_classes='items-center gap-2',
-                        icon_classes='text-primary text-xl shrink-0',
-                    )
-                    create_motiondetection_card(camera=get_camera(), show_header=False)
-
-            # Column 3
-            with ui.column().classes('flex-1 gap-4 min-w-[300px]'):
-                # UVC Controls
-                with ui.card().classes('w-full'):
-                    create_heading_row(
-                        'Camera Controls',
-                        icon=SECTION_ICONS['camera'],
-                        title_classes='text-h6',
-                        row_classes='items-center gap-2',
-                        icon_classes='text-primary text-xl shrink-0',
-                    )
-                    create_uvc_content(camera=get_camera())
-                
-                # Email Settings
-                with ui.card().classes('w-full'):
-                    create_heading_row(
-                        'Email Settings',
-                        icon=SECTION_ICONS['email'],
-                        title_classes='text-h6',
-                        row_classes='items-center gap-2',
-                        icon_classes='text-primary text-xl shrink-0',
-                    )
-                    create_emailcard(email_system=get_email_system())
-
-    # 3. Footer
     build_footer()
