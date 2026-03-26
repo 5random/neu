@@ -14,6 +14,7 @@ from nicegui.elements.interactive_image import InteractiveImage
 from nicegui.elements.knob import Knob
 
 from src.cam.camera import Camera, MotionDetector
+from src.gui.ui_helpers import SECTION_ICONS, create_heading_row
 from src.gui.util import schedule_bg
 from src.config import get_global_config, save_global_config, get_logger
 
@@ -381,12 +382,24 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
     logger.info("Creating motion detection card")
 
     with ui.card().style("align-self:stretch; flex-direction:column; justify-content:center; align-items:start; display:flex;"):
-        ui.label('Motion Detection Settings').classes('text-h6 font-semibold mb-2')
+        create_heading_row(
+            'Motion Detection Settings',
+            icon=SECTION_ICONS['motion'],
+            title_classes='text-h6 font-semibold mb-2',
+            row_classes='items-center gap-2',
+            icon_classes='text-primary text-xl shrink-0',
+        )
         with ui.column().style("align-self:stretch;").classes('gap-4'):
 
             # ── Sensitivität in eigener Card ────────────────────────────────
             with ui.card().classes('w-full').style("align-items:center;"):
-                ui.label('Sensitivity:').classes('font-semibold mb-2 self-start')
+                create_heading_row(
+                    'Sensitivity',
+                    icon='tune',
+                    title_classes='font-semibold mb-2',
+                    row_classes='items-center gap-2 self-start',
+                    icon_classes='text-primary text-lg shrink-0',
+                )
                 with ui.row().classes('justify-center gap-4'):
                     # Bind change handler after loop is ready to prevent early invocation during build
                     sensitivity_knob = ui.knob(
@@ -418,7 +431,13 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
             # ── ROI-Bereich jetzt ebenfalls in eigener Card ─────────────────
             with ui.card().classes('w-full').style("align-self:stretch;"):
                 with ui.column().classes('w-full gap-2'):
-                    ui.label('Region of Interest (ROI)').classes('font-semibold mb-2 self-start')
+                    create_heading_row(
+                        'Region of Interest (ROI)',
+                        icon='crop_free',
+                        title_classes='font-semibold mb-2',
+                        row_classes='items-center gap-2 self-start',
+                        icon_classes='text-primary text-lg shrink-0',
+                    )
                     # Kopfzeile mit Titel und Edit-Button
                     # Bind ROI toggle handler after loop is ready to prevent early invocation
                     roi_enabled_checkbox = ui.checkbox('ROI enabled', value=True).tooltip('Enable/disable Region of Interest')
@@ -463,7 +482,13 @@ def create_motiondetection_card(camera:Optional[Camera] = None) -> None:
                     roi_editor_container = ui.column().classes('gap-4')
                     with roi_editor_container:
 
-                        ui.label('ROI Editor (Polygon):').classes('font-semibold mb-2 self-start')
+                        create_heading_row(
+                            'ROI Editor (Polygon)',
+                            icon='polyline',
+                            title_classes='font-semibold mb-2',
+                            row_classes='items-center gap-2 self-start',
+                            icon_classes='text-primary text-lg shrink-0',
+                        )
                         ui.label('Click to add points. At least 3 points required.').classes('text-sm text-gray-500')
 
                         frame: np.ndarray | None = None

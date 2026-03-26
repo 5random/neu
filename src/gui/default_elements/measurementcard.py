@@ -6,6 +6,7 @@ from nicegui import ui
 from src.notify import EMailSystem
 from src.config import get_global_config, save_global_config, get_logger
 from src.cam.camera import Camera
+from src.gui.ui_helpers import SECTION_ICONS, create_heading_row
 from src.gui.util import schedule_bg
 from typing import TYPE_CHECKING, Optional, Any
 
@@ -35,6 +36,7 @@ def create_measurement_card(
     camera: Camera | None = None,
     email_system: EMailSystem | None = None,
     show_recipients: bool = True,
+    confirm_stop: bool = False,
     **kwargs: Any,
 ) -> None:
     # Back-compat
@@ -480,7 +482,13 @@ def create_measurement_card(
     with ui.card().classes('w-full flex-1 p-4').style('align-self:stretch; min-height:0;'):
         # Header
         with ui.row().classes('items-center justify-between w-full mb-2'):
-            ui.label('Measurement').classes('text-h6 font-semibold')
+            create_heading_row(
+                'Measurement',
+                icon=SECTION_ICONS['measurement'],
+                title_classes='text-h6 font-semibold',
+                row_classes='items-center gap-2',
+                icon_classes='text-primary text-xl shrink-0',
+            )
             ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings#measurement')) \
                 .props('flat round dense').tooltip('Open measurement settings')
 
@@ -535,13 +543,19 @@ def create_measurement_card(
 
         # Info Grid (Motion, Alert, Last)
         with ui.grid(columns=2).classes('w-full gap-x-4 gap-y-2'):
-            ui.label('Motion:').classes('text-caption font-bold text-grey-7')
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('sensors').classes('text-grey-7 text-sm shrink-0')
+                ui.label('Motion:').classes('text-caption font-bold text-grey-7')
             motion_label = ui.label('No motion').classes('text-caption text-grey')
             
-            ui.label('Status:').classes('text-caption font-bold text-grey-7')
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('notifications_active').classes('text-grey-7 text-sm shrink-0')
+                ui.label('Status:').classes('text-caption font-bold text-grey-7')
             alert_label = ui.label('Monitoring...').classes('text-caption text-grey')
             
-            ui.label('Last Run:').classes('text-caption font-bold text-grey-7')
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('history').classes('text-grey-7 text-sm shrink-0')
+                ui.label('Last Run:').classes('text-caption font-bold text-grey-7')
             last_label = ui.label('-').classes('text-caption text-grey')
 
         if show_recipients:
@@ -573,7 +587,13 @@ def create_measurement_card(
                     logger.error(f"Error updating apply groups state: {e}")
 
             with ui.column().classes('w-full gap-2') as groups_container:
-                ui.label('Active Recipients').classes('text-caption font-bold text-grey-7')
+                create_heading_row(
+                    'Active Recipients',
+                    icon='groups',
+                    title_classes='text-caption font-bold text-grey-7',
+                    row_classes='items-center gap-2',
+                    icon_classes='text-grey-7 text-sm shrink-0',
+                )
                 loading_lbl = ui.label('Loading...').classes('text-caption text-grey italic')
 
                 async def _build_groups_ui() -> None:
@@ -700,6 +720,25 @@ def create_measurement_card(
         update_duration_ui()
         persist_settings()
 
+    def _stop_session() -> None:
+        if measurement_controller is None:
+            return
+        current_status = _safe_get_status()
+        if not bool(current_status.get('is_active', False)):
+            _request_view_refresh(current_status)
+            style_start_button(current_status)
+            return
+        stopped = measurement_controller.stop_session(reason='manual')
+        if not stopped:
+            logger.warning('Measurement stop request returned False for controller_id=%s', id(measurement_controller))
+        current_status = _safe_get_status()
+        _request_view_refresh(current_status)
+        style_start_button(current_status)
+
+    def _confirm_stop_session() -> None:
+        stop_confirm_dialog.close()
+        _stop_session()
+
     def start_stop(_: Any) -> None:
         nonlocal last_measurement
         if measurement_controller is None:
@@ -715,9 +754,10 @@ def create_measurement_card(
             session_active,
         )
         if status['is_active']:
-            stopped = measurement_controller.stop_session(reason='manual')
-            if not stopped:
-                logger.warning('Measurement stop request returned False for controller_id=%s', id(measurement_controller))
+            if confirm_stop:
+                stop_confirm_dialog.open()
+                return
+            _stop_session()
         else:
             started = measurement_controller.start_session()
             if started:
@@ -741,6 +781,15 @@ def create_measurement_card(
 
 
     # --------------------- Handler registrieren -----------------
+    stop_confirm_dialog = ui.dialog()
+    with stop_confirm_dialog:
+        with ui.card().classes('items-start gap-3'):
+            ui.label('Stop measurement?').classes('text-h6')
+            ui.label('The current measurement session will be ended immediately.').classes('text-body2')
+            with ui.row().classes('gap-2'):
+                ui.button('Stop', on_click=_confirm_stop_session).props('color=primary')
+                ui.button('Cancel', on_click=stop_confirm_dialog.close).props('color=negative')
+
     start_stop_btn.on('click', start_stop)
     enable_limit.on('update:model-value', toggle_duration)
      

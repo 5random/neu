@@ -80,13 +80,13 @@ motion_detection:
 # ---------------------------------------------------------------------------
 measurement:
   auto_start: false
-  session_timeout_minutes: 1
+  session_timeout_minutes: 0
   save_alert_images: true
   image_save_path: ./alerts/
   image_format: jpg
   image_quality: 85
   alert_delay_seconds: 300
-  session_timeout_seconds: 60
+  session_timeout_seconds: 0
   max_alerts_per_session: 5
   alert_check_interval: 5.0
   alert_cooldown_seconds: 300

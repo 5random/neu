@@ -11,6 +11,7 @@ from nicegui import app, ui
 
 from src.cam.camera import Camera
 from src.config import get_logger
+from src.gui.default_elements.motion_sensitivity_card import create_motion_sensitivity_controls
 from src.gui.ui_helpers import SECTION_ICONS, create_heading_row
 
 if TYPE_CHECKING:
@@ -221,6 +222,13 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
                                 .classes('text-h6')
             timestamp_label = ui.label('').classes('text-caption') \
                                 .style('white-space: nowrap')
+            with ui.expansion('Sensitivity', value=False, icon='tune').props('expand-separator').classes('w-full mt-2'):
+                with ui.column().classes('w-full gap-2 pt-2'):
+                    create_motion_sensitivity_controls(
+                        camera=camera,
+                        show_header=False,
+                        show_description=True,
+                    )
 
     def refresh_view() -> None:
         with state_lock:
