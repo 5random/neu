@@ -501,122 +501,141 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
             pass
 
     # Layout: Live image with toolbar under it
-    with ui.column().classes('w-full gap-2'):
-        create_heading_row(
-            'Live Camera Feed & ROI',
-            icon='center_focus_strong',
-            title_classes='text-h6 font-semibold',
-            row_classes='items-center gap-2',
-            icon_classes='text-primary text-xl shrink-0',
-        )
-        # Ensure correct aspect ratio for coordinate mapping
-        # Avoid fixed aspect-ratio (can desync if camera stream resolution differs); let the image keep its natural ratio
-        ratio_style = "width:100%;height:auto;"
-        image = (
-            ui.interactive_image(
-                f'/video/frame?{time.time()}',
-                on_mouse=handle_mouse,
-                events=['click', 'move', 'mouseleave'],
-                cross='#19bfd2',
+    with ui.card().classes('w-full').style('align-items:stretch;'):
+        with ui.column().classes('w-full gap-2'):
+            create_heading_row(
+                'Live Camera Feed & ROI',
+                icon='center_focus_strong',
+                title_classes='text-h6 font-semibold',
+                row_classes='items-center gap-2',
+                icon_classes='text-primary text-xl shrink-0',
             )
-            .style(ratio_style)
-            .classes('rounded-borders')
-        )
+            # Ensure correct aspect ratio for coordinate mapping
+            # Avoid fixed aspect-ratio (can desync if camera stream resolution differs); let the image keep its natural ratio
+            ratio_style = "width:100%;height:auto;"
+            image = (
+                ui.interactive_image(
+                    f'/video/frame?{time.time()}',
+                    on_mouse=handle_mouse,
+                    events=['click', 'move', 'mouseleave'],
+                    cross='#19bfd2',
+                )
+                .style(ratio_style)
+                .classes('rounded-borders')
+            )
 
-        # Update the streaming source periodically (with fallback for older NiceGUI versions)
-        # Issue #14 fix: Check capability once to avoid repeated try-except
-        has_set_source = hasattr(image, 'set_source')
-        
-        def _refresh_stream() -> None:
-            src = f'/video/frame?{time.time()}'
-            if has_set_source:
-                image.set_source(src)
-            else:
-                try:
-                    image.source = src
-                except Exception:
-                    pass
-        # Ensure only one refresh timer per client for the settings camfeed
-        try:
-            client = ui.context.client
-            try:
-                prev = getattr(client, 'cvd_camfeed_timer_settings', None)
-                if prev:
+            # Update the streaming source periodically (with fallback for older NiceGUI versions)
+            # Issue #14 fix: Check capability once to avoid repeated try-except
+            has_set_source = hasattr(image, 'set_source')
+            
+            def _refresh_stream() -> None:
+                src = f'/video/frame?{time.time()}'
+                if has_set_source:
+                    image.set_source(src)
+                else:
                     try:
-                        prev.cancel()
+                        image.source = src
                     except Exception:
                         pass
-            except Exception:
-                pass
-
-            timer = ui.timer(0.2, _refresh_stream)
+            # Ensure only one refresh timer per client for the settings camfeed
             try:
-                setattr(client, 'cvd_camfeed_timer_settings', timer)
-            except Exception:
-                pass
-
-            def _cleanup() -> None:
+                client = ui.context.client
                 try:
-                    timer.cancel()
-                except Exception:
-                    pass
-                try:
-                    if getattr(client, 'cvd_camfeed_timer_settings', None) is timer:
-                        delattr(client, 'cvd_camfeed_timer_settings')
+                    prev = getattr(client, 'cvd_camfeed_timer_settings', None)
+                    if prev:
+                        try:
+                            prev.cancel()
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
-            client.on_disconnect(_cleanup)
-        except Exception:
-            # Fallback: create a simple timer without guards
-            ui.timer(0.2, _refresh_stream)
+                timer = ui.timer(0.2, _refresh_stream)
+                try:
+                    setattr(client, 'cvd_camfeed_timer_settings', timer)
+                except Exception:
+                    pass
 
-        # Toolbar: ROI enable, save/reset, coords and labels
-        with ui.row().classes('items-center gap-2 w-full flex-wrap'):
-            roi_enabled_checkbox = ui.checkbox('ROI enabled', value=True).tooltip('Enable/disable Region of Interest')
-            roi_enabled_checkbox.on('change', lambda e: update_roi_enabled(bool(getattr(e, 'value', True))))
-            create_action_button('save', label='Save ROI', on_click=save_roi, tooltip='Save ROI')
-            create_action_button('reset', label='Reset ROI', on_click=reset_roi, tooltip='Reset ROI')
-            ui.space()
-            coords_label = ui.label('(-, -)').classes('text-sm font-mono text-gray-500')
+                def _cleanup() -> None:
+                    try:
+                        timer.cancel()
+                    except Exception:
+                        pass
+                    try:
+                        if getattr(client, 'cvd_camfeed_timer_settings', None) is timer:
+                            delattr(client, 'cvd_camfeed_timer_settings')
+                    except Exception:
+                        pass
 
-        with ui.row().classes('items-center gap-4 text-sm'):
-            ui.label('upper left:')
-            tl_label = ui.label('-').classes('font-mono')
-            ui.label('bottom right:')
-            br_label = ui.label('-').classes('font-mono')
-
-        # ROI numeric inputs (x, y, w, h) with live sync
-        with ui.row().classes('items-center gap-3 w-full'):
-            x_input = ui.number(label='x', value=None, min=0, max=IMG_W - 1, step=1, format='%.0f').props('dense outlined suffix="px"')
-            y_input = ui.number(label='y', value=None, min=0, max=IMG_H - 1, step=1, format='%.0f').props('dense outlined suffix="px"')
-            w_input = ui.number(label='w', value=None, min=1, max=IMG_W, step=1, format='%.0f').props('dense outlined suffix="px"')
-            h_input = ui.number(label='h', value=None, min=1, max=IMG_H, step=1, format='%.0f').props('dense outlined suffix="px"')
-
-            # Wire input change events for live updates
-            for control in (x_input, y_input, w_input, h_input):
-                control.on('update:model-value', update_state_from_inputs)
-                control.on('change', update_state_from_inputs)
-
-        # Live hint below inputs: ROI size and min-size warning / disabled state
-        with ui.row().classes('items-center gap-2 w-full'):
-            roi_hint_label = ui.label('').classes('text-sm text-grey')
-
-        # Enable/disable inputs based on ROI enabled state
-        def _sync_inputs_enabled() -> None:
-            try:
-                enabled = bool(roi_enabled_checkbox.value) if roi_enabled_checkbox else True
-                for control in (x_input, y_input, w_input, h_input):
-                    if control is None:
-                        continue
-                    if enabled:
-                        control.enable()
-                    else:
-                        control.disable()
-                update_roi_hint()
+                client.on_disconnect(_cleanup)
             except Exception:
-                pass
-        roi_enabled_checkbox.on('change', lambda e: _sync_inputs_enabled())
+                # Fallback: create a simple timer without guards
+                ui.timer(0.2, _refresh_stream)
+
+            
+            create_heading_row(
+                'ROI Values',
+                icon='straighten',
+                title_classes='text-subtitle2 font-semibold',
+                row_classes='items-center gap-2 mb-2',
+                icon_classes='text-primary text-lg shrink-0',
+            )
+            with ui.column().classes('w-full gap-3'):
+                with ui.row().classes('items-center gap-4 text-sm w-full flex-wrap'):
+                    ui.label('upper left:')
+                    tl_label = ui.label('-').classes('font-mono')
+                    ui.label('bottom right:')
+                    br_label = ui.label('-').classes('font-mono')
+
+                ui.separator()
+
+                # ROI numeric inputs (x, y, w, h) with live sync
+                with ui.row().classes('items-center gap-3 w-full flex-wrap'):
+                    x_input = ui.number(label='x', value=None, min=0, max=IMG_W - 1, step=1, format='%.0f').props('dense outlined suffix="px"')
+                    y_input = ui.number(label='y', value=None, min=0, max=IMG_H - 1, step=1, format='%.0f').props('dense outlined suffix="px"')
+                    w_input = ui.number(label='w', value=None, min=1, max=IMG_W, step=1, format='%.0f').props('dense outlined suffix="px"')
+                    h_input = ui.number(label='h', value=None, min=1, max=IMG_H, step=1, format='%.0f').props('dense outlined suffix="px"')
+
+                    # Wire input change events for live updates
+                    for control in (x_input, y_input, w_input, h_input):
+                        control.on('update:model-value', update_state_from_inputs)
+                        control.on('change', update_state_from_inputs)
+
+                # Live hint below inputs: ROI size and min-size warning / disabled state
+                with ui.row().classes('items-center gap-2 w-full'):
+                    roi_hint_label = ui.label('').classes('text-sm text-grey')
+
+        
+            create_heading_row(
+                'ROI Actions',
+                icon='crop',
+                title_classes='text-subtitle2 font-semibold',
+                row_classes='items-center gap-2 mb-2',
+                icon_classes='text-primary text-lg shrink-0',
+            )
+            with ui.row().classes('items-center gap-2 w-full flex-wrap'):
+                roi_enabled_checkbox = ui.checkbox('ROI enabled', value=True).tooltip('Enable/disable Region of Interest')
+                roi_enabled_checkbox.on('change', lambda e: update_roi_enabled(bool(getattr(e, 'value', True))))
+                create_action_button('save', label='Save ROI', on_click=save_roi, tooltip='Save ROI')
+                create_action_button('reset', label='Reset ROI', on_click=reset_roi, tooltip='Reset ROI')
+                ui.space()
+                coords_label = ui.label('(-, -)').classes('text-sm font-mono text-gray-500')
+
+            # Enable/disable inputs based on ROI enabled state
+            def _sync_inputs_enabled() -> None:
+                try:
+                    enabled = bool(roi_enabled_checkbox.value) if roi_enabled_checkbox else True
+                    for control in (x_input, y_input, w_input, h_input):
+                        if control is None:
+                            continue
+                        if enabled:
+                            control.enable()
+                        else:
+                            control.disable()
+                    update_roi_hint()
+                except Exception:
+                    pass
+            roi_enabled_checkbox.on('change', lambda e: _sync_inputs_enabled())
 
     # Initialize state from current config/camera
     initialize_from_config()
@@ -629,3 +648,5 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
         _sync_inputs_enabled()
     except Exception:
         pass
+
+

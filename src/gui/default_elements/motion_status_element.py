@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import os
 import threading
-from typing import TYPE_CHECKING, Optional, Any, Callable
+from typing import TYPE_CHECKING, Optional, Any, Callable, Literal
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -177,10 +177,27 @@ def _ensure_motion_update_route_registered() -> None:
     _api_route_registered = True
 
 
-def create_motion_status_element(camera: Camera | None, measurement_controller: Optional['MeasurementController'] = None) -> None:
+def create_motion_status_element(
+    camera: Camera | None,
+    measurement_controller: Optional['MeasurementController'] = None,
+    *,
+    header_action: Literal['settings', 'refresh'] = 'settings',
+    anchor_id: Optional[str] = None,
+) -> None:
     del measurement_controller  # kept for compatibility with existing call sites
 
     _ensure_motion_update_route_registered()
+
+    def _render_header_button(*, on_refresh: Optional[Callable[[], None]] = None, enabled: bool = True) -> None:
+        if header_action == 'refresh':
+            refresh_button = ui.button(icon='refresh', on_click=on_refresh or (lambda: None))
+            refresh_button.props('flat round dense').tooltip('Refresh motion status')
+            if not enabled:
+                refresh_button.disable()
+            return
+
+        ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings#camera')) \
+            .props('flat round dense').tooltip('Open camera & motion settings')
 
     if camera is None:
         logger.warning("Camera not available - motion detection disabled")
@@ -189,31 +206,119 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
                 create_heading_row(
                     'Motion Detection Status',
                     icon=SECTION_ICONS['motion'],
+                    anchor_id=anchor_id,
                     title_classes='text-h6 font-semibold mb-1',
                     row_classes='items-center gap-2',
                     icon_classes='text-primary text-xl shrink-0',
                 )
-                ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings#camera')) \
-                    .props('flat round dense').tooltip('Open camera & motion settings')
+                _render_header_button(enabled=False)
             ui.label('Camera not available - motion detection disabled').classes('text-warning')
         return
 
     logger.info("Creating motion status element")
     motion_detected = False
-    last_changed = datetime.now()
+    last_changed: Optional[datetime] = None
     state_lock = threading.RLock()
+    icon: Any = None
+    status_label: Any = None
+    timestamp_label: Any = None
+
+    def refresh_view() -> None:
+        with state_lock:
+            if icon is None or status_label is None or timestamp_label is None:
+                return
+            if motion_detected:
+                icon.props('name=check_circle color=green')
+                status_label.text = 'Motion detected'
+            else:
+                icon.props('name=highlight_off color=red')
+                status_label.text = 'No motion detected'
+            timestamp_label.text = (
+                f'Last changed: {last_changed.strftime("%Y-%m-%d %H:%M:%S")}'
+                if last_changed is not None
+                else 'Last changed: -'
+            )
+            icon.update()
+            status_label.update()
+            timestamp_label.update()
+
+    def _apply_motion_state(
+        new_motion_detected: bool,
+        changed_at: Optional[datetime],
+        *,
+        allow_change_time_backfill: bool = False,
+    ) -> bool:
+        nonlocal motion_detected, last_changed
+        should_refresh = False
+        with state_lock:
+            if new_motion_detected != motion_detected:
+                motion_detected = new_motion_detected
+                if changed_at is not None:
+                    last_changed = changed_at
+                should_refresh = True
+            elif allow_change_time_backfill and last_changed is None and changed_at is not None:
+                last_changed = changed_at
+                should_refresh = True
+        if should_refresh:
+            refresh_view()
+        return should_refresh
+
+    def _apply_motion_result(result: Any) -> bool:
+        timestamp = getattr(result, 'timestamp', None)
+        changed_at = (
+            datetime.fromtimestamp(float(timestamp))
+            if isinstance(timestamp, (int, float))
+            else datetime.now()
+        )
+        return _apply_motion_state(bool(getattr(result, 'motion_detected', False)), changed_at)
+
+    def _sync_current_motion_state() -> None:
+        camera_result = camera.get_last_motion_result()
+        api_motion, api_last_changed = _get_api_motion_state()
+        camera_changed_at: Optional[datetime] = None
+        updated = False
+
+        if camera_result is not None:
+            timestamp = getattr(camera_result, 'timestamp', None)
+            if isinstance(timestamp, (int, float)):
+                camera_changed_at = datetime.fromtimestamp(float(timestamp))
+
+        if camera_result is not None and camera_changed_at is not None and (
+            api_last_changed is None or camera_changed_at >= api_last_changed
+        ):
+            updated = _apply_motion_result(camera_result)
+        elif api_last_changed is not None:
+            updated = _apply_motion_state(api_motion, api_last_changed, allow_change_time_backfill=True)
+        if not updated:
+            refresh_view()
+
+    def _camera_motion_callback(_: Any, result: Any) -> None:
+        _apply_motion_result(result)
+
+    def _api_motion_listener(new_motion: bool, changed_at: datetime) -> None:
+        _apply_motion_state(new_motion, changed_at, allow_change_time_backfill=True)
+
+    def _unregister_motion_listeners() -> None:
+        try:
+            camera.disable_motion_detection(_camera_motion_callback)
+        except Exception:
+            logger.exception('Failed to unregister motion status camera listener')
+        try:
+            _unregister_api_motion_listener(_api_motion_listener)
+        except Exception:
+            logger.exception('Failed to unregister motion status API listener')
 
     with ui.card().classes('w-full shadow-2 q-pa-sm'):
         with ui.row().classes('items-center justify-between w-full'):
             create_heading_row(
                 'Motion Detection Status',
                 icon=SECTION_ICONS['motion'],
+                anchor_id=anchor_id,
                 title_classes='text-h6 font-semibold mb-1',
                 row_classes='items-center gap-2',
                 icon_classes='text-primary text-xl shrink-0',
             )
-            ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings#camera')) \
-                .props('flat round dense').tooltip('Open camera & motion settings')
+            _render_header_button(on_refresh=_sync_current_motion_state)
         with ui.column().classes('w-full items-start q-gutter-y-xs'):
             with ui.row().classes('items-center q-gutter-x-md') \
                         .style('white-space: nowrap'):
@@ -229,49 +334,6 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
                         show_header=False,
                         show_description=True,
                     )
-
-    def refresh_view() -> None:
-        with state_lock:
-            if motion_detected:
-                icon.props('name=check_circle color=green')
-                status_label.text = 'Motion detected'
-            else:
-                icon.props('name=highlight_off color=red')
-                status_label.text = 'No motion detected'
-            timestamp_label.text = f'Last changed: {last_changed.strftime("%Y-%m-%d %H:%M:%S")}'
-
-    def _apply_motion_state(new_motion_detected: bool, changed_at: datetime) -> None:
-        nonlocal motion_detected, last_changed
-        with state_lock:
-            if new_motion_detected != motion_detected:
-                motion_detected = new_motion_detected
-                last_changed = changed_at
-                refresh_view()
-
-    def _apply_motion_result(result: Any) -> None:
-        timestamp = getattr(result, 'timestamp', None)
-        changed_at = (
-            datetime.fromtimestamp(float(timestamp))
-            if isinstance(timestamp, (int, float))
-            else datetime.now()
-        )
-        _apply_motion_state(bool(getattr(result, 'motion_detected', False)), changed_at)
-
-    def _camera_motion_callback(_: Any, result: Any) -> None:
-        _apply_motion_result(result)
-
-    def _api_motion_listener(new_motion: bool, changed_at: datetime) -> None:
-        _apply_motion_state(new_motion, changed_at)
-
-    def _unregister_motion_listeners() -> None:
-        try:
-            camera.disable_motion_detection(_camera_motion_callback)
-        except Exception:
-            logger.exception('Failed to unregister motion status camera listener')
-        try:
-            _unregister_api_motion_listener(_api_motion_listener)
-        except Exception:
-            logger.exception('Failed to unregister motion status API listener')
 
     try:
         client = ui.context.client
@@ -300,20 +362,4 @@ def create_motion_status_element(camera: Camera | None, measurement_controller: 
 
         client.on_disconnect(_cleanup_on_disconnect)
 
-    camera_result = camera.get_last_motion_result()
-    api_motion, api_last_changed = _get_api_motion_state()
-    camera_changed_at: Optional[datetime] = None
-
-    if camera_result is not None:
-        timestamp = getattr(camera_result, 'timestamp', None)
-        if isinstance(timestamp, (int, float)):
-            camera_changed_at = datetime.fromtimestamp(float(timestamp))
-
-    if camera_result is not None and camera_changed_at is not None and (
-        api_last_changed is None or camera_changed_at >= api_last_changed
-    ):
-        _apply_motion_result(camera_result)
-    elif api_last_changed is not None:
-        _apply_motion_state(api_motion, api_last_changed)
-
-    refresh_view()
+    _sync_current_motion_state()

@@ -12,7 +12,6 @@ from .instances import get_instances
 from src.config import get_global_config, get_logger
 
 from src.gui.settings_elements.camera_settings import create_uvc_content
-from src.gui.settings_elements.motion_detection_settings import create_motiondetection_card
 from src.gui.settings_elements.measurement_settings import create_measurement_settings_card
 from src.gui.settings_elements.email_settings import create_emailcard
 from src.gui.settings_elements.camfeed_settings import create_camfeed_content
@@ -20,6 +19,7 @@ from src.gui.settings_elements.log_settings import create_log_settings
 from src.gui.settings_elements.config_settings import create_config_settings
 from src.gui.settings_elements.update_settings import create_update_settings
 from src.gui.settings_elements.metadata_settings import create_metadata_settings
+from src.gui.default_elements.motion_status_element import create_motion_status_element
 from src.gui.settings_elements.ui_helpers import SECTION_ICONS, create_action_button, create_heading_row
 from src.gui.constants import StorageKeys
 from src.gui.storage import delete_ui_pref, get_runtime_ui_pref, get_ui_pref, set_runtime_ui_pref, set_ui_pref
@@ -318,17 +318,14 @@ def settings_page(request: Request) -> None:
         def _render_camera(_container: Any) -> None:
             with ui.grid(columns=2).classes('w-full gap-4 items-start').style('grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));'):
                 with ui.column().classes('gap-3 min-w-0 w-full self-start'):
-                    create_camfeed_content(camera)
-                    ui.separator()
-                    create_heading_row(
-                        'Motion Detection',
-                        icon=SECTION_ICONS['motion'],
+                    create_motion_status_element(
+                        camera,
+                        measurement_controller=measurement_controller,
+                        header_action='refresh',
                         anchor_id='motion',
-                        title_classes='text-subtitle1 font-semibold',
-                        row_classes='items-center gap-2',
-                        icon_classes='text-primary text-lg shrink-0',
                     )
-                    create_motiondetection_card(camera)
+                    ui.separator()
+                    create_camfeed_content(camera)
                 with ui.column().classes('gap-3 min-w-0 w-full self-start'):
                     create_uvc_content(camera)
 
