@@ -17,7 +17,7 @@ def index_page() -> None:
     email_system = get_email_system()
     measurement_controller = get_measurement_controller()
 
-    build_header()
+    build_header(current_route='/')
 
     with ui.column().classes('w-full h-full p-4 gap-4 max-w-[1800px] mx-auto'):
         with ui.row().classes('w-full items-stretch gap-4 flex-col xl:flex-row'):

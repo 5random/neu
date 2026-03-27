@@ -1,132 +1,35 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Any, Callable, Dict, List
-import re
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from typing import Any, Callable
 
+from fastapi import Request
 from nicegui import ui
 
+from .navigation import get_help_sections, load_help_content
 from src.gui.constants import StorageKeys
 from src.gui.storage import get_ui_pref, set_ui_pref
 
-try:
-    import yaml
-except ImportError:  # graceful fallback if PyYAML is not installed
-    yaml = None  # type: ignore[assignment]
-
-
-def _slugify(title: str) -> str:
-    """Create a URL-safe anchor id from a title."""
-
-    slug = title.strip().lower()
-    slug = re.sub(r"[^a-z0-9\s-]", "", slug)
-    slug = re.sub(r"\s+", "-", slug)
-    slug = re.sub(r"-+", "-", slug)
-    return slug or "section"
-
-
-def _load_yaml_content() -> Dict[str, Any]:
-    """Load help.yaml content."""
-
-    help_yaml_path = Path(__file__).parent / 'help.yaml'
-    if not help_yaml_path.exists():
-        return {'help': {'title': 'Help', 'sections': []}}
-
-    try:
-        text = help_yaml_path.read_text(encoding='utf-8')
-    except Exception:
-        return {'help': {'title': 'Help', 'sections': []}}
-
-    if yaml is None:
-        return {
-            'help': {
-                'title': 'Help',
-                'sections': [
-                    {
-                        'title': 'Raw help.yaml',
-                        'content': text,
-                    }
-                ],
-            }
-        }
-
-    try:
-        data = yaml.safe_load(text)
-        if not isinstance(data, dict):
-            raise ValueError('Invalid YAML structure')
-        return data
-    except Exception:
-        return {
-            'help': {
-                'title': 'Help',
-                'sections': [
-                    {
-                        'title': 'Raw help.yaml',
-                        'content': text,
-                    }
-                ],
-            }
-        }
-
-
-def _prepare_sections(sections: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """Prepare help sections with stable, unique anchor ids."""
-
-    prepared: List[Dict[str, str]] = []
-    seen_slugs: Dict[str, int] = {}
-
-    for section in sections:
-        title = str(section.get('title') or 'Section')
-        base_slug = _slugify(title)
-        seen_slugs[base_slug] = seen_slugs.get(base_slug, 0) + 1
-        anchor_id = base_slug if seen_slugs[base_slug] == 1 else f'{base_slug}-{seen_slugs[base_slug]}'
-
-        prepared.append({
-            'title': title,
-            'content': str(section.get('content') or ''),
-            'route': _prepare_related_route(str(section.get('link') or '').strip()),
-            'anchor_id': anchor_id,
-        })
-
-    return prepared
-
-
-def _prepare_related_route(route: str) -> str:
-    """Add a query fallback for settings anchors so the target section can open reliably."""
-
-    if not route:
-        return ''
-
-    parts = urlsplit(route)
-    if parts.path != '/settings' or not parts.fragment:
-        return route
-
-    query = dict(parse_qsl(parts.query, keep_blank_values=True))
-    query.setdefault('section', parts.fragment)
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
-
 
 @ui.page('/help')
-def help_page() -> None:
+def help_page(request: Request) -> None:
     """Render the help page using the settings-style quick-link drawer."""
 
-    payload = _load_yaml_content()
+    payload = load_help_content()
     help_root = payload.get('help') or {}
     title = str(help_root.get('title') or 'Help')
-    raw_sections: List[Dict[str, Any]] = help_root.get('sections') or []
-    sections = _prepare_sections(raw_sections)
+    sections = get_help_sections()
 
     set_ui_pref(StorageKeys.LAST_ROUTE, '/help')
 
     from ..layout import build_header, build_footer
 
-    build_header()
+    build_header(current_route='/help')
 
     stored_drawer_open = get_ui_pref(StorageKeys.HELP_DRAWER_OPEN)
     initial_drawer_open = bool(stored_drawer_open) if stored_drawer_open is not None else True
     section_openers: dict[str, Callable[[], None]] = {}
+    requested_anchor = str(request.query_params.get('section', '') or '').strip()
 
     def _scroll_to_section(anchor_id: str) -> None:
         ui.run_javascript(f"""
@@ -351,3 +254,20 @@ body.body--dark #cvd-help-links a.cvd-quick-link.active-link {
 </script>
 """
     )
+
+    async def _open_requested_section_on_load() -> None:
+        anchor_id = requested_anchor
+        if not anchor_id:
+            try:
+                hash_value = await ui.run_javascript(
+                    "return decodeURIComponent(window.location.hash || '').replace(/^#/, '')",
+                    timeout=2.0,
+                )
+            except Exception:
+                hash_value = ''
+            anchor_id = str(hash_value or '').strip()
+
+        if anchor_id in section_openers:
+            _open_section(anchor_id)
+
+    ui.timer(0.2, _open_requested_section_on_load, once=True, immediate=False)

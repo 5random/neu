@@ -10,10 +10,12 @@ if TYPE_CHECKING:
 from src.notify import EMailSystem
 from .instances import get_instances
 from src.config import get_global_config, get_logger
+from src.gui.help.navigation import build_help_route_for_settings_anchor
 
 from src.gui.settings_elements.camera_settings import create_uvc_content
 from src.gui.settings_elements.measurement_settings import create_measurement_settings_card
 from src.gui.settings_elements.email_settings import create_emailcard
+from src.gui.settings_elements.appearance_settings import create_appearance_settings
 from src.gui.settings_elements.camfeed_settings import create_camfeed_content
 from src.gui.settings_elements.log_settings import create_log_settings
 from src.gui.settings_elements.config_settings import create_config_settings
@@ -39,7 +41,7 @@ def _get_core_instances() -> tuple[Optional[Camera], Optional['MeasurementContro
 def settings_page(request: Request) -> None:
     """Settings page with left quick links and stacked sections.
 
-    Sections in order: Camera, Motion Detection, Measurement, Email.
+    Sections in order: Camera, Motion Detection, Measurement, Email, Appearance, Metadata, Configuration, Update, Logs.
     The header/footer are provided by the main app; here we only define content.
     """
     logger.info('Opening settings page')
@@ -56,11 +58,15 @@ def settings_page(request: Request) -> None:
 
     # Gemeinsamen Header/Footer der App verwenden
     from .layout import build_header, build_footer
-    build_header()
+    build_header(current_route='/settings')
 
     # Determine initial drawer state from persisted UI storage (default: open)
     _stored_drawer_open = get_ui_pref(StorageKeys.DRAWER_OPEN)
     _initial_drawer_open = bool(_stored_drawer_open) if _stored_drawer_open is not None else True
+    section_help_targets = {
+        section_id: build_help_route_for_settings_anchor(section_id)
+        for section_id in ('camera', 'measurement', 'email', 'appearance', 'metadata', 'config', 'update', 'logs')
+    }
 
     section_openers: dict[str, Callable[[], None]] = {}
     anchor_to_section: dict[str, str] = {}
@@ -136,6 +142,7 @@ def settings_page(request: Request) -> None:
         _quick_link('Motion Detection', SECTION_ICONS['motion'], 'motion', 'camera')
         _quick_link('Measurement', SECTION_ICONS['measurement'], 'measurement', 'measurement')
         _quick_link('E-Mail', SECTION_ICONS['email'], 'email', 'email')
+        _quick_link('Appearance', SECTION_ICONS['appearance'], 'appearance', 'appearance')
         _quick_link('Configuration', SECTION_ICONS['config'], 'config', 'config')
         _quick_link('Metadata', SECTION_ICONS['metadata'], 'metadata', 'metadata')
         _quick_link('Update', SECTION_ICONS['update'], 'update', 'update')
@@ -199,7 +206,19 @@ def settings_page(request: Request) -> None:
     if not isinstance(collapse_state, dict):
         collapse_state = {}
 
-    def _collapsible_card(section_id: str, title: str, *, icon: str, default_collapsed: bool = True) -> ui.column:
+    def _make_route_navigator(target: str) -> Callable[[Any], None]:
+        def _navigate(_event: Any = None) -> None:
+            ui.navigate.to(target, new_tab=False)
+        return _navigate
+
+    def _collapsible_card(
+        section_id: str,
+        title: str,
+        *,
+        icon: str,
+        help_target: Optional[str] = None,
+        default_collapsed: bool = True,
+    ) -> ui.column:
         """Create a collapsible card with runtime-scoped UI state.
 
         Returns the content container to populate inside the card.
@@ -236,8 +255,15 @@ def settings_page(request: Request) -> None:
                     if collapsed:
                         _toggle()
 
-                chevron = ui.button(icon=('chevron_right' if collapsed else 'expand_more'), on_click=_toggle)
-                chevron.props(f'flat round dense id=cvd-toggle-{section_id}').tooltip('Collapse/expand')
+                with ui.row().classes('items-center gap-1 shrink-0'):
+                    if help_target:
+                        ui.button(
+                            icon='help',
+                            on_click=_make_route_navigator(help_target),
+                        ).props('flat round dense').tooltip('Open help for this section')
+
+                    chevron = ui.button(icon=('chevron_right' if collapsed else 'expand_more'), on_click=_toggle)
+                    chevron.props(f'flat round dense id=cvd-toggle-{section_id}').tooltip('Collapse/expand')
 
             # Content container
             content = ui.column().classes('w-full gap-4')
@@ -252,6 +278,7 @@ def settings_page(request: Request) -> None:
         *,
         icon: str,
         render_fn: Callable[[Any], None],
+        help_target: Optional[str] = None,
         default_collapsed: bool = True,
     ) -> ui.column:
         """Create a collapsible card that renders its content lazily on first expand.
@@ -295,8 +322,15 @@ def settings_page(request: Request) -> None:
                     if collapsed:
                         _toggle()
 
-                chevron = ui.button(icon=('chevron_right' if collapsed else 'expand_more'), on_click=_toggle)
-                chevron.props(f'flat round dense id=cvd-toggle-{section_id}').tooltip('Collapse/expand')
+                with ui.row().classes('items-center gap-1 shrink-0'):
+                    if help_target:
+                        ui.button(
+                            icon='help',
+                            on_click=_make_route_navigator(help_target),
+                        ).props('flat round dense').tooltip('Open help for this section')
+
+                    chevron = ui.button(icon=('chevron_right' if collapsed else 'expand_more'), on_click=_toggle)
+                    chevron.props(f'flat round dense id=cvd-toggle-{section_id}').tooltip('Collapse/expand')
 
             content = ui.column().classes('w-full gap-4')
             content.props(f'id=cvd-content-{section_id}')
@@ -335,6 +369,7 @@ def settings_page(request: Request) -> None:
             'Camera',
             icon=SECTION_ICONS['camera'],
             render_fn=_render_camera,
+            help_target=section_help_targets.get('camera'),
             default_collapsed=True,
         )
 
@@ -342,6 +377,7 @@ def settings_page(request: Request) -> None:
             'measurement',
             'Measurement',
             icon=SECTION_ICONS['measurement'],
+            help_target=section_help_targets.get('measurement'),
             default_collapsed=True,
         )
         with measurement_card:
@@ -351,15 +387,27 @@ def settings_page(request: Request) -> None:
             'email',
             'E-Mail Notifications',
             icon=SECTION_ICONS['email'],
+            help_target=section_help_targets.get('email'),
             default_collapsed=True,
         )
         with email_card:
             create_emailcard(email_system=email_system)
 
+        appearance_card = _collapsible_card(
+            'appearance',
+            'Appearance',
+            icon=SECTION_ICONS['appearance'],
+            help_target=section_help_targets.get('appearance'),
+            default_collapsed=True,
+        )
+        with appearance_card:
+            create_appearance_settings()
+
         metadata_card = _collapsible_card(
             'metadata',
             'Metadata',
             icon=SECTION_ICONS['metadata'],
+            help_target=section_help_targets.get('metadata'),
             default_collapsed=True,
         )
         with metadata_card:
@@ -369,6 +417,7 @@ def settings_page(request: Request) -> None:
             'config',
             'Configuration',
             icon=SECTION_ICONS['config'],
+            help_target=section_help_targets.get('config'),
             default_collapsed=True,
         )
         with config_card:
@@ -378,6 +427,7 @@ def settings_page(request: Request) -> None:
             'update',
             'Update',
             icon=SECTION_ICONS['update'],
+            help_target=section_help_targets.get('update'),
             default_collapsed=True,
         )
         with update_card:
@@ -391,6 +441,7 @@ def settings_page(request: Request) -> None:
             'Logs',
             icon=SECTION_ICONS['logs'],
             render_fn=_render_logs,
+            help_target=section_help_targets.get('logs'),
             default_collapsed=True,
         )
 

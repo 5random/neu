@@ -5,6 +5,7 @@ from typing import Any, Callable, Optional
 from nicegui import ui
 
 SECTION_ICONS = {
+    'appearance': 'palette',
     'camera': 'photo_camera',
     'camera_feed': 'photo_camera',
     'camera_controls': 'photo_camera',

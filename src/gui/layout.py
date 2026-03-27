@@ -1,4 +1,5 @@
 import logging
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from nicegui import ui, app
@@ -122,13 +123,78 @@ def sync_runtime_website_url(*, client: object | None = None, persist: bool = Tr
     return resolved_url
 
 
-def build_header() -> None:
+def _persist_dark_mode_preference(enabled: bool) -> None:
+    """Persist the dark mode preference for the current browser profile."""
+    set_ui_pref(StorageKeys.DARK_MODE, bool(enabled))
+
+
+def apply_dark_mode_preference() -> Any:
+    """Create the page-local dark mode controller from persisted UI preferences."""
+    dark = ui.dark_mode(
+        value=bool(get_ui_pref(StorageKeys.DARK_MODE, False)),
+        on_change=lambda event: _persist_dark_mode_preference(bool(event.value)),
+    )
+    try:
+        setattr(ui.context.client, 'cvd_dark_mode_controller', dark)
+    except Exception:
+        logger.debug('Failed to store dark mode controller on client', exc_info=True)
+    return dark
+
+
+def get_page_dark_mode_controller() -> Any | None:
+    """Return the current page's dark mode controller if available."""
+    try:
+        client = ui.context.client
+    except Exception:
+        return None
+    return getattr(client, 'cvd_dark_mode_controller', None)
+
+
+def set_dark_mode_preference(enabled: bool) -> None:
+    """Apply and persist the dark mode preference for the current page."""
+    normalized_value = bool(enabled)
+    _persist_dark_mode_preference(normalized_value)
+    dark = get_page_dark_mode_controller()
+    if dark is not None and bool(dark.value) != normalized_value:
+        dark.value = normalized_value
+
+
+def _resolve_header_route(explicit_route: str | None = None) -> str | None:
+    """Resolve the current route for header-specific UI decisions."""
+    if explicit_route:
+        return str(explicit_route).strip() or None
+
+    try:
+        client = ui.context.client
+    except Exception:
+        client = None
+
+    request = getattr(client, 'request', None) if client is not None else None
+    request_url = getattr(request, 'url', None)
+    if request_url is None:
+        return None
+
+    try:
+        return urlsplit(str(request_url)).path or '/'
+    except Exception:
+        return None
+
+
+def build_header(current_route: str | None = None) -> None:
     install_overlay_styles()
     sync_runtime_website_url(persist=True)
     current_title = compute_gui_title()
+    resolved_route = _resolve_header_route(current_route)
+    show_home_button = resolved_route in ('/settings', '/help')
+    show_settings_button = resolved_route in ('/', '/help')
+
+    if resolved_route not in ('/', '/settings', '/help'):
+        show_home_button = True
+        show_settings_button = True
+
     ui.page_title(current_title)
     with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
-        dark = ui.dark_mode(value=bool(get_ui_pref(StorageKeys.DARK_MODE, False)))
+        apply_dark_mode_preference()
 
         # Refresh the shared title on each page build so config changes are reflected.
         set_ui_pref(StorageKeys.GUI_TITLE, current_title)
@@ -163,20 +229,9 @@ def build_header() -> None:
                 title_label.text = current_title
 
         # --- Rechte Seite ------------------------------------------
-        def toggle_dark() -> None:
-            dark.toggle()
-            new_icon = 'light_mode' if dark.value else 'dark_mode'
-            btn.props(f'icon={new_icon}')
-            set_ui_pref(StorageKeys.DARK_MODE, bool(dark.value))
-
         with ui.row().classes('items-center gap-4'):
             ui.button(icon='help', on_click=lambda: ui.navigate.to('/help'))\
                 .props('flat round dense').classes('text-xl').tooltip('Help')
-            
-            btn = ui.button(
-                icon='light_mode' if dark.value else 'dark_mode',
-                on_click=toggle_dark,
-            ).props('flat round dense').classes('text-xl').tooltip('Toggle dark mode')
 
             def _go_home() -> None:
                 set_ui_pref(StorageKeys.LAST_ROUTE, '/')
@@ -186,11 +241,13 @@ def build_header() -> None:
                 set_ui_pref(StorageKeys.LAST_ROUTE, '/settings')
                 ui.navigate.to('/settings', new_tab=False)
 
-            ui.button(icon='home', on_click=_go_home)\
-              .props('flat round dense id=cvd-header-home').classes('text-xl').tooltip('Home')
+            if show_home_button:
+                ui.button(icon='home', on_click=_go_home)\
+                  .props('flat round dense id=cvd-header-home').classes('text-xl').tooltip('Home')
 
-            ui.button(icon='settings', on_click=_go_settings)\
-              .props('flat round dense id=cvd-header-settings').classes('text-xl').tooltip('Open settings')
+            if show_settings_button:
+                ui.button(icon='settings', on_click=_go_settings)\
+                  .props('flat round dense id=cvd-header-settings').classes('text-xl').tooltip('Open settings')
 
 def build_footer() -> None:
     with ui.footer(fixed=False).classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
