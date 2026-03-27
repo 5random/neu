@@ -93,6 +93,8 @@ email:
 
 
 def test_analyze_imported_config_accepts_static_recipients_and_group_prefs() -> None:
+    current_cfg = _create_default_config()
+    current_cfg.email.explicit_targeting = False
     preview = analyze_imported_config_text(
         """
 email:
@@ -101,17 +103,33 @@ email:
       - ops@example.com
   static_recipients:
     - static@example.com
+  explicit_targeting: true
   group_prefs:
     ops:
       on_start: false
       on_end: true
       on_stop: true
 """,
-        current_config=_create_default_config(),
+        current_config=current_cfg,
     )
 
     assert _entry(preview, "email.static_recipients").status == "ready"
+    assert _entry(preview, "email.explicit_targeting").status == "ready"
     assert _entry(preview, "email.group_prefs").status == "ready"
+
+
+def test_analyze_imported_config_rejects_invalid_explicit_targeting() -> None:
+    preview = analyze_imported_config_text(
+        """
+email:
+  explicit_targeting: maybe
+""",
+        current_config=_create_default_config(),
+    )
+
+    entry = _entry(preview, "email.explicit_targeting")
+    assert entry.status == "invalid"
+    assert "bool" in entry.reason.lower()
 
 
 def test_analyze_imported_config_rejects_group_prefs_for_unknown_group() -> None:
@@ -251,6 +269,7 @@ def test_load_config_uses_default_fallback_for_unknown_email_event_key() -> None
             "groups": dict(default_cfg.email.groups),
             "active_groups": list(default_cfg.email.active_groups),
             "static_recipients": list(default_cfg.email.static_recipients),
+            "explicit_targeting": default_cfg.email.explicit_targeting,
             "notifications": {"on_star": True},
             "group_prefs": dict(default_cfg.email.group_prefs),
             "recipient_prefs": dict(default_cfg.email.recipient_prefs),

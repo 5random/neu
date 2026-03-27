@@ -89,3 +89,11 @@ def test_needs_active_groups_value_refresh_when_removed_group_is_still_selected(
         ["ops"],
         ["ops"],
     )
+
+
+def test_measurement_card_tooltips_cover_active_group_quick_selector():
+    assert measurementcard.MEASUREMENT_CARD_TOOLTIPS == {
+        'active_groups': 'Quick selection of the recipient groups for the current measurement run. Static recipients are added automatically.',
+        'active_groups_apply': 'Save the selected active groups for the current measurement run.',
+        'active_groups_info': 'Static recipients always receive emails in addition to the active groups selected here.',
+    }

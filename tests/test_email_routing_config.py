@@ -8,6 +8,7 @@ def _email_cfg():
     email.groups = {}
     email.active_groups = []
     email.static_recipients = []
+    email.explicit_targeting = False
     email.notifications = {"on_start": False, "on_end": False, "on_stop": False}
     email.group_prefs = {}
     email.recipient_prefs = {}
@@ -21,6 +22,14 @@ def test_get_target_recipients_uses_legacy_recipients_without_explicit_targeting
     assert email.get_target_recipients() == ["a@example.com", "b@example.com"]
 
 
+def test_get_target_recipients_returns_empty_with_explicit_targeting_and_no_targets() -> None:
+    email = _email_cfg()
+    email.recipients = ["a@example.com", "b@example.com"]
+    email.explicit_targeting = True
+
+    assert email.get_target_recipients() == []
+
+
 def test_get_measurement_event_recipients_respects_legacy_recipient_prefs() -> None:
     email = _email_cfg()
     email.recipients = ["a@example.com", "b@example.com"]
@@ -28,6 +37,15 @@ def test_get_measurement_event_recipients_respects_legacy_recipient_prefs() -> N
     email.recipient_prefs = {"b@example.com": {"on_start": False}}
 
     assert email.get_measurement_event_recipients("on_start") == ["a@example.com"]
+
+
+def test_get_measurement_event_recipients_returns_empty_with_explicit_targeting_and_no_targets() -> None:
+    email = _email_cfg()
+    email.recipients = ["a@example.com", "b@example.com"]
+    email.notifications["on_start"] = True
+    email.explicit_targeting = True
+
+    assert email.get_measurement_event_recipients("on_start") == []
 
 
 def test_get_target_recipients_unions_static_and_active_groups() -> None:
@@ -95,6 +113,16 @@ def test_get_known_recipients_includes_group_and_pref_only_addresses() -> None:
         "b@example.com",
         "d@example.com",
     ]
+
+
+def test_enable_explicit_targeting_materializes_legacy_targets_when_requested() -> None:
+    email = _email_cfg()
+    email.recipients = ["a@example.com", "b@example.com"]
+
+    email.enable_explicit_targeting(materialize_legacy_targets=True)
+
+    assert email.explicit_targeting is True
+    assert email.static_recipients == ["a@example.com", "b@example.com"]
 
 
 def test_validate_rejects_unknown_group_prefs() -> None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
-from typing import Optional, Any
+from typing import Optional, Any, Literal
 from nicegui import ui, background_tasks, core, app, Client
+
+NotifyKind = Literal['positive', 'negative', 'warning', 'info', 'ongoing']
 
 # --- Tab helpers: dynamic title & favicon per client/all clients ---
 def set_tab(title: str | None = None, icon_url: str | None = None, client: Optional[Client] = None) -> None:
@@ -128,6 +130,16 @@ def cancel_task_safely(task: Any) -> None:
         # Best-effort; ignore any cancellation errors
         pass
 
+
+def notify_user(
+    message: str,
+    *,
+    kind: NotifyKind = 'info',
+    position: str = 'bottom-right',
+) -> None:
+    """Show a user-facing toast with a consistent default placement."""
+    ui.notify(message, type=kind, position=position)
+
 def safe_ui_operation(
     operation: Any,
     error_msg: str = "Operation failed",
@@ -146,8 +158,8 @@ def safe_ui_operation(
     try:
         operation()
         if success_msg:
-            ui.notify(success_msg, type='positive')
+            notify_user(success_msg, kind='positive')
     except Exception as e:
         if logger:
             logger.error(f"{error_msg}: {e}")
-        ui.notify(f"{error_msg}: {e}", type='negative')
+        notify_user(f"{error_msg}: {e}", kind='negative')

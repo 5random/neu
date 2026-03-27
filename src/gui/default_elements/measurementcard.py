@@ -7,13 +7,19 @@ from src.notify import EMailSystem
 from src.config import get_global_config, save_global_config, get_logger
 from src.cam.camera import Camera
 from src.gui.ui_helpers import SECTION_ICONS, create_heading_row
-from src.gui.util import schedule_bg
+from src.gui.util import notify_user, schedule_bg
 from typing import TYPE_CHECKING, Optional, Any
 
 if TYPE_CHECKING:
     from src.measurement import MeasurementController
 
 logger = get_logger('gui.measurement')
+
+MEASUREMENT_CARD_TOOLTIPS = {
+    'active_groups': 'Quick selection of the recipient groups for the current measurement run. Static recipients are added automatically.',
+    'active_groups_apply': 'Save the selected active groups for the current measurement run.',
+    'active_groups_info': 'Static recipients always receive emails in addition to the active groups selected here.',
+}
 
 
 def _derive_elapsed_duration(start_time: datetime) -> timedelta:
@@ -493,7 +499,7 @@ def create_measurement_card(
                 bool(current_status.get('is_active', False)),
             )
             _request_view_refresh(current_status)
-            ui.notify('Failed to save measurement duration', color='negative')
+            notify_user('Failed to save measurement duration', kind='negative')
 
         if not enable_limit.value:
             # Limit deaktiviert ⇒ 0 Minuten speichern
@@ -619,6 +625,7 @@ def create_measurement_card(
 
             # Recipient Groups (Async Load)
             groups_select: Optional[ui.select] = None
+            groups_hint_label: Optional[ui.label] = None
             _last_groups_opts: list[str] = []
             _last_synced_active_groups: list[str] = []
             groups_build_lock = asyncio.Lock()
@@ -642,16 +649,17 @@ def create_measurement_card(
 
             with ui.column().classes('w-full gap-2') as groups_container:
                 create_heading_row(
-                    'Active Groups',
+                    'Active Groups For This Run',
                     icon='groups',
                     title_classes='text-caption font-bold text-grey-7',
                     row_classes='items-center gap-2',
                     icon_classes='text-grey-7 text-sm shrink-0',
                 )
                 loading_lbl = ui.label('Loading...').classes('text-caption text-grey italic')
+                controls_host = ui.column().classes('w-full gap-2')
 
                 async def _build_groups_ui() -> None:
-                    nonlocal groups_select, _last_groups_opts, _last_synced_active_groups, apply_btn
+                    nonlocal groups_select, groups_hint_label, _last_groups_opts, _last_synced_active_groups, apply_btn
                     async with groups_build_lock:
                         cfg = await asyncio.to_thread(get_global_config)
                         opts = list(getattr(cfg.email, 'groups', {}).keys()) if cfg and cfg.email else []
@@ -660,22 +668,16 @@ def create_measurement_card(
                         _last_synced_active_groups = _normalize_active_groups_value(vals, valid_options=opts)
                         
                         try:
-                            with groups_container:
+                            try:
                                 loading_lbl.delete()
-                                with ui.row().classes('w-full items-center gap-2 no-wrap'):
-                                    groups_select = ui.select(
-                                        options=opts,
-                                        value=list(_last_synced_active_groups),
-                                        multiple=True,
-                                        label='Active Groups'
-                                    ).props('dense outlined use-chips').classes('flex-1')
+                            except Exception:
+                                pass
 
-                                    apply_btn = ui.button(icon='check', on_click=lambda: apply_groups()).props('round dense flat color=primary').tooltip('Apply Active Groups')
-                                ui.label('Static recipients are always included in email delivery.').classes('text-caption text-grey')
-
-                                def _on_groups_change(_: Any = None) -> None:
-                                    _update_apply_groups_state()
-                                groups_select.on('update:model-value', _on_groups_change)
+                            with controls_host:
+                                controls_host.clear()
+                                groups_select = None
+                                apply_btn = None
+                                groups_hint_label = None
 
                                 def apply_groups() -> None:
                                     nonlocal apply_btn, groups_select, _last_synced_active_groups
@@ -688,30 +690,58 @@ def create_measurement_card(
                                         button.disable()
                                         conf = get_global_config()
                                         if not conf or not getattr(conf, 'email', None):
+                                            notify_user('Configuration not available', kind='negative')
                                             return
-                                         
+
                                         selected = _normalize_active_groups_value(
                                             getattr(select, 'value', []),
                                             valid_options=_last_groups_opts,
                                         )
-                                          
+
                                         conf.email.active_groups = selected
+                                        conf.email.enable_explicit_targeting(materialize_legacy_targets=False)
                                         if not save_global_config():
                                             logger.error('Failed to save active group selection')
-                                            ui.notify('Failed to update active groups', color='negative')
+                                            notify_user('Failed to update active groups', kind='negative')
                                             return
                                         if email_system:
                                             email_system.refresh_config()
 
                                         _last_synced_active_groups = list(selected)
-                                        ui.notify('Active groups updated', color='positive', position='bottom-right')
+                                        notify_user('Active groups updated', kind='positive')
                                         _update_apply_groups_state()
                                     except Exception as e:
                                         logger.error(f"Failed to apply groups: {e}")
-                                        ui.notify('Failed to update active groups', color='negative')
+                                        notify_user('Failed to update active groups', kind='negative')
                                     finally:
                                         _update_apply_groups_state()
 
+                                if not opts:
+                                    groups_hint_label = ui.label(
+                                        'No groups configured yet. Create groups in E-Mail settings.'
+                                    ).classes('text-caption text-grey italic')
+                                    return
+
+                                with ui.row().classes('w-full items-center gap-2 no-wrap'):
+                                    groups_select = ui.select(
+                                        options=opts,
+                                        value=list(_last_synced_active_groups),
+                                        multiple=True,
+                                        label='Active Groups'
+                                    ).props('dense outlined use-chips').classes('flex-1').tooltip(
+                                        MEASUREMENT_CARD_TOOLTIPS['active_groups']
+                                    )
+
+                                    apply_btn = ui.button(icon='check', on_click=lambda: apply_groups()).props(
+                                        'round dense flat color=primary'
+                                    ).tooltip(MEASUREMENT_CARD_TOOLTIPS['active_groups_apply'])
+                                ui.label('Static recipients are always included in email delivery.').classes(
+                                    'text-caption text-grey'
+                                ).tooltip(MEASUREMENT_CARD_TOOLTIPS['active_groups_info'])
+
+                                def _on_groups_change(_: Any = None) -> None:
+                                    _update_apply_groups_state()
+                                groups_select.on('update:model-value', _on_groups_change)
                                 _update_apply_groups_state()
                                 
                         except Exception as e:
@@ -723,14 +753,22 @@ def create_measurement_card(
             def _refresh_groups_ui() -> Any:
                 nonlocal _last_groups_opts, _last_synced_active_groups, groups_select
                 try:
-                    if groups_select is None:
-                        return
                     conf = get_global_config()
                     if not conf or not getattr(conf, 'email', None):
                         return
 
                     new_opts = list(getattr(conf.email, 'groups', {}).keys())
                     configured_active = list(getattr(conf.email, 'active_groups', []) or [])
+                    if groups_select is None:
+                        if new_opts != _last_groups_opts:
+                            _last_groups_opts = list(new_opts)
+                            schedule_bg(_build_groups_ui(), name='refresh_groups_ui')
+                        return
+                    if not new_opts:
+                        _last_groups_opts = []
+                        _last_synced_active_groups = []
+                        schedule_bg(_build_groups_ui(), name='refresh_groups_ui')
+                        return
                     next_value, next_synced = _resolve_active_groups_sync(
                         getattr(groups_select, 'value', []),
                         _last_synced_active_groups,
@@ -813,7 +851,7 @@ def create_measurement_card(
         nonlocal last_measurement
         if measurement_controller is None:
             logger.warning('Measurement start/stop requested but no controller is available')
-            ui.notify('Measurement controller unavailable', color='negative')
+            notify_user('Measurement controller unavailable', kind='negative')
             return
         status = _safe_get_status()
         session_active = bool(status.get('is_active', False))

@@ -9,7 +9,7 @@
 metadata:
   version: '1.0'
   description: CVD-Tracker
-  cvd_id: 0
+  cvd_id: 1
   cvd_name: Instanz
   released_at: '2023-01-01'
 
@@ -102,8 +102,10 @@ measurement:
 email:
   website_url: http://localhost:8080/
   recipients:
-    - user@example.com
-  smtp_server: joke
+    - custem.test@wild.com
+    - willemdittloff@gmail.com
+    - willem.dittloff@tuhh.de
+  smtp_server: smtp.freesmtpservers.com
   smtp_port: 25
   sender_email: CHANGE_ME@tuhh.de
   templates:
@@ -192,13 +194,35 @@ email:
            Camera: Index   {camera_index}
            Sensitivity:    {sensitivity}
            ROI enabled:    {roi_enabled}
-  groups: {}
-  active_groups: []
+  groups:
+    TEST:
+      - willemdittloff@gmail.com
+      - custem.test@wild.com
+    TEST2:
+      - willem.dittloff@tuhh.de
+  active_groups:
+    - TEST
+  static_recipients:
+    - custem.test@wild.com
+  explicit_targeting: true
   notifications:
     on_start: true
     on_end: true
     on_stop: true
-  recipient_prefs: {}
+  group_prefs:
+    TEST:
+      on_start: true
+      on_end: false
+      on_stop: true
+    TEST2:
+      on_start: true
+      on_end: true
+      on_stop: true
+  recipient_prefs:
+    custem.test@wild.com:
+      on_start: true
+      on_end: true
+      on_stop: true
 
 # ---------------------------------------------------------------------------
 # GUI

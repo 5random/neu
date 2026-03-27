@@ -1,163 +1,182 @@
-# Help documentation for the Application
 help:
   title: "Application Help"
   sections:
     - title: "Getting Started"
       link: "/"
       content: |
-        Welcome to the CVD-Tracker Application! This guide will help you get started with the basic features and functionalities.
-        
-        ## Initial Setup
-        The application is typically pre-installed. To start it, run the `main.py` script or the provided executable.
-        
-        ## First Steps
-        After launch, the application opens the Dashboard in your default web browser.
-        - **Dashboard**: View the live camera feed, start/stop measurement sessions, and see the system status.
-        - **Settings**: Configure camera, motion detection, email notifications, and system preferences.
+        Welcome to the CVD-Tracker application. This page explains where the main workflows live in the current UI.
+
+        ## Main Areas
+        - **Dashboard**: Start and stop measurements, monitor live status, and quickly change the active email groups for the current run.
+        - **Settings**: Configure camera behavior, motion sensitivity, measurement timing, email recipients, appearance, metadata, configuration import, updates, and logs.
+
+        ## Typical First-Time Workflow
+        1. Open **Settings > Camera** and verify the live feed and ROI.
+        2. Open **Settings > E-Mail Notifications** and configure SMTP, the shared address book, static recipients, and groups.
+        3. Open **Settings > Measurement** and choose which groups are active for the current run and which lifecycle events should send emails.
+        4. Return to the **Dashboard**, set a duration if needed, and start the measurement.
 
     - title: "Camera Settings"
       link: "/settings#camera"
       content: |
-        The Camera Settings allow you to configure the camera parameters for optimal performance.
+        The Camera section combines live camera preview, ROI editing, motion status, and UVC camera controls.
 
-        ## How to Access Camera Settings
-        1. Navigate to the 'Settings' menu at the top right corner of the home screen.
-        2. Select 'Camera Settings' from the dropdown menu.
-        3. Adjust the settings as needed. Changes are applied immediately.
+        ## What You Can Do Here
+        - Verify the live image from the configured camera.
+        - Define or reset the **ROI (Region of Interest)** directly on the live feed.
+        - Enable or disable ROI and edit ROI values numerically.
+        - Adjust camera controls such as exposure, white balance, brightness, gain, and related UVC options.
 
-        ## How to Adjust Camera Settings for Optimal Performance
-        - **Resolution**: Choose a resolution that balances quality and performance. 
-        - **Frame Rate**: Set the frame rate (e.g., 30fps) for smooth video.
-        - **Backlight Compensation**: Find a balance that enhances visibility without overexposing the image.
-        - **White Balance**: Use 'Auto' for general use. For specific lighting conditions, manually adjust the color temperature.
-        - **Exposure**: Set to 'Auto' for most scenarios. Manual adjustment can help in difficult lighting.
-        - **Brightness and Contrast**: Adjust these settings to improve image clarity.
-        - **Gain**: Control gain settings to manage low-light performance. Higher gain can introduce noise.
-        - **Gamma**: Modify gamma settings to adjust the midtones of the image.
-        - **Sharpness**: Adjust sharpness to enhance details.
-        - **Saturation**: Increase saturation for more vibrant colors. Note: This has **no effect** on motion detection (which uses grayscale).
-        - **Hue**: Adjust hue to correct color tones. Note: This has **no effect** on motion detection.
-
-        ## Save and Reset
-        - Settings are saved automatically or via the 'Save' button depending on the control.
-        - To revert to default settings, click the 'Reset to Default' button.
-
-    - title: "Motion Detection Settings"
-      link: "/settings#motion"
-      content: |
-        Motion Detection Settings allow you to configure how the application detects motion in the camera feed.
-
-        ## How to Access Motion Detection Settings
-        1. Navigate to the 'Settings' menu.
-        2. Go to the 'Motion Detection' section.
-        3. Enable/Disable ROI using the checkbox.
-        4. Click the 'Edit' (Crop icon) button to open the ROI editor.
-
-        ## How to Adjust Motion Detection Settings
-        - **ROI (Region of Interest)**: Define a specific area to monitor. This reduces false alarms from background movement (e.g., trees outside a window).
-        - **Sensitivity**: Adjust the slider (0-100%). Higher sensitivity detects smaller movements but increases false positives.
-        - **Learning Rate**: Controls how fast the system adapts to lighting changes.
-
-        ### How to Adjust the Region of Interest (ROI)
-        1. Open the ROI Editor.
-        2. **Click once** on the video feed to set the top-left corner.
-        3. **Click a second time** to set the bottom-right corner.
-        4. The selected area will be marked with a rectangle.
-        5. Click 'Save' to apply the ROI.
-        6. Use 'Reset' to clear the selection.
+        ## ROI Workflow
+        1. Open **Settings > Camera**.
+        2. Use the live camera feed area to inspect the current ROI overlay.
+        3. Adjust ROI values or toggle ROI on/off.
+        4. Click **Save ROI** to persist the current ROI.
 
         ## Tips
-        - Test the settings by moving within the defined ROI. The "Motion Detected" status on the Dashboard will update in real-time.
-        - If you get too many false alarms, try reducing sensitivity or redefining the ROI.
+        - Use ROI to ignore irrelevant motion sources outside the monitored area.
+        - If motion detection feels unstable, verify both ROI placement and camera exposure settings.
+
+    - title: "Motion Detection"
+      link: "/settings#camera"
+      content: |
+        Motion sensitivity is controlled from the Camera area. ROI editing is also part of the Camera workflow.
+
+        ## Motion Sensitivity
+        - The **Motion Status** area includes a **Sensitivity** control.
+        - Higher sensitivity reacts to smaller movement.
+        - Lower sensitivity reduces false positives from shadows, noise, or lighting changes.
+
+        ## Current UI Split
+        - **Sensitivity** belongs to the motion status controls.
+        - **ROI editing** belongs to the live camera feed in the Camera section.
+
+        ## Practical Guidance
+        - Start with a moderate sensitivity and test with real movement.
+        - If you get too many alerts, reduce sensitivity first, then tighten the ROI if necessary.
 
     - title: "Measurement & Sessions"
       link: "/settings#measurement"
       content: |
-        The measurement settings define how a monitoring session behaves and when alerts are triggered.
+        The Measurement section controls runtime alert behavior and the lifecycle email routing for the current run.
 
-        ## Starting a Session
-        1. On the Dashboard, set the desired **Duration** (e.g., 60 minutes).
-        2. Click **Start Measurement**.
-        3. The system is now armed.
+        ## Session Controls
+        - **Duration** defines how long a measurement may run before it stops automatically.
+        - **Alert Delay** defines how long no motion may be detected before an alert can be triggered.
+        - **Cooldown** prevents repeated alerts from firing too quickly.
+        - **Snapshot** controls whether alert emails include an image.
 
-        ## Measurement Parameters
-        - **Duration**: Defines how long a session should run before it stops automatically.
-        - **Alert Delay**: Determines how long no motion may be detected before an alarm is triggered.
-        - **Cooldown**: Prevents repeated alarms from firing immediately one after another.
+        ## Lifecycle Email Routing
+        - Global switches define whether **start**, **end**, and **stop** emails are enabled.
+        - **Active Groups** define which recipient groups are used for the current run.
+        - **Static recipients** are always added automatically and are managed in the E-Mail section.
+        - Per-group and per-static-recipient event permissions define which lifecycle events each source may receive.
 
-        ## Alert Logic
-        - If **no motion** is detected for the configured **Alert Delay** (e.g., 5 minutes), an alarm is triggered.
-        - An email notification (with snapshot) is sent to the configured recipients.
-        - After an alarm, the system enters a **Cooldown** period before it can trigger another alarm.
+        ## Where To Change What
+        - Use **Settings > Measurement** for runtime routing and lifecycle event permissions.
+        - Use the **Dashboard** as a quick selector for active groups during operation.
+        - If no groups are available on the Dashboard, create them first in **Settings > E-Mail Notifications**.
+        - Use **Settings > E-Mail Notifications** to manage the address book, static recipients, groups, and SMTP delivery.
 
     - title: "E-Mail Notifications"
       link: "/settings#email"
       content: |
-        Configure email alerts for motion timeouts and session events.
+        The E-Mail section manages the delivery infrastructure and recipient structure used by measurement and alert emails.
 
-        ## Configuration Steps
-        1. Go to **Settings > E-Mail**.
-        2. **SMTP Settings**: Enter your mail server details.
-           - *Note for TUHH users*: Use `mail.tuhh.de`, Port 25. Authentication is typically not required within the intranet.
-        3. **Recipients**: Add email addresses to the list.
-        4. **Groups**: You can organize recipients into groups (e.g., "Admins", "Users") and activate specific groups for the current session.
-        5. **Templates**: Customize the subject and body of the alert emails.
+        ## SMTP
+        - Enter the sender address, SMTP server, and SMTP port.
+        - Use **Send test email** to verify that the current setup can reach the effective recipient set.
 
-        ## Testing
-        - Use the **Send Test Email** button to verify your configuration.
-        - Check your spam folder if the test email doesn't arrive.
+        ## Address Book
+        - Add every known email address to the shared address book.
+        - Rename or delete addresses directly in the table.
+        - The address book is the shared source for static recipients and group membership.
+
+        ## Static Recipients
+        - Use the **Static** column in the address-book table to mark recipients that should always receive emails.
+        - Static recipients are always included in addition to any currently active groups.
+
+        ## Groups
+        - Use the guided group stepper to create, edit, review, save, or delete recipient groups.
+        - Groups are used to organize non-static recipients and to select the audience for the current run.
+
+        ## Important Workflow Note
+        - This page manages addresses, static recipients, groups, and SMTP settings.
+        - The **active groups for the current run** are selected in **Settings > Measurement** or via the Dashboard quick selector.
+        - If the Dashboard quick selector is empty, create at least one group here first.
+
+    - title: "Appearance"
+      link: "/settings#appearance"
+      content: |
+        The Appearance section stores browser-local UI preferences.
+
+        ## Available Option
+        - **Dark mode** toggles the light and dark theme for the current browser session and future visits from the same browser profile.
+
+        ## Notes
+        - This preference affects only the browser UI.
+        - It does not change camera behavior, email delivery, or backend configuration.
 
     - title: "Metadata"
       link: "/settings#metadata"
       content: |
-        The metadata section identifies this tracker instance throughout the UI and email notifications.
+        Metadata identifies this tracker instance across the interface and outgoing emails.
 
         ## Available Fields
-        - **CVD ID**: Numeric identifier for the tracker instance.
-        - **CVD Name**: Human-readable name shown in the header, footer, and templates.
+        - **CVD ID**: Numeric identifier of the tracker instance.
+        - **CVD Name**: Human-readable name shown in the header, footer, and outgoing email content.
 
         ## Applying Changes
         - Click **Apply** to save metadata changes.
-        - Restart the application if you want all UI areas to reflect the updated values consistently.
+        - The preview title updates immediately so you can verify the naming before saving.
 
     - title: "Configuration"
       link: "/settings#config"
       content: |
-        Use the configuration section to download the active `config.yaml` file for backup or review.
+        The Configuration section supports both exporting the current config and importing settings from another config file through a guided flow.
 
-        ## Typical Workflow
-        - Download the current configuration before making larger changes.
-        - Store backup copies in a safe location.
-        - Compare saved versions if you need to trace configuration changes later.
+        ## Download
+        - Download the current `config.yaml` as a backup before major changes.
+
+        ## Guided Import
+        1. Upload a YAML config file.
+        2. Review invalid, missing, or unchanged entries.
+        3. Apply either all transferable settings or only selected ready entries.
+
+        ## Import Notes
+        - Invalid values are blocked and shown explicitly.
+        - Unknown settings are not imported.
+        - The guided import updates only the settings you choose to apply.
 
     - title: "Software Update"
       link: "/settings#update"
       content: |
-        The update section checks whether the local installation is behind the configured Git source.
+        The Software Update section checks whether the local installation is behind the configured source revision.
 
-        ## Update Process
+        ## Update Flow
         - Click **Check & Update**.
-        - If the application is already current, the page reports that no update is required.
-        - If updates are available, the application opens the updater flow automatically.
+        - If the installation is already current, the page reports that no update is required.
+        - If updates are available, the application forwards you into the updater flow.
 
     - title: "Logs"
       link: "/settings#logs"
       content: |
-        The logs section provides tools to inspect recent events and export them for debugging.
+        The Logs section helps with troubleshooting and export.
 
         ## Available Tools
-        - **Download Logs (ZIP)** packages the recent log files for external analysis.
-        - **Live Log** shows the current application output directly in the browser.
-        - **Level Filter** limits the displayed entries to a specific severity.
-        - **Pause** and **Clear** help you focus on specific events during troubleshooting.
+        - **Download Logs (ZIP)** exports recent log files.
+        - **Live Log** shows current application output in the browser.
+        - **Level Filter** limits the visible entries to a selected severity.
+        - **Pause** and **Clear** help isolate a specific issue while reproducing it.
 
     - title: "Troubleshooting"
       link: "/settings#logs"
       content: |
-        **Common Issues:**
-        
-        - **Camera not working**: Check USB connection. Try a different USB port. Restart the app.
-        - **No Emails**: Verify SMTP settings. Check if the firewall blocks Port 25.
-        - **False Alarms**: Reduce Motion Sensitivity. Check ROI for flickering lights or moving shadows.
-        
-        If problems persist, check the **Logs** for detailed error messages.
+        ## Common Issues
+        - **Camera not working**: Check the physical connection, selected device index, and camera section status.
+        - **No emails arrive**: Verify SMTP settings, sender address, and whether the intended recipients are static or part of an active group for the current run.
+        - **Too many alerts**: Reduce motion sensitivity, review ROI placement, and confirm alert delay and cooldown values.
+        - **Wrong people receive lifecycle emails**: Check static recipients in the E-Mail section and active groups plus event permissions in the Measurement section.
+
+        ## Next Step
+        If the issue persists, open **Settings > Logs** and export the recent logs for inspection.

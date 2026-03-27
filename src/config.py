@@ -266,6 +266,8 @@ class EmailConfig:
     active_groups: List[str] = field(default_factory=list)
     # Recipients that always receive notifications, regardless of active groups
     static_recipients: List[str] = field(default_factory=list)
+    # Explicit targeting disables the legacy fallback to the shared address book
+    explicit_targeting: bool = False
     # Measurement notification toggles
     notifications: Dict[str, bool] = field(default_factory=dict)
     # Per-group notification preferences
@@ -315,6 +317,11 @@ class EmailConfig:
         for idx, email in enumerate(self.static_recipients):
             if not isinstance(email, str):
                 raise TypeError(f"EmailConfig.static_recipients[{idx}] must be str, got {type(email).__name__}: {email!r}")
+
+        if not isinstance(self.explicit_targeting, bool):
+            raise TypeError(
+                f"EmailConfig.explicit_targeting must be bool, got {type(self.explicit_targeting).__name__}: {self.explicit_targeting!r}"
+            )
 
         # notifications
         if not isinstance(self.notifications, dict):
@@ -382,6 +389,8 @@ class EmailConfig:
         for mail in self.static_recipients or []:
             if not self.EMAIL_RE.match(mail):
                 errors.append(f"invalid static recipient email address: {mail}")
+        if not isinstance(self.explicit_targeting, bool):
+            errors.append(f"explicit_targeting must be bool, got {type(self.explicit_targeting).__name__}")
         # Notifications flags (optional)
         if self.notifications is not None and isinstance(self.notifications, dict):
             for k, v in self.notifications.items():
@@ -626,6 +635,31 @@ class EmailConfig:
         addresses.extend((self.recipient_prefs or {}).keys())
         return self._dedupe_valid_emails(addresses)
 
+    def uses_explicit_targeting(self) -> bool:
+        """Return whether explicit targeting is active for delivery resolution."""
+        return bool(self.explicit_targeting or self.static_recipients or self.active_groups)
+
+    def get_static_recipients_for_editor(self) -> List[str]:
+        """Return the static-recipient selection shown in GUI editors.
+
+        Legacy configs without explicit targeting expose the shared address book as
+        the effective static-recipient set until the first explicit save happens.
+        """
+        configured = self._dedupe_valid_emails(list(self.static_recipients or []))
+        if configured or self.active_groups or self.explicit_targeting:
+            return configured
+        return self.get_known_recipients()
+
+    def enable_explicit_targeting(self, *, materialize_legacy_targets: bool = False) -> None:
+        """Switch the config to explicit targeting mode.
+
+        When requested, legacy fallback recipients are materialized into
+        ``static_recipients`` first so the effective target set stays stable.
+        """
+        if materialize_legacy_targets and not self.uses_explicit_targeting():
+            self.static_recipients = self.get_target_recipients()
+        self.explicit_targeting = True
+
     def get_target_recipients(self) -> List[str]:
         """Compute effective recipients for alerts/test mail.
 
@@ -633,7 +667,7 @@ class EmailConfig:
         If neither is configured, fall back to the legacy behaviour of sending to
         the full recipients list.
         """
-        explicit_targeting = bool(self.static_recipients or self.active_groups)
+        explicit_targeting = self.uses_explicit_targeting()
         collected: List[str] = list(self.static_recipients or [])
         for group_name in self.active_groups or []:
             collected.extend((self.groups or {}).get(group_name, []) or [])
@@ -651,7 +685,7 @@ class EmailConfig:
         if not bool((self.notifications or {}).get(event_key, False)):
             return []
 
-        explicit_targeting = bool(self.static_recipients or self.active_groups)
+        explicit_targeting = self.uses_explicit_targeting()
         collected: List[str] = []
 
         for addr in self.static_recipients or []:
@@ -937,6 +971,7 @@ _CONFIG_IMPORT_PATHS: Dict[str, List[str]] = {
         "email.groups",
         "email.active_groups",
         "email.static_recipients",
+        "email.explicit_targeting",
         "email.notifications",
         "email.group_prefs",
         "email.recipient_prefs",
@@ -1206,6 +1241,10 @@ def _normalize_notifications(value: Any) -> Dict[str, bool]:
         normalized_key = EmailConfig._normalize_event_pref_key(key, context="notifications")
         result[normalized_key] = _coerce_bool(item)
     return result
+
+
+def _normalize_explicit_targeting(value: Any) -> bool:
+    return _coerce_bool(value)
 
 
 def _normalize_group_prefs(value: Any, *, known_groups: Dict[str, List[str]]) -> Dict[str, Dict[str, bool]]:
@@ -1827,6 +1866,7 @@ def _analyze_email_section(imported_data: Dict[str, Any], collector: _ConfigImpo
         "groups",
         "active_groups",
         "static_recipients",
+        "explicit_targeting",
         "notifications",
         "group_prefs",
         "recipient_prefs",
@@ -1979,6 +2019,15 @@ def _analyze_email_section(imported_data: Dict[str, Any], collector: _ConfigImpo
             collector.add_invalid(path, raw_value, str(exc))
         else:
             collector.add_valid(path, raw_value, normalized)
+
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="explicit_targeting",
+        path="email.explicit_targeting",
+        seen_paths=seen_paths,
+        converter=_normalize_explicit_targeting,
+    )
 
     if "notifications" in section_data:
         path = "email.notifications"
@@ -2532,6 +2581,7 @@ def _create_default_config() -> AppConfig:
                 }
             },
             static_recipients=["user@example.com"],
+            explicit_targeting=True,
             notifications={"on_start": False, "on_end": False, "on_stop": False},
             group_prefs={},
             recipient_prefs={}

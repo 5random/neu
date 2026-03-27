@@ -8,6 +8,7 @@ from src.gui.instances import get_camera, get_email_system, get_measurement_cont
 from src.gui.layout import build_footer, build_header
 
 logger = get_logger('gui.index')
+SHOW_DASHBOARD_ACTIVE_GROUP_SELECTOR = True
 
 
 @ui.page('/')
@@ -33,7 +34,7 @@ def index_page() -> None:
                     measurement_controller=measurement_controller,
                     camera=camera,
                     email_system=email_system,
-                    show_recipients=False,
+                    show_recipients=SHOW_DASHBOARD_ACTIVE_GROUP_SELECTOR,
                     confirm_stop=True,
                 )
                 
