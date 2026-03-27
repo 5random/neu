@@ -200,8 +200,7 @@ email:
       - custem.test@wild.com
     TEST2:
       - willem.dittloff@tuhh.de
-  active_groups:
-    - TEST
+  active_groups: []
   static_recipients:
     - custem.test@wild.com
   explicit_targeting: true

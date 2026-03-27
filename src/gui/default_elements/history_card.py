@@ -91,12 +91,24 @@ def _rows_changed(
     return False
 
 
+def _build_row_fingerprint(rows: List[Dict[str, Any]]) -> str:
+    """Build a compact fingerprint of the displayed rows for fast comparison."""
+    parts = []
+    for row in rows:
+        parts.append(f"{row.get('id')}|{row.get('timestamp')}|{row.get('image_url')}|{row.get('session_id')}")
+    return '\n'.join(parts)
+
+
 def create_history_card(*, max_entries: int = 5) -> None:
     """Create a card displaying the alert history from JSON."""
 
     history_dir = get_history_dir()
     history_file = get_history_file()
     last_history_revision = get_history_revision(history_file=history_file)
+    # Track the fingerprint of currently displayed rows to skip unnecessary rebuilds
+    current_fingerprint = ''
+    # Keep a reference to the currently displayed rows for external access
+    current_rows: list[dict[str, Any]] = []
 
     def load_history() -> List[Dict[str, Any]]:
         try:
@@ -106,21 +118,67 @@ def create_history_card(*, max_entries: int = 5) -> None:
             logger.error(f"Error loading history: {e}")
             return []
 
-    def refresh_table(*, notify: bool = False, revision: int | None = None) -> None:
+    def _rebuild_rows_ui(rows: List[Dict[str, Any]]) -> None:
+        """Clear and rebuild the history rows container with fresh data."""
+        nonlocal current_fingerprint, current_rows
+        rows_container.clear()
+        current_rows = list(rows)
+        current_fingerprint = _build_row_fingerprint(rows)
+
+        if not rows:
+            with rows_container:
+                ui.label('No alert history entries.').classes('text-caption text-grey-6 q-pa-sm')
+            return
+
+        with rows_container:
+            # Table header
+            with ui.row().classes('w-full items-center gap-0 text-caption font-bold text-grey-7') \
+                    .style('border-bottom: 1px solid rgba(0,0,0,0.12); padding: 8px 12px;'):
+                ui.label('Time').classes('flex-1')
+                ui.label('Session').classes('flex-1')
+                ui.label('Image').classes('text-center').style('width: 100px;')
+
+            # Data rows
+            for row in rows:
+                _build_single_row(row)
+
+    def _build_single_row(row: Dict[str, Any]) -> None:
+        """Render a single history row with its image."""
+        with ui.row().classes('w-full items-center gap-0') \
+                .style('border-bottom: 1px solid rgba(0,0,0,0.06); padding: 6px 12px; min-height: 60px;'):
+            ui.label(str(row.get('timestamp', '-'))).classes('flex-1 text-caption')
+            ui.label(str(row.get('session_id', '-'))).classes('flex-1 text-caption')
+
+            image_url = row.get('image_url', '')
+            with ui.element('div').classes('text-center').style('width: 100px;'):
+                if image_url:
+                    img = (
+                        ui.image(image_url)
+                        .style('height: 50px; max-width: 90px; object-fit: cover; cursor: pointer; border-radius: 4px;')
+                        .props('no-spinner no-transition')
+                    )
+                    img.on('click', lambda e, url=image_url: open_image(url))
+                else:
+                    ui.label('-').classes('text-caption text-grey')
+
+    def refresh_display(*, notify: bool = False, revision: int | None = None) -> None:
         nonlocal last_history_revision
         revision_snapshot = get_history_revision(history_file=history_file) if revision is None else revision
         rows = load_history()
 
-        # Skip the expensive table.update() when the visible data hasn't changed.
-        # This prevents Vue/Quasar from destroying and re-creating <q-img> slots
-        # which would cause the alert images to flicker/reload.
-        if not notify and not _rows_changed(table.rows, rows):
+        # Compare fingerprints to skip rebuilds when the data hasn't changed.
+        new_fingerprint = _build_row_fingerprint(rows)
+        if not notify and new_fingerprint == current_fingerprint:
             last_history_revision = revision_snapshot
             return
 
-        table.rows = rows
-        table.update()
+        logger.debug(
+            'History display rebuild: notify=%s, revision=%s, rows=%s',
+            notify, revision_snapshot, len(rows),
+        )
+        _rebuild_rows_ui(rows)
         last_history_revision = revision_snapshot
+
         if notify:
             if not rows:
                 ui.notify("No history found", type="info")
@@ -130,17 +188,17 @@ def create_history_card(*, max_entries: int = 5) -> None:
     def _handle_history_changed(revision: int) -> None:
         if revision <= last_history_revision:
             return
-        refresh_table(revision=revision)
+        refresh_display(revision=revision)
 
     def clear_history() -> None:
         try:
             replace_history_entries([], history_file=history_file)
-            
-            # TODO: Decide on image deletion policy. 
+
+            # TODO: Decide on image deletion policy.
             # Currently preserving files to prevent accidental data loss.
             # Future: Move to 'deleted' folder or implement hard delete with confirmation.
-            
-            refresh_table()
+
+            refresh_display()
             ui.notify("History cleared", type="positive")
         except Exception as e:
             ui.notify(f"Error clearing history: {e}", type="negative")
@@ -170,7 +228,7 @@ def create_history_card(*, max_entries: int = 5) -> None:
         """
         if not image_path:
             return False
-            
+
         try:
             if resolve_history_image_path(image_path, history_dir) is None:
                 logger.warning(f"Invalid history image path: {image_path}")
@@ -179,6 +237,24 @@ def create_history_card(*, max_entries: int = 5) -> None:
         except Exception as e:
             logger.error(f"Path validation error: {e}")
             return False
+
+    def open_image(image_path: str) -> None:
+        if not image_path:
+            ui.notify("No image path provided", type="warning")
+            return
+
+        if not validate_image_path(image_path):
+            ui.notify("Invalid image path", type="negative")
+            return
+
+        try:
+            with ui.dialog().classes('w-full') as dialog, ui.card().classes('w-full'):
+                ui.image(image_path).classes('w-full')
+                ui.button('Close', on_click=dialog.close).classes('w-full')
+            dialog.open()
+        except Exception as e:
+            logger.error(f"Error opening image dialog: {e}")
+            ui.notify("Error opening image", type="negative")
 
     with ui.card().classes('w-full h-full'):
         with ui.row().classes('w-full items-center justify-between gap-2 flex-wrap'):
@@ -191,78 +267,13 @@ def create_history_card(*, max_entries: int = 5) -> None:
             )
             with ui.row().classes('gap-2 flex-wrap'):
                 ui.button(icon='download', on_click=download_history).props('flat round').tooltip('Download history.json')
-                ui.button(icon='refresh', on_click=lambda: refresh_table(notify=True)).props('flat round').tooltip('Refresh')
+                ui.button(icon='refresh', on_click=lambda: refresh_display(notify=True)).props('flat round').tooltip('Refresh')
                 create_action_button('clear', label='Clear History', icon='delete', on_click=clear_history)
         ui.label(f'Showing latest {max(0, int(max_entries))} alerts').classes('text-caption text-grey-7')
 
-        # Columns for the table
-        columns: list[dict[str, Any]] = [
-            {'name': 'timestamp', 'label': 'Time', 'field': 'timestamp', 'sortable': True, 'align': 'left'},
-            {'name': 'session_id', 'label': 'Session', 'field': 'session_id', 'sortable': True, 'align': 'left'},
-            {'name': 'image', 'label': 'Image', 'field': 'image_path', 'align': 'center'},
-        ]
-
-        # Use 'id' as unique row key
-        table = ui.table(columns=columns, rows=[], row_key='id').classes('w-full')
-        
-        # Add slot for image preview
-        table.add_slot('body-cell-image', r'''
-            <q-td :key="'img-' + props.row.id" :props="props">
-                <q-img 
-                    v-if="props.row.image_url"
-                    :key="props.row.id"
-                    :src="props.row.image_url" 
-                    no-spinner
-                    loading="lazy"
-                    style="height: 50px; max-width: 90px"
-                    class="rounded"
-                    @click="$emit('image-click', props.row.image_url)"
-                >
-                    <template v-slot:error>
-                        <div class="absolute-full flex flex-center bg-negative text-white">
-                            Error
-                        </div>
-                    </template>
-                </q-img>
-                <span v-else>-</span>
-            </q-td>
-        ''')
-        
-        # Handle image click to show full size
-        def open_image(image_path: str) -> None:
-            if not image_path:
-                ui.notify("No image path provided", type="warning")
-                return
-            
-            if not validate_image_path(image_path):
-                ui.notify("Invalid image path", type="negative")
-                return
-
-            try:
-                with ui.dialog().classes('w-full') as dialog, ui.card().classes('w-full'):
-                    ui.image(image_path).classes('w-full')
-                    ui.button('Close', on_click=dialog.close).classes('w-full')
-                dialog.open()
-            except Exception as e:
-                logger.error(f"Error opening image dialog: {e}")
-                ui.notify("Error opening image", type="negative")
-
-        def handle_image_click(e: Any) -> None:
-            if not e or not e.args:
-                return
-            
-            # Safe extraction
-            path = e.args
-            # If args is a list/tuple (standard event args), take first
-            if isinstance(path, (list, tuple)) and len(path) > 0:
-                path = path[0]
-            
-            if isinstance(path, str):
-                open_image(path)
-            else:
-                logger.warning(f"Invalid image path in event: {path}")
-
-        table.on('image-click', handle_image_click)
+        # Container for history rows – managed manually to avoid Quasar table
+        # re-rendering which causes image flicker.
+        rows_container = ui.column().classes('w-full gap-0')
 
         def _unregister_history_updates() -> None:
             unregister_history_listener(_handle_history_changed, history_file=history_file)
@@ -293,5 +304,4 @@ def create_history_card(*, max_entries: int = 5) -> None:
             client.on_disconnect(_cleanup_on_disconnect)
 
         # Initial load
-        refresh_table(revision=get_history_revision(history_file=history_file))
-
+        refresh_display(revision=get_history_revision(history_file=history_file))
