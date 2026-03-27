@@ -41,3 +41,51 @@ def test_calculate_session_progress_ratio_returns_zero_for_non_positive_window()
     session_max = timedelta(0)
 
     assert measurementcard._calculate_session_progress_ratio(elapsed, session_max) == 0.0
+
+
+def test_resolve_active_groups_sync_tracks_clean_external_updates():
+    selection, synced = measurementcard._resolve_active_groups_sync(
+        ["ops"],
+        ["ops"],
+        ["lab"],
+        valid_options=["ops", "lab"],
+    )
+
+    assert selection == ["lab"]
+    assert synced == ["lab"]
+
+
+def test_resolve_active_groups_sync_keeps_dirty_local_selection():
+    selection, synced = measurementcard._resolve_active_groups_sync(
+        ["ops"],
+        ["lab"],
+        ["lab"],
+        valid_options=["ops", "lab"],
+    )
+
+    assert selection == ["ops"]
+    assert synced == ["lab"]
+
+
+def test_has_unsaved_active_group_changes_uses_synced_snapshot():
+    assert measurementcard._has_unsaved_active_group_changes(
+        ["ops"],
+        ["lab"],
+        valid_options=["ops", "lab"],
+    )
+    assert not measurementcard._has_unsaved_active_group_changes(
+        ["lab"],
+        ["lab"],
+        valid_options=["ops", "lab"],
+    )
+
+
+def test_needs_active_groups_value_refresh_when_removed_group_is_still_selected():
+    assert measurementcard._needs_active_groups_value_refresh(
+        ["ops", "removed"],
+        ["ops"],
+    )
+    assert not measurementcard._needs_active_groups_value_refresh(
+        ["ops"],
+        ["ops"],
+    )

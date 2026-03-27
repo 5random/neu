@@ -1,11 +1,14 @@
 from pathlib import Path
 
+import yaml
+
 from src.config import (
     AppConfig,
     ConfigImportEntry,
     _create_default_config,
     analyze_imported_config_text,
     apply_imported_config_preview,
+    load_config,
     sync_runtime_config_instances,
 )
 from src.cam.motion import MotionDetector
@@ -87,6 +90,200 @@ email:
     entry = _entry(preview, "email.active_groups")
     assert entry.status == "invalid"
     assert "unknown groups" in entry.reason
+
+
+def test_analyze_imported_config_accepts_static_recipients_and_group_prefs() -> None:
+    preview = analyze_imported_config_text(
+        """
+email:
+  groups:
+    ops:
+      - ops@example.com
+  static_recipients:
+    - static@example.com
+  group_prefs:
+    ops:
+      on_start: false
+      on_end: true
+      on_stop: true
+""",
+        current_config=_create_default_config(),
+    )
+
+    assert _entry(preview, "email.static_recipients").status == "ready"
+    assert _entry(preview, "email.group_prefs").status == "ready"
+
+
+def test_analyze_imported_config_rejects_group_prefs_for_unknown_group() -> None:
+    preview = analyze_imported_config_text(
+        """
+email:
+  group_prefs:
+    missing:
+      on_start: true
+""",
+        current_config=_create_default_config(),
+    )
+
+    entry = _entry(preview, "email.group_prefs")
+    assert entry.status == "invalid"
+    assert "unknown groups" in entry.reason
+
+
+def test_analyze_imported_config_rejects_unknown_notification_event_key() -> None:
+    preview = analyze_imported_config_text(
+        """
+email:
+  notifications:
+    on_star: true
+""",
+        current_config=_create_default_config(),
+    )
+
+    entry = _entry(preview, "email.notifications")
+    assert entry.status == "invalid"
+    assert "unknown event key" in entry.reason
+
+
+def test_analyze_imported_config_rejects_unknown_group_pref_event_key() -> None:
+    preview = analyze_imported_config_text(
+        """
+email:
+  groups:
+    ops:
+      - ops@example.com
+  group_prefs:
+    ops:
+      on_star: false
+""",
+        current_config=_create_default_config(),
+    )
+
+    entry = _entry(preview, "email.group_prefs")
+    assert entry.status == "invalid"
+    assert "unknown event key" in entry.reason
+
+
+def test_analyze_imported_config_rejects_unknown_recipient_pref_event_key() -> None:
+    preview = analyze_imported_config_text(
+        """
+email:
+  recipient_prefs:
+    ops@example.com:
+      on_star: false
+""",
+        current_config=_create_default_config(),
+    )
+
+    entry = _entry(preview, "email.recipient_prefs")
+    assert entry.status == "invalid"
+    assert "unknown event key" in entry.reason
+
+
+def test_load_config_uses_default_fallback_for_unknown_email_event_key() -> None:
+    default_cfg = _create_default_config()
+    temp_path = Path(".pytest_local_runtime")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "invalid_event_config.yaml"
+    log_path = temp_path / "app.log"
+    raw = {
+        "metadata": {
+            "version": default_cfg.metadata.version,
+            "description": default_cfg.metadata.description,
+            "cvd_id": default_cfg.metadata.cvd_id,
+            "cvd_name": default_cfg.metadata.cvd_name,
+            "released_at": default_cfg.metadata.released_at,
+        },
+        "webcam": {
+            "camera_index": default_cfg.webcam.camera_index,
+            "default_resolution": dict(default_cfg.webcam.default_resolution),
+            "fps": default_cfg.webcam.fps,
+            "resolution": list(default_cfg.webcam.resolution),
+        },
+        "uvc_controls": {
+            "brightness": default_cfg.uvc_controls.brightness,
+            "hue": default_cfg.uvc_controls.hue,
+            "contrast": default_cfg.uvc_controls.contrast,
+            "saturation": default_cfg.uvc_controls.saturation,
+            "sharpness": default_cfg.uvc_controls.sharpness,
+            "gamma": default_cfg.uvc_controls.gamma,
+            "white_balance": {
+                "auto": default_cfg.uvc_controls.white_balance.auto,
+                "value": default_cfg.uvc_controls.white_balance.value,
+            },
+            "gain": default_cfg.uvc_controls.gain,
+            "backlight_compensation": default_cfg.uvc_controls.backlight_compensation,
+            "exposure": {
+                "auto": default_cfg.uvc_controls.exposure.auto,
+                "value": default_cfg.uvc_controls.exposure.value,
+            },
+        },
+        "motion_detection": {
+            "region_of_interest": dict(default_cfg.motion_detection.region_of_interest),
+            "sensitivity": default_cfg.motion_detection.sensitivity,
+            "background_learning_rate": default_cfg.motion_detection.background_learning_rate,
+            "min_contour_area": default_cfg.motion_detection.min_contour_area,
+        },
+        "measurement": {
+            "auto_start": default_cfg.measurement.auto_start,
+            "session_timeout_minutes": default_cfg.measurement.session_timeout_minutes,
+            "session_timeout_seconds": default_cfg.measurement.session_timeout_seconds,
+            "save_alert_images": default_cfg.measurement.save_alert_images,
+            "image_save_path": default_cfg.measurement.image_save_path,
+            "image_format": default_cfg.measurement.image_format,
+            "image_quality": default_cfg.measurement.image_quality,
+            "alert_delay_seconds": default_cfg.measurement.alert_delay_seconds,
+            "max_alerts_per_session": default_cfg.measurement.max_alerts_per_session,
+            "alert_check_interval": default_cfg.measurement.alert_check_interval,
+            "alert_cooldown_seconds": default_cfg.measurement.alert_cooldown_seconds,
+            "alert_include_snapshot": default_cfg.measurement.alert_include_snapshot,
+            "inactivity_timeout_minutes": default_cfg.measurement.inactivity_timeout_minutes,
+            "motion_summary_interval_seconds": default_cfg.measurement.motion_summary_interval_seconds,
+            "enable_motion_summary_logs": default_cfg.measurement.enable_motion_summary_logs,
+        },
+        "email": {
+            "website_url": default_cfg.email.website_url,
+            "recipients": list(default_cfg.email.recipients),
+            "smtp_server": default_cfg.email.smtp_server,
+            "smtp_port": default_cfg.email.smtp_port,
+            "sender_email": default_cfg.email.sender_email,
+            "templates": dict(default_cfg.email.templates),
+            "groups": dict(default_cfg.email.groups),
+            "active_groups": list(default_cfg.email.active_groups),
+            "static_recipients": list(default_cfg.email.static_recipients),
+            "notifications": {"on_star": True},
+            "group_prefs": dict(default_cfg.email.group_prefs),
+            "recipient_prefs": dict(default_cfg.email.recipient_prefs),
+        },
+        "gui": {
+            "title": default_cfg.gui.title,
+            "host": default_cfg.gui.host,
+            "port": default_cfg.gui.port,
+            "auto_open_browser": default_cfg.gui.auto_open_browser,
+            "update_interval_ms": default_cfg.gui.update_interval_ms,
+        },
+        "logging": {
+            "level": default_cfg.logging.level,
+            "file": str(log_path),
+            "max_file_size_mb": default_cfg.logging.max_file_size_mb,
+            "backup_count": default_cfg.logging.backup_count,
+            "console_output": False,
+        },
+    }
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        loaded = load_config(str(config_path))
+        assert loaded.email.notifications == default_cfg.email.notifications
+    finally:
+        for path in (config_path, log_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        try:
+            temp_path.rmdir()
+        except OSError:
+            pass
 
 
 def test_apply_imported_config_preview_applies_only_selected_paths() -> None:

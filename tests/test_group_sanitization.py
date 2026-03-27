@@ -3,8 +3,11 @@
 These tests verify that invalid email addresses are not stored in groups
 and duplicates are removed while preserving order.
 """
+from src.config import _create_default_config
 from src.gui.settings_elements.email_settings import (
+    SUPPORTED_TEMPLATE_PLACEHOLDERS,
     extract_rename_addresses,
+    get_template_overview,
     sanitize_group_addresses,
     sanitize_groups_dict,
 )
@@ -47,3 +50,18 @@ def test_extract_rename_addresses_accepts_dict_and_sequence_payloads():
         "old@example.com",
         "new@example.com",
     )
+
+
+def test_get_template_overview_returns_all_effective_templates():
+    overview = get_template_overview(_create_default_config().email)
+
+    assert [entry["key"] for entry in overview] == [
+        "alert",
+        "test",
+        "measurement_start",
+        "measurement_end",
+        "measurement_stop",
+    ]
+    assert all(entry["subject"] for entry in overview)
+    assert all(entry["body"] for entry in overview)
+    assert "{timestamp}" in SUPPORTED_TEMPLATE_PLACEHOLDERS

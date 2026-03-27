@@ -264,13 +264,19 @@ class EmailConfig:
     # Recipient groups and active group selection
     groups: Dict[str, List[str]] = field(default_factory=dict)
     active_groups: List[str] = field(default_factory=list)
+    # Recipients that always receive notifications, regardless of active groups
+    static_recipients: List[str] = field(default_factory=list)
     # Measurement notification toggles
     notifications: Dict[str, bool] = field(default_factory=dict)
+    # Per-group notification preferences
+    # Mapping: group_name -> { 'on_start': bool, 'on_end': bool, 'on_stop': bool }
+    group_prefs: Dict[str, Dict[str, bool]] = field(default_factory=dict)
     # Per-recipient notification preferences (overrides global notifications)
     # Mapping: email -> { 'on_start': bool, 'on_end': bool, 'on_stop': bool }
     recipient_prefs: Dict[str, Dict[str, bool]] = field(default_factory=dict)
 
     EMAIL_RE = re.compile(r"^[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}$")
+    EVENT_PREF_KEYS = ("on_start", "on_end", "on_stop")
 
     def __post_init__(self) -> None:
         """Runtime type validation for new fields.
@@ -301,6 +307,15 @@ class EmailConfig:
             if not isinstance(g, str):
                 raise TypeError(f"EmailConfig.active_groups[{idx}] must be str, got {type(g).__name__}: {g!r}")
 
+        # static_recipients
+        if not isinstance(self.static_recipients, list):
+            raise TypeError(
+                f"EmailConfig.static_recipients must be List[str], got {type(self.static_recipients).__name__}: {self.static_recipients!r}"
+            )
+        for idx, email in enumerate(self.static_recipients):
+            if not isinstance(email, str):
+                raise TypeError(f"EmailConfig.static_recipients[{idx}] must be str, got {type(email).__name__}: {email!r}")
+
         # notifications
         if not isinstance(self.notifications, dict):
             raise TypeError(f"EmailConfig.notifications must be Dict[str, bool], got {type(self.notifications).__name__}: {self.notifications!r}")
@@ -309,6 +324,22 @@ class EmailConfig:
                 raise TypeError(f"EmailConfig.notifications keys must be str, got {type(k).__name__}: {k!r}")
             if not isinstance(notif_enabled, bool):
                 raise TypeError(f"EmailConfig.notifications['{k}'] must be bool, got {type(notif_enabled).__name__}: {notif_enabled!r}")
+
+        # group_prefs
+        if not isinstance(self.group_prefs, dict):
+            raise TypeError(
+                f"EmailConfig.group_prefs must be Dict[str, Dict[str, bool]], got {type(self.group_prefs).__name__}: {self.group_prefs!r}"
+            )
+        for group_name, prefs in self.group_prefs.items():
+            if not isinstance(group_name, str):
+                raise TypeError(f"EmailConfig.group_prefs keys must be str (group), got {type(group_name).__name__}: {group_name!r}")
+            if not isinstance(prefs, dict):
+                raise TypeError(f"EmailConfig.group_prefs['{group_name}'] must be Dict[str, bool], got {type(prefs).__name__}: {prefs!r}")
+            for k, pref_value in prefs.items():
+                if not isinstance(k, str):
+                    raise TypeError(f"EmailConfig.group_prefs['{group_name}'] keys must be str, got {type(k).__name__}: {k!r}")
+                if not isinstance(pref_value, bool):
+                    raise TypeError(f"EmailConfig.group_prefs['{group_name}']['{k}'] must be bool, got {type(pref_value).__name__}: {pref_value!r}")
 
         # recipient_prefs
         if not isinstance(self.recipient_prefs, dict):
@@ -348,11 +379,31 @@ class EmailConfig:
             unknown = [g for g in self.active_groups if g not in (self.groups or {})]
             if unknown:
                 errors.append(f"unknown active groups: {unknown}")
+        for mail in self.static_recipients or []:
+            if not self.EMAIL_RE.match(mail):
+                errors.append(f"invalid static recipient email address: {mail}")
         # Notifications flags (optional)
         if self.notifications is not None and isinstance(self.notifications, dict):
             for k, v in self.notifications.items():
+                if k not in self.EVENT_PREF_KEYS:
+                    errors.append(f"notifications contains unknown event key: {k!r}")
                 if not isinstance(v, bool):
                     errors.append(f"notification flag '{k}' must be a bool, got {type(v).__name__}")
+        if self.group_prefs is not None and isinstance(self.group_prefs, dict):
+            for group_name, prefs in self.group_prefs.items():
+                if not isinstance(group_name, str) or not group_name:
+                    errors.append(f"group_prefs has invalid group key: {group_name!r}")
+                    continue
+                if group_name not in (self.groups or {}):
+                    errors.append(f"group_prefs references unknown group: {group_name!r}")
+                if not isinstance(prefs, dict):
+                    errors.append(f"group_prefs['{group_name}'] must be dict, got {type(prefs).__name__}")
+                    continue
+                for k, v in prefs.items():
+                    if k not in self.EVENT_PREF_KEYS:
+                        errors.append(f"group_prefs['{group_name}'] contains unknown event key: {k!r}")
+                    if not isinstance(v, bool):
+                        errors.append(f"group_prefs['{group_name}']['{k}'] must be bool, got {type(v).__name__}")
         # recipient_prefs validation (ensure keys are emails and values are bools)
         if self.recipient_prefs is not None and isinstance(self.recipient_prefs, dict):
             for email, prefs in self.recipient_prefs.items():
@@ -362,6 +413,8 @@ class EmailConfig:
                     errors.append(f"recipient_prefs['{email}'] must be dict, got {type(prefs).__name__}")
                     continue
                 for k, v in prefs.items():
+                    if k not in self.EVENT_PREF_KEYS:
+                        errors.append(f"recipient_prefs['{email}'] contains unknown event key: {k!r}")
                     if not isinstance(v, bool):
                         errors.append(f"recipient_prefs['{email}']['{k}'] must be bool, got {type(v).__name__}")
         # SMTP
@@ -539,17 +592,91 @@ class EmailConfig:
         )
         return self._build_template("measurement_stop", default_subject, default_body)
 
+    @staticmethod
+    def _dedupe_valid_emails(addresses: List[str]) -> List[str]:
+        seen: Dict[str, None] = {}
+        for addr in addresses or []:
+            candidate = str(addr or "").strip()
+            if candidate and EmailConfig.EMAIL_RE.match(candidate) and candidate not in seen:
+                seen[candidate] = None
+        return list(seen.keys())
+
+    @classmethod
+    def _pref_allows_event(cls, prefs: Dict[str, bool], event_key: str, *, default: bool = True) -> bool:
+        if event_key not in cls.EVENT_PREF_KEYS:
+            raise ValueError(f"unsupported event key: {event_key}")
+        if not isinstance(prefs, dict):
+            return default
+        return bool(prefs.get(event_key, default))
+
+    @classmethod
+    def _normalize_event_pref_key(cls, key: Any, *, context: str) -> str:
+        normalized_key = _coerce_string(key, allow_empty=False)
+        if normalized_key not in cls.EVENT_PREF_KEYS:
+            allowed = ", ".join(cls.EVENT_PREF_KEYS)
+            raise ValueError(f"{context} contains unknown event key: {normalized_key!r}; expected one of [{allowed}]")
+        return normalized_key
+
+    def get_known_recipients(self) -> List[str]:
+        """Return the shared address book with all referenced emails included."""
+        addresses: List[str] = list(self.recipients or [])
+        addresses.extend(self.static_recipients or [])
+        for members in (self.groups or {}).values():
+            addresses.extend(members or [])
+        addresses.extend((self.recipient_prefs or {}).keys())
+        return self._dedupe_valid_emails(addresses)
+
     def get_target_recipients(self) -> List[str]:
-        """Compute effective recipients based on active groups."""
-        if self.active_groups and self.groups:
-            collected: List[str] = []
-            for g in self.active_groups:
-                for addr in (self.groups.get(g, []) or []):
-                    if self.EMAIL_RE.match(addr):
-                        collected.append(addr)
-            if collected:
-                return list(dict.fromkeys(collected))
-        return list(self.recipients)
+        """Compute effective recipients for alerts/test mail.
+
+        Explicit targeting is the union of static recipients and active groups.
+        If neither is configured, fall back to the legacy behaviour of sending to
+        the full recipients list.
+        """
+        explicit_targeting = bool(self.static_recipients or self.active_groups)
+        collected: List[str] = list(self.static_recipients or [])
+        for group_name in self.active_groups or []:
+            collected.extend((self.groups or {}).get(group_name, []) or [])
+        deduped = self._dedupe_valid_emails(collected)
+        if deduped:
+            return deduped
+        if explicit_targeting:
+            return []
+        return self._dedupe_valid_emails(list(self.recipients or []))
+
+    def get_measurement_event_recipients(self, event_key: str) -> List[str]:
+        """Resolve lifecycle notification recipients for a specific event."""
+        if event_key not in self.EVENT_PREF_KEYS:
+            raise ValueError(f"unsupported event key: {event_key}")
+        if not bool((self.notifications or {}).get(event_key, False)):
+            return []
+
+        explicit_targeting = bool(self.static_recipients or self.active_groups)
+        collected: List[str] = []
+
+        for addr in self.static_recipients or []:
+            prefs = (self.recipient_prefs or {}).get(addr, {})
+            if self._pref_allows_event(prefs, event_key, default=True):
+                collected.append(addr)
+
+        for group_name in self.active_groups or []:
+            prefs = (self.group_prefs or {}).get(group_name, {})
+            if not self._pref_allows_event(prefs, event_key, default=True):
+                continue
+            collected.extend((self.groups or {}).get(group_name, []) or [])
+
+        deduped = self._dedupe_valid_emails(collected)
+        if deduped:
+            return deduped
+        if explicit_targeting:
+            return []
+
+        legacy: List[str] = []
+        for addr in self.recipients or []:
+            prefs = (self.recipient_prefs or {}).get(addr, {})
+            if self._pref_allows_event(prefs, event_key, default=True):
+                legacy.append(addr)
+        return self._dedupe_valid_emails(legacy)
 # ---------------------------------------------------------------------------
 # GUI & Logging
 # ---------------------------------------------------------------------------
@@ -809,7 +936,9 @@ _CONFIG_IMPORT_PATHS: Dict[str, List[str]] = {
         "email.templates.measurement_stop.body",
         "email.groups",
         "email.active_groups",
+        "email.static_recipients",
         "email.notifications",
+        "email.group_prefs",
         "email.recipient_prefs",
     ],
     "gui": [
@@ -1074,7 +1203,32 @@ def _normalize_notifications(value: Any) -> Dict[str, bool]:
         raise ValueError("notifications must be a mapping")
     result: Dict[str, bool] = {}
     for key, item in value.items():
-        result[_coerce_string(key, allow_empty=False)] = _coerce_bool(item)
+        normalized_key = EmailConfig._normalize_event_pref_key(key, context="notifications")
+        result[normalized_key] = _coerce_bool(item)
+    return result
+
+
+def _normalize_group_prefs(value: Any, *, known_groups: Dict[str, List[str]]) -> Dict[str, Dict[str, bool]]:
+    if not isinstance(value, dict):
+        raise ValueError("group_prefs must be a mapping")
+    result: Dict[str, Dict[str, bool]] = {}
+    unknown_groups: List[str] = []
+    for group_name, prefs in value.items():
+        normalized_name = _coerce_string(group_name, allow_empty=False)
+        if normalized_name not in known_groups:
+            unknown_groups.append(normalized_name)
+        if not isinstance(prefs, dict):
+            raise ValueError(f"group_prefs['{normalized_name}'] must be a mapping")
+        normalized_prefs: Dict[str, bool] = {}
+        for pref_name, pref_value in prefs.items():
+            normalized_key = EmailConfig._normalize_event_pref_key(
+                pref_name,
+                context=f"group_prefs['{normalized_name}']",
+            )
+            normalized_prefs[normalized_key] = _coerce_bool(pref_value)
+        result[normalized_name] = normalized_prefs
+    if unknown_groups:
+        raise ValueError(f"unknown groups referenced in group_prefs: {sorted(set(unknown_groups))}")
     return result
 
 
@@ -1090,7 +1244,11 @@ def _normalize_recipient_prefs(value: Any) -> Dict[str, Dict[str, bool]]:
             raise ValueError(f"recipient_prefs['{normalized_email}'] must be a mapping")
         normalized_prefs: Dict[str, bool] = {}
         for pref_name, pref_value in prefs.items():
-            normalized_prefs[_coerce_string(pref_name, allow_empty=False)] = _coerce_bool(pref_value)
+            normalized_key = EmailConfig._normalize_event_pref_key(
+                pref_name,
+                context=f"recipient_prefs['{normalized_email}']",
+            )
+            normalized_prefs[normalized_key] = _coerce_bool(pref_value)
         result[normalized_email] = normalized_prefs
     return result
 
@@ -1668,7 +1826,9 @@ def _analyze_email_section(imported_data: Dict[str, Any], collector: _ConfigImpo
         "templates",
         "groups",
         "active_groups",
+        "static_recipients",
         "notifications",
+        "group_prefs",
         "recipient_prefs",
     }
     for key, value in section_data.items():
@@ -1809,12 +1969,34 @@ def _analyze_email_section(imported_data: Dict[str, Any], collector: _ConfigImpo
         else:
             collector.add_valid(path, raw_value, normalized)
 
+    if "static_recipients" in section_data:
+        path = "email.static_recipients"
+        seen_paths.add(path)
+        raw_value = section_data["static_recipients"]
+        try:
+            normalized = _normalize_email_list(raw_value, label="static_recipients")
+        except ValueError as exc:
+            collector.add_invalid(path, raw_value, str(exc))
+        else:
+            collector.add_valid(path, raw_value, normalized)
+
     if "notifications" in section_data:
         path = "email.notifications"
         seen_paths.add(path)
         raw_value = section_data["notifications"]
         try:
             normalized = _normalize_notifications(raw_value)
+        except ValueError as exc:
+            collector.add_invalid(path, raw_value, str(exc))
+        else:
+            collector.add_valid(path, raw_value, normalized)
+
+    if "group_prefs" in section_data:
+        path = "email.group_prefs"
+        seen_paths.add(path)
+        raw_value = section_data["group_prefs"]
+        try:
+            normalized = _normalize_group_prefs(raw_value, known_groups=candidate_groups)
         except ValueError as exc:
             collector.add_invalid(path, raw_value, str(exc))
         else:
@@ -2044,8 +2226,10 @@ def sync_runtime_config_instances(
         try:
             if hasattr(measurement_controller, "update_config"):
                 measurement_controller.update_config(config.measurement)
+            elif hasattr(measurement_controller, "config"):
+                measurement_controller.config = config.measurement
             else:
-                raise AttributeError("measurement controller does not support update_config()")
+                raise AttributeError("measurement controller does not support update_config() or config assignment")
             result.refreshed_targets.append("measurement_controller")
         except Exception as exc:
             result.errors.append(f"measurement controller sync failed: {exc}")
@@ -2194,7 +2378,16 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
         gui=GUIConfig(**data["gui"]),
         logging=logging_config,  # Erweiterte Logging-Config
     )
-    if errs := cfg.validate_all():
+    errs = cfg.validate_all()
+    fatal_email_errors = [msg for msg in errs.get("email", []) if "unknown event key" in msg]
+    if fatal_email_errors:
+        logger.error(
+            "Fatal email config validation errors in %s: %s. Using default config.",
+            config_path,
+            "; ".join(fatal_email_errors),
+        )
+        return _create_default_config()
+    if errs:
         logger.warning("⚠️ Config warnings:")
         for section, err_list in errs.items():
             for msg in err_list:
@@ -2338,7 +2531,9 @@ def _create_default_config() -> AppConfig:
                     )
                 }
             },
+            static_recipients=["user@example.com"],
             notifications={"on_start": False, "on_end": False, "on_stop": False},
+            group_prefs={},
             recipient_prefs={}
         ),
         gui=GUIConfig(

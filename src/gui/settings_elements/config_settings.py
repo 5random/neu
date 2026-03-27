@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from nicegui import app, ui
 from nicegui.events import UploadEventArguments
@@ -18,6 +18,7 @@ from src.config import (
 from src.gui.settings_elements.ui_helpers import create_action_button, create_section_heading
 
 logger = get_logger("gui.config_settings")
+NotifyKind = Literal["positive", "negative", "warning", "info", "ongoing"]
 
 
 def _format_value(value: Any, *, limit: int = 140) -> str:
@@ -113,7 +114,26 @@ def create_config_settings(
         finally:
             state["uploaded_temp_path"] = None
 
-    def _reset_import_flow(*, notify_message: Optional[str] = None, notify_type: str = "info") -> None:
+    def _resolve_uploaded_temp_path(upload_file: Any) -> Optional[str]:
+        public_path = getattr(upload_file, "path", None)
+        if isinstance(public_path, (str, Path)):
+            return str(public_path)
+
+        file_obj = getattr(upload_file, "file", None)
+        file_name = getattr(file_obj, "name", None)
+        if isinstance(file_name, (str, Path)):
+            candidate = Path(file_name)
+            if candidate.exists():
+                return str(candidate)
+
+        # Fallback for older / internal NiceGUI upload implementations.
+        private_path = getattr(upload_file, "_path", None)
+        if isinstance(private_path, (str, Path)):
+            return str(private_path)
+
+        return None
+
+    def _reset_import_flow(*, notify_message: Optional[str] = None, notify_type: NotifyKind = "info") -> None:
         _cleanup_uploaded_file()
         state["preview"] = None
         state["source_name"] = ""
@@ -166,7 +186,7 @@ def create_config_settings(
     def _update_step_state() -> None:
         preview: Optional[ConfigImportPreview] = state["preview"]
         has_preview = preview is not None and not preview.errors
-        has_ready = has_preview and bool(preview.ready_updates)
+        has_ready = bool(preview.ready_updates) if preview is not None and has_preview else False
         _set_enabled(review_step, has_preview)
         _set_enabled(select_step, has_ready)
         _set_enabled(upload_next_btn, has_preview)
@@ -300,7 +320,7 @@ def create_config_settings(
 
         state["source_name"] = filename
         state["source_text"] = text
-        state["uploaded_temp_path"] = str(event.file._path) if hasattr(event.file, "_path") else None
+        state["uploaded_temp_path"] = _resolve_uploaded_temp_path(event.file)
         state["preview"] = analyze_imported_config_text(text, source_name=filename)
         _refresh_preview()
 
@@ -371,13 +391,14 @@ def create_config_settings(
                 upload_status_label = ui.label("Upload a .yaml file to start the guided import.").classes("text-body2 text-grey-8")
                 upload_error_label = ui.label("").classes("text-body2 text-negative")
                 with ui.row().classes("w-full justify-end gap-2 mt-2"):
-                    upload_next_btn = create_action_button(
+                    next_button = create_action_button(
                         "apply",
                         label="Review importability",
                         icon="arrow_forward",
                         on_click=lambda: _set_step("review"),
                     )
-                    upload_next_btn.disable()
+                    next_button.disable()
+                    upload_next_btn = next_button
 
             with ui.step("review", title="Review blocked values", icon="rule") as review_step:
                 ui.label(
@@ -401,13 +422,14 @@ def create_config_settings(
 
                 with ui.row().classes("w-full items-center justify-between gap-2 flex-wrap mt-2"):
                     ui.button("Back", icon="arrow_back", on_click=lambda: _set_step("upload")).props("flat no-caps")
-                    review_next_btn = create_action_button(
+                    next_button = create_action_button(
                         "apply",
                         label="Choose settings to import",
                         icon="arrow_forward",
                         on_click=lambda: _set_step("select"),
                     )
-                    review_next_btn.disable()
+                    next_button.disable()
+                    review_next_btn = next_button
                 review_step.disable()
 
             with ui.step("select", title="Select and import", icon="task_alt") as select_step:
@@ -438,7 +460,7 @@ def create_config_settings(
                             ),
                         )
                     with ui.row().classes("gap-2 flex-wrap"):
-                        apply_selected_btn = create_action_button(
+                        selected_button = create_action_button(
                             "apply",
                             label="Import selected settings",
                             icon="done_all",
@@ -446,14 +468,16 @@ def create_config_settings(
                                 [row.get("path") for row in (ready_table.selected or []) if row.get("path")] if ready_table is not None else []
                             ),
                         )
-                        apply_all_btn = create_action_button(
+                        all_button = create_action_button(
                             "apply",
                             label="Import all valid settings",
                             icon="publish",
                             on_click=lambda: _apply_selected(None),
                         )
-                        apply_selected_btn.disable()
-                        apply_all_btn.disable()
+                        selected_button.disable()
+                        all_button.disable()
+                        apply_selected_btn = selected_button
+                        apply_all_btn = all_button
                 select_step.disable()
 
     _refresh_preview()

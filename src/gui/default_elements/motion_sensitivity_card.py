@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from nicegui import ui
 
@@ -11,6 +11,7 @@ from src.gui.bindings import bind_number_slider
 from src.gui.util import schedule_bg
 
 logger = get_logger('gui.motion_sensitivity')
+NotifyKind = Literal['positive', 'negative', 'warning', 'info', 'ongoing']
 
 
 def create_motion_sensitivity_controls(
@@ -26,7 +27,7 @@ def create_motion_sensitivity_controls(
     notify_client: Any = None
     debounce_task = None
 
-    def _notify_in_background(message: str, *, kind: str) -> None:
+    def _notify_in_background(message: str, *, kind: NotifyKind) -> None:
         if notify_client is None:
             return
         with notify_client:

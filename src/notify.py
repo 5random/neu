@@ -12,6 +12,7 @@ Fokus auf einfache, robuste Implementation.
 """
 
 from __future__ import annotations
+from collections.abc import Iterable
 import smtplib
 import logging
 import time
@@ -35,6 +36,12 @@ from typing import Optional, List, Dict, Any, TYPE_CHECKING, Callable
 from .config import EmailConfig, MeasurementConfig, AppConfig, get_logger
 
 _RUNTIME_WEBSITE_URL_KEY = 'cvd.runtime_website_url'
+
+
+def _iterable_str_list(value: object) -> List[str]:
+    if isinstance(value, Iterable) and not isinstance(value, (str, bytes, dict)):
+        return [item for item in value if isinstance(item, str)]
+    return []
 
 
 class AlertSendAborted(RuntimeError):
@@ -219,13 +226,27 @@ class EMailSystem:
         try:
             current_email_config = self._get_current_email_config()
             if hasattr(current_email_config, 'get_target_recipients'):
-                return list(current_email_config.get_target_recipients() or [])
-            return list(current_email_config.recipients or [])
+                return _iterable_str_list(current_email_config.get_target_recipients())
+            return _iterable_str_list(current_email_config.recipients)
         except Exception:
             try:
-                return list(self.email_config.recipients or [])
+                return _iterable_str_list(self.email_config.recipients)
             except Exception:
                 return []
+
+    def _get_measurement_event_recipients(self, event_key: str) -> List[str]:
+        """Return resolved lifecycle recipients for a specific measurement event."""
+        try:
+            current_email_config = self._get_current_email_config()
+            resolver = getattr(current_email_config, 'get_measurement_event_recipients', None)
+            if callable(resolver):
+                return _iterable_str_list(resolver(event_key))
+            if not bool(getattr(current_email_config, 'notifications', {}).get(event_key, False)):
+                return []
+            return self._get_effective_recipients()
+        except Exception:
+            self.logger.debug("Falling back to effective recipients for event %s", event_key, exc_info=True)
+            return self._get_effective_recipients()
     
     def _build_common_template_params(
         self,
@@ -595,22 +616,7 @@ class EMailSystem:
             subject = template.subject.format(**params)
             body = template.body.format(**params)
 
-            recipients = self._get_effective_recipients()
-            # Apply per-recipient overrides for measurement lifecycle emails
-            try:
-                prefs = getattr(current_email_config, 'recipient_prefs', {}) or {}
-                if isinstance(prefs, dict) and recipients:
-                    filtered: list[str] = []
-                    for r in recipients:
-                        pr = prefs.get(r, {}) if isinstance(prefs.get(r, {}), dict) else {}
-                        # Default to global flag when recipient has no explicit pref
-                        allow = bool(pr.get(enabled_key, enabled))
-                        if allow:
-                            filtered.append(r)
-                    recipients = filtered
-            except Exception:
-                # On any error, fall back to unfiltered recipients
-                pass
+            recipients = self._get_measurement_event_recipients(enabled_key)
             if not recipients:
                 self.logger.warning("No recipients configured; skipping measurement event email")
                 return False

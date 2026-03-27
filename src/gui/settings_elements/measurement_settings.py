@@ -1,49 +1,89 @@
+from __future__ import annotations
+
+from collections.abc import Iterable
 from typing import Optional, Callable, Any
+
 from nicegui import ui
-from src.config import get_global_config, save_global_config, get_logger
+
+from src.config import EmailConfig, get_global_config, save_global_config, get_logger
 from src.measurement import MeasurementController
 from src.gui import instances
 from src.gui.settings_elements.ui_helpers import create_action_button, create_heading_row
 
 logger = get_logger('gui.measurement')
 
+EVENT_KEYS = ('on_start', 'on_end', 'on_stop')
+EVENT_LABELS = {
+    'on_start': 'Start',
+    'on_end': 'End',
+    'on_stop': 'Stop',
+}
+
+
+def _event_prefs(source: Optional[dict[str, bool]] = None, *, default: bool = True) -> dict[str, bool]:
+    prefs = source or {}
+    return {key: bool(prefs.get(key, default)) for key in EVENT_KEYS}
+
+
+def _iterable_str_list(value: object) -> list[str]:
+    if isinstance(value, Iterable) and not isinstance(value, (str, bytes, dict)):
+        return [item for item in value if isinstance(item, str)]
+    return []
+
+
+def _get_known_recipients(email_cfg: Any) -> list[str]:
+    getter = getattr(email_cfg, 'get_known_recipients', None)
+    if callable(getter):
+        return _iterable_str_list(getter())
+    return _iterable_str_list(getattr(email_cfg, 'recipients', []))
+
+
 def create_measurement_settings_card(
     measurement_controller: Optional[MeasurementController] = None,
     show_header: bool = True,
     **_: object,
 ) -> None:
-    """Render measurement-related settings not exposed on the default page/card.
-
-    Editable parameters (persisted to config.measurement):
-    - alert_delay_seconds
-    - max_alerts_per_session
-    - alert_check_interval
-    - alert_cooldown_seconds
-    - alert_include_snapshot
-    - inactivity_timeout_minutes
-    - motion_summary_interval_seconds
-    - enable_motion_summary_logs
-
-    Note: session_timeout_minutes is intentionally omitted here; it's configurable via the measurement card on the default page.
-    """
+    """Render measurement runtime settings and lifecycle notification routing."""
     cfg = get_global_config()
     if not cfg:
-        ui.label('⚠️ Configuration not available').classes('text-red')
+        ui.label('Configuration not available').classes('text-red')
         logger.error('Configuration not available - cannot create measurement settings')
         return
 
-    m = cfg.measurement
+    measurement_cfg = cfg.measurement
+    email_cfg = cfg.email
 
-    # Local state snapshot for change detection
     state = {
-        'alert_delay_seconds': int(getattr(m, 'alert_delay_seconds', 300)),
-        'max_alerts_per_session': int(getattr(m, 'max_alerts_per_session', 5)),
-        'alert_check_interval': float(getattr(m, 'alert_check_interval', 5.0)),
-        'alert_cooldown_seconds': int(getattr(m, 'alert_cooldown_seconds', 300)),
-        'alert_include_snapshot': bool(getattr(m, 'alert_include_snapshot', True)),
-        'inactivity_timeout_minutes': int(getattr(m, 'inactivity_timeout_minutes', 60)),
-        'motion_summary_interval_seconds': int(getattr(m, 'motion_summary_interval_seconds', 60)),
-        'enable_motion_summary_logs': bool(getattr(m, 'enable_motion_summary_logs', True)),
+        'alert_delay_seconds': int(getattr(measurement_cfg, 'alert_delay_seconds', 300)),
+        'max_alerts_per_session': int(getattr(measurement_cfg, 'max_alerts_per_session', 5)),
+        'alert_check_interval': float(getattr(measurement_cfg, 'alert_check_interval', 5.0)),
+        'alert_cooldown_seconds': int(getattr(measurement_cfg, 'alert_cooldown_seconds', 300)),
+        'alert_include_snapshot': bool(getattr(measurement_cfg, 'alert_include_snapshot', True)),
+        'inactivity_timeout_minutes': int(getattr(measurement_cfg, 'inactivity_timeout_minutes', 60)),
+        'motion_summary_interval_seconds': int(getattr(measurement_cfg, 'motion_summary_interval_seconds', 60)),
+        'enable_motion_summary_logs': bool(getattr(measurement_cfg, 'enable_motion_summary_logs', True)),
+    }
+
+    recipient_pool = _get_known_recipients(email_cfg)
+    active_groups = list(getattr(email_cfg, 'active_groups', []) or [])
+    configured_static = list(getattr(email_cfg, 'static_recipients', []) or [])
+    legacy_static = list(recipient_pool) if not configured_static and not active_groups else []
+    group_names = list((getattr(email_cfg, 'groups', {}) or {}).keys())
+
+    notification_state: dict[str, Any] = {
+        'recipient_pool': list(recipient_pool),
+        'groups': dict(getattr(email_cfg, 'groups', {}) or {}),
+        'notifications': _event_prefs(dict(getattr(email_cfg, 'notifications', {}) or {}), default=False),
+        'active_groups': active_groups,
+        'static_recipients': configured_static or legacy_static,
+        'group_prefs': {
+            group_name: _event_prefs((getattr(email_cfg, 'group_prefs', {}) or {}).get(group_name), default=True)
+            for group_name in group_names
+        },
+        'recipient_prefs': {
+            recipient: _event_prefs((getattr(email_cfg, 'recipient_prefs', {}) or {}).get(recipient), default=True)
+            for recipient in recipient_pool
+        },
     }
 
     if show_header:
@@ -58,6 +98,14 @@ def create_measurement_settings_card(
     slider_classes = 'flex-1 min-w-[10rem] max-w-full'
 
     from src.gui.bindings import bind_number_slider
+
+    counts_labels: dict[str, ui.label] = {}
+    static_select: Optional[ui.select] = None
+    active_groups_select: Optional[ui.select] = None
+    group_table: Optional[ui.table] = None
+    static_table: Optional[ui.table] = None
+    preview_table: Optional[ui.table] = None
+    notification_apply_btn: Optional[ui.button] = None
 
     def _cast_to_int(value: Any, fallback: float) -> Optional[float]:
         try:
@@ -129,8 +177,202 @@ def create_measurement_settings_card(
             )
         return checkbox
 
+    def _normalize_notification_state() -> dict[str, Any]:
+        return {
+            'notifications': _event_prefs(notification_state['notifications'], default=False),
+            'active_groups': sorted([group for group in notification_state['active_groups'] if group in notification_state['groups']]),
+            'static_recipients': sorted([addr for addr in notification_state['static_recipients'] if addr in notification_state['recipient_pool']]),
+            'group_prefs': {
+                group: _event_prefs(notification_state['group_prefs'].get(group), default=True)
+                for group in sorted(notification_state['groups'].keys())
+            },
+            'recipient_prefs': {
+                addr: _event_prefs(notification_state['recipient_prefs'].get(addr), default=True)
+                for addr in sorted(set(notification_state['static_recipients']))
+            },
+        }
+
+    notification_saved_state = _normalize_notification_state()
+
+    def _build_preview_email_cfg() -> EmailConfig:
+        current_cfg = get_global_config()
+        if not current_cfg:
+            return email_cfg
+        current_email_cfg = current_cfg.email
+        return EmailConfig(
+            website_url=current_email_cfg.website_url,
+            recipients=list(notification_state['recipient_pool']),
+            smtp_server=current_email_cfg.smtp_server,
+            smtp_port=current_email_cfg.smtp_port,
+            sender_email=current_email_cfg.sender_email,
+            templates={name: dict(template_cfg) for name, template_cfg in current_email_cfg.templates.items()},
+            groups={group: list(members) for group, members in current_email_cfg.groups.items()},
+            active_groups=list(notification_state['active_groups']),
+            static_recipients=list(notification_state['static_recipients']),
+            notifications=dict(notification_state['notifications']),
+            group_prefs={
+                group: _event_prefs(notification_state['group_prefs'].get(group), default=True)
+                for group in notification_state['groups'].keys()
+            },
+            recipient_prefs={
+                addr: _event_prefs(notification_state['recipient_prefs'].get(addr), default=True)
+                for addr in notification_state['static_recipients']
+            },
+        )
+
+    def _refresh_notification_apply_state() -> None:
+        try:
+            if notification_apply_btn is None:
+                return
+            if _normalize_notification_state() == notification_saved_state:
+                notification_apply_btn.disable()
+            else:
+                notification_apply_btn.enable()
+        except Exception:
+            if notification_apply_btn is not None:
+                notification_apply_btn.enable()
+
+    def _group_rows() -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for group_name in notification_state['groups'].keys():
+            prefs = _event_prefs(notification_state['group_prefs'].get(group_name), default=True)
+            rows.append(
+                {
+                    'name': group_name,
+                    'members': len(notification_state['groups'].get(group_name, []) or []),
+                    'active': 'yes' if group_name in notification_state['active_groups'] else '-',
+                    'on_start': prefs['on_start'],
+                    'on_end': prefs['on_end'],
+                    'on_stop': prefs['on_stop'],
+                }
+            )
+        return rows
+
+    def _static_rows() -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for addr in notification_state['static_recipients']:
+            prefs = _event_prefs(notification_state['recipient_prefs'].get(addr), default=True)
+            rows.append(
+                {
+                    'address': addr,
+                    'on_start': prefs['on_start'],
+                    'on_end': prefs['on_end'],
+                    'on_stop': prefs['on_stop'],
+                }
+            )
+        return rows
+
+    def _preview_rows() -> list[dict[str, Any]]:
+        preview_cfg = _build_preview_email_cfg()
+        effective_all = set(preview_cfg.get_target_recipients())
+        event_targets = {key: set(preview_cfg.get_measurement_event_recipients(key)) for key in EVENT_KEYS}
+        rows: list[dict[str, Any]] = []
+        for addr in preview_cfg.get_known_recipients():
+            if addr not in effective_all and not any(addr in recipients for recipients in event_targets.values()):
+                continue
+            active_sources = [group for group in notification_state['active_groups'] if addr in (notification_state['groups'].get(group, []) or [])]
+            source_parts: list[str] = []
+            if addr in notification_state['static_recipients']:
+                source_parts.append('static')
+            source_parts.extend(active_sources)
+            rows.append(
+                {
+                    'address': addr,
+                    'sources': ', '.join(source_parts) if source_parts else '-',
+                    'on_start': 'yes' if addr in event_targets['on_start'] else '-',
+                    'on_end': 'yes' if addr in event_targets['on_end'] else '-',
+                    'on_stop': 'yes' if addr in event_targets['on_stop'] else '-',
+                }
+            )
+        return rows
+
+    def _refresh_notification_preview() -> None:
+        preview_cfg = _build_preview_email_cfg()
+        counts = {
+            'groups_total': len(notification_state['groups']),
+            'active_groups': len(notification_state['active_groups']),
+            'static_recipients': len(notification_state['static_recipients']),
+            'effective_total': len(preview_cfg.get_target_recipients()),
+            'start_count': len(preview_cfg.get_measurement_event_recipients('on_start')),
+            'end_count': len(preview_cfg.get_measurement_event_recipients('on_end')),
+            'stop_count': len(preview_cfg.get_measurement_event_recipients('on_stop')),
+        }
+        for key, value in counts.items():
+            label = counts_labels.get(key)
+            if label is not None:
+                label.text = str(value)
+                label.update()
+        if group_table is not None:
+            group_table.rows = _group_rows()
+            group_table.update()
+        if static_table is not None:
+            static_table.rows = _static_rows()
+            static_table.update()
+        if preview_table is not None:
+            preview_table.rows = _preview_rows()
+            preview_table.update()
+        _refresh_notification_apply_state()
+
+    def _on_notification_selection_change(_: Any = None) -> None:
+        if static_select is not None:
+            values = getattr(static_select, 'value', []) or []
+            notification_state['static_recipients'] = [addr for addr in values if addr in notification_state['recipient_pool']]
+            for addr in notification_state['static_recipients']:
+                notification_state['recipient_prefs'].setdefault(addr, _event_prefs(default=True))
+        if active_groups_select is not None:
+            values = getattr(active_groups_select, 'value', []) or []
+            notification_state['active_groups'] = [group for group in values if group in notification_state['groups']]
+        _refresh_notification_preview()
+
+    def _toggle_group_pref(group_name: str, event_key: str, value: bool) -> None:
+        notification_state['group_prefs'].setdefault(group_name, _event_prefs(default=True))
+        notification_state['group_prefs'][group_name][event_key] = bool(value)
+        _refresh_notification_preview()
+
+    def _toggle_recipient_pref(addr: str, event_key: str, value: bool) -> None:
+        notification_state['recipient_prefs'].setdefault(addr, _event_prefs(default=True))
+        notification_state['recipient_prefs'][addr][event_key] = bool(value)
+        _refresh_notification_preview()
+
+    def _persist_notifications() -> None:
+        nonlocal notification_saved_state
+        current_cfg = get_global_config()
+        if not current_cfg:
+            ui.notify('Configuration not available', type='warning', position='bottom-right')
+            return
+        try:
+            current_email_cfg = current_cfg.email
+            current_email_cfg.notifications = dict(notification_state['notifications'])
+            current_email_cfg.active_groups = list(notification_state['active_groups'])
+            current_email_cfg.static_recipients = list(notification_state['static_recipients'])
+            current_email_cfg.group_prefs = {
+                group: _event_prefs(notification_state['group_prefs'].get(group), default=True)
+                for group in notification_state['groups'].keys()
+            }
+            current_email_cfg.recipient_prefs = {
+                addr: _event_prefs(notification_state['recipient_prefs'].get(addr), default=True)
+                for addr in notification_state['static_recipients']
+            }
+            current_email_cfg.recipients = current_email_cfg.get_known_recipients()
+
+            if save_global_config():
+                email_system = instances.get_email_system()
+                if email_system is not None:
+                    email_system.refresh_config()
+                notification_state['recipient_pool'] = current_email_cfg.get_known_recipients()
+                if static_select is not None:
+                    static_select.options = list(notification_state['recipient_pool'])
+                    static_select.update()
+                notification_saved_state = _normalize_notification_state()
+                _refresh_notification_preview()
+                ui.notify('Measurement notification routing saved', type='positive', position='bottom-right')
+            else:
+                ui.notify('Failed to save notification routing', type='negative', position='bottom-right')
+        except Exception as exc:
+            logger.error('Failed to save notification routing: %s', exc, exc_info=True)
+            ui.notify(f'Error saving notification routing: {exc}', type='negative', position='bottom-right')
+
     def _on_change(_: Any = None) -> None:
-        # Enable apply if any value differs from config
         try:
             current = {
                 'alert_delay_seconds': int(_get_control_value(alert_delay_inp, state['alert_delay_seconds']) or 0),
@@ -147,20 +389,16 @@ def create_measurement_settings_card(
             else:
                 apply_btn.disable()
         except Exception:
-            # be conservative
             apply_btn.enable()
 
     def _persist() -> None:
         nonlocal state
-        cfg = get_global_config()
-        if not cfg:
+        current_cfg = get_global_config()
+        if not current_cfg:
             ui.notify('Configuration not available', type='warning', position='bottom-right')
             return
         try:
-            # Validate and provide feedback for constraint violations
             violations = []
-            
-            # Read with basic constraints
             new_state = {
                 'alert_delay_seconds': max(30, int(_get_control_value(alert_delay_inp, 0) or 0)),
                 'max_alerts_per_session': max(1, int(_get_control_value(max_alerts_inp, 1) or 1)),
@@ -171,27 +409,26 @@ def create_measurement_settings_card(
                 'motion_summary_interval_seconds': max(5, int(_get_control_value(summary_interval_inp, 5) or 5)),
                 'enable_motion_summary_logs': bool(_get_control_value(enable_summary_cb, True)),
             }
-            
+
             if int(_get_control_value(alert_delay_inp, 0) or 0) < 30:
                 violations.append('Alert delay minimum is 30 seconds')
-            # Add similar checks for other constraints...
-            
+
             if violations:
-                ui.notify('; '.join(violations), type='warning', position='bottom-right')            # Persist to config
-            mc = cfg.measurement
-            mc.alert_delay_seconds = int(new_state['alert_delay_seconds'])
-            mc.max_alerts_per_session = int(new_state['max_alerts_per_session'])
-            mc.alert_check_interval = float(new_state['alert_check_interval'])
-            mc.alert_cooldown_seconds = int(new_state['alert_cooldown_seconds'])
-            mc.alert_include_snapshot = bool(new_state['alert_include_snapshot'])
-            mc.inactivity_timeout_minutes = int(new_state['inactivity_timeout_minutes'])
-            mc.motion_summary_interval_seconds = int(new_state['motion_summary_interval_seconds'])
-            mc.enable_motion_summary_logs = bool(new_state['enable_motion_summary_logs'])
+                ui.notify('; '.join(violations), type='warning', position='bottom-right')
+
+            current_measurement_cfg = current_cfg.measurement
+            current_measurement_cfg.alert_delay_seconds = int(new_state['alert_delay_seconds'])
+            current_measurement_cfg.max_alerts_per_session = int(new_state['max_alerts_per_session'])
+            current_measurement_cfg.alert_check_interval = float(new_state['alert_check_interval'])
+            current_measurement_cfg.alert_cooldown_seconds = int(new_state['alert_cooldown_seconds'])
+            current_measurement_cfg.alert_include_snapshot = bool(new_state['alert_include_snapshot'])
+            current_measurement_cfg.inactivity_timeout_minutes = int(new_state['inactivity_timeout_minutes'])
+            current_measurement_cfg.motion_summary_interval_seconds = int(new_state['motion_summary_interval_seconds'])
+            current_measurement_cfg.enable_motion_summary_logs = bool(new_state['enable_motion_summary_logs'])
 
             if save_global_config():
-                # Live-apply to running controller if provided
                 if measurement_controller is not None:
-                    measurement_controller.update_config(mc)
+                    measurement_controller.update_config(current_measurement_cfg)
                 email_system = instances.get_email_system()
                 if email_system is not None:
                     email_system.refresh_config()
@@ -296,12 +533,10 @@ def create_measurement_settings_card(
             'Master switch for periodic motion summary logging',
         )
 
-    # Apply bar
     with ui.row().classes('items-center q-gutter-sm q-mt-sm justify-end'):
         apply_btn = create_action_button('apply', on_click=lambda _: _persist())
         apply_btn.disable()
 
-    # Wire change handlers
     for ctrl in [
         alert_delay_inp,
         max_alerts_inp,
@@ -313,9 +548,202 @@ def create_measurement_settings_card(
         enable_summary_cb,
     ]:
         ctrl.on('update:model-value', _on_change)
-        # Also blur for numbers to catch manual edits
         if hasattr(ctrl, 'on') and ctrl is not include_snapshot_cb and ctrl is not enable_summary_cb:
             ctrl.on('blur', _on_change)
 
-    # Initial state
+    ui.separator().classes('my-6')
+
+    with ui.column().classes('w-full gap-4'):
+        create_heading_row(
+            'Measurement Email Notifications',
+            icon='notifications_active',
+            title_classes='text-h6',
+            row_classes='items-center gap-2',
+            icon_classes='text-primary text-xl shrink-0',
+        )
+        ui.label(
+            'Configure which lifecycle emails are sent, which groups are active for the current run, and which recipients always receive notifications.'
+        ).classes('text-body2 text-grey-7')
+
+        with ui.grid(columns=4).classes('w-full gap-3').style(
+            'grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));'
+        ):
+            summary_cards = [
+                ('Configured Groups', 'groups_total'),
+                ('Active Groups', 'active_groups'),
+                ('Static Recipients', 'static_recipients'),
+                ('Effective Recipients', 'effective_total'),
+                ('Start Targets', 'start_count'),
+                ('End Targets', 'end_count'),
+                ('Stop Targets', 'stop_count'),
+            ]
+            for title, key in summary_cards:
+                with ui.card().classes('p-3 gap-1'):
+                    ui.label(title).classes('text-caption text-grey-7')
+                    counts_labels[key] = ui.label('0').classes('text-h6 font-semibold')
+
+        with ui.card().classes('w-full p-4 gap-4'):
+            create_heading_row(
+                'Lifecycle Switches',
+                icon='tune',
+                title_classes='text-subtitle1 font-semibold',
+                row_classes='items-center gap-2',
+                icon_classes='text-primary text-lg shrink-0',
+            )
+            with ui.row().classes('items-center gap-4 flex-wrap'):
+                start_toggle = ui.checkbox(
+                    'Send email on measurement start',
+                    value=bool(notification_state['notifications']['on_start']),
+                )
+                end_toggle = ui.checkbox(
+                    'Send email on measurement end',
+                    value=bool(notification_state['notifications']['on_end']),
+                )
+                stop_toggle = ui.checkbox(
+                    'Send email on measurement stop',
+                    value=bool(notification_state['notifications']['on_stop']),
+                )
+
+            def _sync_global_notification_state() -> None:
+                notification_state['notifications'] = {
+                    'on_start': bool(start_toggle.value),
+                    'on_end': bool(end_toggle.value),
+                    'on_stop': bool(stop_toggle.value),
+                }
+                _refresh_notification_preview()
+
+            for ctrl in (start_toggle, end_toggle, stop_toggle):
+                ctrl.on('update:model-value', lambda _: _sync_global_notification_state())
+
+        with ui.grid(columns=2).classes('w-full gap-4 items-start').style(
+            'grid-template-columns:repeat(auto-fit, minmax(360px, 1fr));'
+        ):
+            with ui.card().classes('w-full p-4 gap-3'):
+                create_heading_row(
+                    'Routing Selection',
+                    icon='route',
+                    title_classes='text-subtitle1 font-semibold',
+                    row_classes='items-center gap-2',
+                    icon_classes='text-primary text-lg shrink-0',
+                )
+                active_groups_select = (
+                    ui.select(
+                        options=list(notification_state['groups'].keys()),
+                        value=list(notification_state['active_groups']),
+                        label='Active Groups',
+                        multiple=True,
+                    )
+                    .classes('w-full')
+                    .props('outlined use-chips')
+                )
+                static_select = (
+                    ui.select(
+                        options=list(notification_state['recipient_pool']),
+                        value=list(notification_state['static_recipients']),
+                        label='Static Recipients',
+                        multiple=True,
+                    )
+                    .classes('w-full')
+                    .props('outlined use-chips')
+                )
+                ui.label('Static recipients receive alerts and lifecycle mails regardless of the selected groups.').classes(
+                    'text-caption text-grey-7'
+                )
+                active_groups_select.on('update:model-value', _on_notification_selection_change)
+                static_select.on('update:model-value', _on_notification_selection_change)
+
+            with ui.card().classes('w-full p-4 gap-3'):
+                create_heading_row(
+                    'Effective Preview',
+                    icon='visibility',
+                    title_classes='text-subtitle1 font-semibold',
+                    row_classes='items-center gap-2',
+                    icon_classes='text-primary text-lg shrink-0',
+                )
+                preview_table = ui.table(
+                    columns=[
+                        {'name': 'address', 'label': 'Address', 'field': 'address', 'align': 'left'},
+                        {'name': 'sources', 'label': 'Active Sources', 'field': 'sources', 'align': 'left'},
+                        {'name': 'on_start', 'label': 'Start', 'field': 'on_start', 'align': 'center'},
+                        {'name': 'on_end', 'label': 'End', 'field': 'on_end', 'align': 'center'},
+                        {'name': 'on_stop', 'label': 'Stop', 'field': 'on_stop', 'align': 'center'},
+                    ],
+                    rows=[],
+                    row_key='address',
+                    pagination={'rowsPerPage': 8},
+                ).classes('w-full').props('dense flat bordered')
+
+        with ui.grid(columns=2).classes('w-full gap-4 items-start').style(
+            'grid-template-columns:repeat(auto-fit, minmax(360px, 1fr));'
+        ):
+            with ui.card().classes('w-full p-4 gap-3'):
+                create_heading_row(
+                    'Group Event Preferences',
+                    icon='groups',
+                    title_classes='text-subtitle1 font-semibold',
+                    row_classes='items-center gap-2',
+                    icon_classes='text-primary text-lg shrink-0',
+                )
+                group_table = ui.table(
+                    columns=[
+                        {'name': 'name', 'label': 'Group', 'field': 'name', 'align': 'left'},
+                        {'name': 'members', 'label': 'Members', 'field': 'members', 'align': 'center'},
+                        {'name': 'active', 'label': 'Active', 'field': 'active', 'align': 'center'},
+                        {'name': 'on_start', 'label': 'Start', 'field': 'on_start', 'align': 'center'},
+                        {'name': 'on_end', 'label': 'End', 'field': 'on_end', 'align': 'center'},
+                        {'name': 'on_stop', 'label': 'Stop', 'field': 'on_stop', 'align': 'center'},
+                    ],
+                    rows=[],
+                    row_key='name',
+                    pagination={'rowsPerPage': 8},
+                ).classes('w-full').props('dense flat bordered')
+                for event_key in EVENT_KEYS:
+                    group_table.add_slot(
+                        f'body-cell-{event_key}',
+                        rf'''
+                        <q-td :props="props">
+                            <q-checkbox v-model="props.row.{event_key}" dense
+                                @update:model-value="() => $parent.$emit('toggle', props.row.name, '{event_key}', props.row.{event_key})" />
+                        </q-td>
+                        ''',
+                    )
+                group_table.on('toggle', lambda e: _toggle_group_pref(e.args[0], e.args[1], e.args[2]))
+
+            with ui.card().classes('w-full p-4 gap-3'):
+                create_heading_row(
+                    'Static Recipient Preferences',
+                    icon='alternate_email',
+                    title_classes='text-subtitle1 font-semibold',
+                    row_classes='items-center gap-2',
+                    icon_classes='text-primary text-lg shrink-0',
+                )
+                static_table = ui.table(
+                    columns=[
+                        {'name': 'address', 'label': 'Address', 'field': 'address', 'align': 'left'},
+                        {'name': 'on_start', 'label': 'Start', 'field': 'on_start', 'align': 'center'},
+                        {'name': 'on_end', 'label': 'End', 'field': 'on_end', 'align': 'center'},
+                        {'name': 'on_stop', 'label': 'Stop', 'field': 'on_stop', 'align': 'center'},
+                    ],
+                    rows=[],
+                    row_key='address',
+                    pagination={'rowsPerPage': 8},
+                ).classes('w-full').props('dense flat bordered')
+                for event_key in EVENT_KEYS:
+                    static_table.add_slot(
+                        f'body-cell-{event_key}',
+                        rf'''
+                        <q-td :props="props">
+                            <q-checkbox v-model="props.row.{event_key}" dense
+                                @update:model-value="() => $parent.$emit('toggle', props.row.address, '{event_key}', props.row.{event_key})" />
+                        </q-td>
+                        ''',
+                    )
+                static_table.on('toggle', lambda e: _toggle_recipient_pref(e.args[0], e.args[1], e.args[2]))
+
+        with ui.row().classes('items-center justify-end gap-2'):
+            apply_button = create_action_button('apply', label='Apply Notification Routing', on_click=_persist_notifications)
+            apply_button.disable()
+            notification_apply_btn = apply_button
+
     _on_change()
+    _refresh_notification_preview()

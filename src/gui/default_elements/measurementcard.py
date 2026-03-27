@@ -31,6 +31,62 @@ def _calculate_session_progress_ratio(elapsed: timedelta, session_max: timedelta
     return max(0.0, min(elapsed.total_seconds() / max_seconds, 1.0))
 
 
+def _normalize_active_groups_value(raw_value: Any, *, valid_options: Optional[list[str]] = None) -> list[str]:
+    if raw_value is None:
+        values: list[Any] = []
+    elif isinstance(raw_value, (list, tuple, set)):
+        values = list(raw_value)
+    else:
+        values = [raw_value]
+
+    allowed = set(valid_options or [])
+    use_filter = valid_options is not None
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        candidate = str(value or "").strip()
+        if not candidate or candidate in seen:
+            continue
+        if use_filter and candidate not in allowed:
+            continue
+        normalized.append(candidate)
+        seen.add(candidate)
+    return normalized
+
+
+def _has_unsaved_active_group_changes(
+    current_selection: Any,
+    synced_active_groups: list[str],
+    *,
+    valid_options: Optional[list[str]] = None,
+) -> bool:
+    return _normalize_active_groups_value(current_selection, valid_options=valid_options) != _normalize_active_groups_value(
+        synced_active_groups,
+        valid_options=valid_options,
+    )
+
+
+def _resolve_active_groups_sync(
+    current_selection: Any,
+    synced_active_groups: list[str],
+    configured_active_groups: list[str],
+    *,
+    valid_options: Optional[list[str]] = None,
+) -> tuple[list[str], list[str]]:
+    normalized_current = _normalize_active_groups_value(current_selection, valid_options=valid_options)
+    normalized_synced = _normalize_active_groups_value(synced_active_groups, valid_options=valid_options)
+    normalized_configured = _normalize_active_groups_value(configured_active_groups, valid_options=valid_options)
+    if normalized_current != normalized_synced:
+        return normalized_current, normalized_synced
+    return normalized_configured, normalized_configured
+
+
+def _needs_active_groups_value_refresh(current_selection: Any, next_value: list[str]) -> bool:
+    # Compare against the raw normalized UI selection so removed groups still force
+    # a cleanup update even when the filtered selection already matches next_value.
+    return _normalize_active_groups_value(current_selection) != _normalize_active_groups_value(next_value)
+
+
 def create_measurement_card(
     measurement_controller: Optional['MeasurementController'] = None,
     camera: Camera | None = None,
@@ -46,7 +102,7 @@ def create_measurement_card(
     config = get_global_config()
 
     if not config:
-        ui.label('⚠️ Configuration not available').classes('text-red')
+        ui.label('Configuration not available').classes('text-red')
         logger.error('Configuration not available - cannot create measurement card')
         return
     
@@ -564,31 +620,29 @@ def create_measurement_card(
             # Recipient Groups (Async Load)
             groups_select: Optional[ui.select] = None
             _last_groups_opts: list[str] = []
+            _last_synced_active_groups: list[str] = []
             groups_build_lock = asyncio.Lock()
             apply_btn: Optional[ui.button] = None
 
             def _update_apply_groups_state() -> None:
-                nonlocal groups_select, apply_btn
+                nonlocal groups_select, apply_btn, _last_synced_active_groups
                 try:
                     if apply_btn is None or groups_select is None:
                         return
-                    conf = get_global_config()
-                    if not conf or not getattr(conf, 'email', None):
-                        apply_btn.disable()
-                        return
-                    raw_val = getattr(groups_select, 'value', [])
-                    selected = set((raw_val or [])) if isinstance(raw_val, (list, tuple, set)) else {raw_val}
-                    current = set(getattr(conf.email, 'active_groups', []) or [])
-                    if selected == current:
-                        apply_btn.disable()
-                    else:
+                    if _has_unsaved_active_group_changes(
+                        getattr(groups_select, 'value', []),
+                        _last_synced_active_groups,
+                        valid_options=_last_groups_opts,
+                    ):
                         apply_btn.enable()
+                    else:
+                        apply_btn.disable()
                 except Exception as e:
                     logger.error(f"Error updating apply groups state: {e}")
 
             with ui.column().classes('w-full gap-2') as groups_container:
                 create_heading_row(
-                    'Active Recipients',
+                    'Active Groups',
                     icon='groups',
                     title_classes='text-caption font-bold text-grey-7',
                     row_classes='items-center gap-2',
@@ -597,12 +651,13 @@ def create_measurement_card(
                 loading_lbl = ui.label('Loading...').classes('text-caption text-grey italic')
 
                 async def _build_groups_ui() -> None:
-                    nonlocal groups_select, _last_groups_opts, apply_btn
+                    nonlocal groups_select, _last_groups_opts, _last_synced_active_groups, apply_btn
                     async with groups_build_lock:
                         cfg = await asyncio.to_thread(get_global_config)
                         opts = list(getattr(cfg.email, 'groups', {}).keys()) if cfg and cfg.email else []
                         vals = list(getattr(cfg.email, 'active_groups', [])) if cfg and cfg.email else []
                         _last_groups_opts = list(opts)
+                        _last_synced_active_groups = _normalize_active_groups_value(vals, valid_options=opts)
                         
                         try:
                             with groups_container:
@@ -610,19 +665,20 @@ def create_measurement_card(
                                 with ui.row().classes('w-full items-center gap-2 no-wrap'):
                                     groups_select = ui.select(
                                         options=opts,
-                                        value=vals,
+                                        value=list(_last_synced_active_groups),
                                         multiple=True,
-                                        label='Select Groups'
+                                        label='Active Groups'
                                     ).props('dense outlined use-chips').classes('flex-1')
 
-                                    apply_btn = ui.button(icon='check', on_click=lambda: apply_groups()).props('round dense flat color=primary').tooltip('Apply Changes')
+                                    apply_btn = ui.button(icon='check', on_click=lambda: apply_groups()).props('round dense flat color=primary').tooltip('Apply Active Groups')
+                                ui.label('Static recipients are always included in email delivery.').classes('text-caption text-grey')
 
                                 def _on_groups_change(_: Any = None) -> None:
                                     _update_apply_groups_state()
                                 groups_select.on('update:model-value', _on_groups_change)
 
                                 def apply_groups() -> None:
-                                    nonlocal apply_btn, groups_select
+                                    nonlocal apply_btn, groups_select, _last_synced_active_groups
                                     try:
                                         button = apply_btn
                                         select = groups_select
@@ -633,23 +689,26 @@ def create_measurement_card(
                                         conf = get_global_config()
                                         if not conf or not getattr(conf, 'email', None):
                                             return
-                                        
-                                        raw_val = getattr(select, 'value', [])
-                                        selected = list(raw_val) if isinstance(raw_val, (list, tuple, set)) else []
                                          
+                                        selected = _normalize_active_groups_value(
+                                            getattr(select, 'value', []),
+                                            valid_options=_last_groups_opts,
+                                        )
+                                          
                                         conf.email.active_groups = selected
                                         if not save_global_config():
-                                            logger.error('Failed to save recipient group selection')
-                                            ui.notify('Failed to update recipients', color='negative')
+                                            logger.error('Failed to save active group selection')
+                                            ui.notify('Failed to update active groups', color='negative')
                                             return
                                         if email_system:
                                             email_system.refresh_config()
-                                         
-                                        ui.notify('Recipients updated', color='positive', position='bottom-right')
+
+                                        _last_synced_active_groups = list(selected)
+                                        ui.notify('Active groups updated', color='positive', position='bottom-right')
                                         _update_apply_groups_state()
                                     except Exception as e:
                                         logger.error(f"Failed to apply groups: {e}")
-                                        ui.notify('Failed to update recipients', color='negative')
+                                        ui.notify('Failed to update active groups', color='negative')
                                     finally:
                                         _update_apply_groups_state()
 
@@ -662,7 +721,7 @@ def create_measurement_card(
 
             # Periodically refresh groups options
             def _refresh_groups_ui() -> Any:
-                nonlocal _last_groups_opts, groups_select
+                nonlocal _last_groups_opts, _last_synced_active_groups, groups_select
                 try:
                     if groups_select is None:
                         return
@@ -671,13 +730,24 @@ def create_measurement_card(
                         return
 
                     new_opts = list(getattr(conf.email, 'groups', {}).keys())
+                    configured_active = list(getattr(conf.email, 'active_groups', []) or [])
+                    next_value, next_synced = _resolve_active_groups_sync(
+                        getattr(groups_select, 'value', []),
+                        _last_synced_active_groups,
+                        configured_active,
+                        valid_options=new_opts,
+                    )
+                    needs_update = False
                     if new_opts != _last_groups_opts:
-                        configured_active = list(getattr(conf.email, 'active_groups', []) or [])
-                        filtered_active = [g for g in configured_active if g in new_opts]
-                        groups_select.value = filtered_active
                         groups_select.options = new_opts
-                        groups_select.update()
                         _last_groups_opts = list(new_opts)
+                        needs_update = True
+                    if _needs_active_groups_value_refresh(getattr(groups_select, 'value', []), next_value):
+                        groups_select.value = list(next_value)
+                        needs_update = True
+                    if needs_update:
+                        groups_select.update()
+                    _last_synced_active_groups = list(next_synced)
                     _update_apply_groups_state()
                 except Exception:
                     logger.debug('Groups refresh check failed', exc_info=True)

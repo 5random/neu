@@ -41,14 +41,14 @@ def create_motiondetection_card(camera: Optional[Camera] = None, *, show_header:
         nonlocal debounce_task
         if camera is None or camera.motion_detector is None:
             return
-        md = camera.motion_detector
+        motion_detector = camera.motion_detector
         sens_value = max(0.01, value / 100.0)
-        md.update_sensitivity(sens_value)
+        motion_detector.update_sensitivity(sens_value)
 
         async def save_config_delayed() -> None:
             await asyncio.sleep(0.5)
             try:
-                if camera.motion_detector and config:
+                if config:
                     config.motion_detection.sensitivity = sens_value
                     save_global_config()
                     logger.info(f'Saved sensitivity: {sens_value}')
