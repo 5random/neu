@@ -50,6 +50,10 @@ def test_measurement_status_exposes_timeout_seconds() -> None:
         assert status["session_timeout_seconds"] == 75
         assert status["session_timeout_minutes"] == 2
         assert status["session_start_time"] is not None
+        assert status["alerts_sent_count"] == 0
+        assert status["max_alerts_per_session"] >= 1
+        assert status["cooldown_remaining"] is None
+        assert status["can_send_alert"] is False
     finally:
         controller.cleanup()
 

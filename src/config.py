@@ -279,6 +279,7 @@ class EmailConfig:
 
     EMAIL_RE = re.compile(r"^[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}$")
     EVENT_PREF_KEYS = ("on_start", "on_end", "on_stop")
+    SYSTEM_STATIC_GROUP = "__static__"
 
     def __post_init__(self) -> None:
         """Runtime type validation for new fields.
@@ -379,10 +380,15 @@ class EmailConfig:
             for gname, addrs in self.groups.items():
                 if not gname or not isinstance(gname, str):
                     errors.append(f"invalid group name: {gname!r}")
+                elif self.is_reserved_group_name(gname):
+                    errors.append(f"reserved group name is managed by the system: {gname!r}")
                 for mail in addrs or []:
                     if not self.EMAIL_RE.match(mail):
                         errors.append(f"invalid email address in group '{gname}': {mail}")
         if self.active_groups:
+            reserved_active = [g for g in self.active_groups if self.is_reserved_group_name(g)]
+            if reserved_active:
+                errors.append(f"reserved active groups are managed by the system: {sorted(set(reserved_active))}")
             unknown = [g for g in self.active_groups if g not in (self.groups or {})]
             if unknown:
                 errors.append(f"unknown active groups: {unknown}")
@@ -402,6 +408,9 @@ class EmailConfig:
             for group_name, prefs in self.group_prefs.items():
                 if not isinstance(group_name, str) or not group_name:
                     errors.append(f"group_prefs has invalid group key: {group_name!r}")
+                    continue
+                if self.is_reserved_group_name(group_name):
+                    errors.append(f"group_prefs references reserved system group: {group_name!r}")
                     continue
                 if group_name not in (self.groups or {}):
                     errors.append(f"group_prefs references unknown group: {group_name!r}")
@@ -626,6 +635,44 @@ class EmailConfig:
             raise ValueError(f"{context} contains unknown event key: {normalized_key!r}; expected one of [{allowed}]")
         return normalized_key
 
+    @classmethod
+    def is_reserved_group_name(cls, name: Any) -> bool:
+        return isinstance(name, str) and name.strip() == cls.SYSTEM_STATIC_GROUP
+
+    @classmethod
+    def ensure_group_name_allowed(cls, name: str, *, context: str = "group") -> str:
+        normalized_name = _coerce_string(name, allow_empty=False)
+        if cls.is_reserved_group_name(normalized_name):
+            raise ValueError(f"{context} uses reserved group name: {normalized_name!r}")
+        return normalized_name
+
+    def get_visible_groups(self) -> Dict[str, List[str]]:
+        return {
+            name: list(members or [])
+            for name, members in (self.groups or {}).items()
+            if not self.is_reserved_group_name(name)
+        }
+
+    def get_visible_group_names(self) -> List[str]:
+        return list(self.get_visible_groups().keys())
+
+    def get_visible_active_groups(self) -> List[str]:
+        visible = set(self.get_visible_group_names())
+        return [group for group in self.active_groups or [] if group in visible]
+
+    def get_runtime_groups(self) -> Dict[str, List[str]]:
+        runtime_groups = self.get_visible_groups()
+        if self.static_recipients:
+            runtime_groups[self.SYSTEM_STATIC_GROUP] = list(self.static_recipients or [])
+        return runtime_groups
+
+    def get_runtime_active_groups(self) -> List[str]:
+        runtime_active_groups: List[str] = []
+        if self.static_recipients:
+            runtime_active_groups.append(self.SYSTEM_STATIC_GROUP)
+        runtime_active_groups.extend(self.get_visible_active_groups())
+        return runtime_active_groups
+
     def get_known_recipients(self) -> List[str]:
         """Return the shared address book with all referenced emails included."""
         addresses: List[str] = list(self.recipients or [])
@@ -668,9 +715,10 @@ class EmailConfig:
         the full recipients list.
         """
         explicit_targeting = self.uses_explicit_targeting()
-        collected: List[str] = list(self.static_recipients or [])
-        for group_name in self.active_groups or []:
-            collected.extend((self.groups or {}).get(group_name, []) or [])
+        runtime_groups = self.get_runtime_groups()
+        collected: List[str] = []
+        for group_name in self.get_runtime_active_groups():
+            collected.extend(runtime_groups.get(group_name, []) or [])
         deduped = self._dedupe_valid_emails(collected)
         if deduped:
             return deduped
@@ -687,17 +735,19 @@ class EmailConfig:
 
         explicit_targeting = self.uses_explicit_targeting()
         collected: List[str] = []
+        runtime_groups = self.get_runtime_groups()
 
-        for addr in self.static_recipients or []:
-            prefs = (self.recipient_prefs or {}).get(addr, {})
-            if self._pref_allows_event(prefs, event_key, default=True):
-                collected.append(addr)
-
-        for group_name in self.active_groups or []:
+        for group_name in self.get_runtime_active_groups():
+            if group_name == self.SYSTEM_STATIC_GROUP:
+                for addr in runtime_groups.get(group_name, []) or []:
+                    prefs = (self.recipient_prefs or {}).get(addr, {})
+                    if self._pref_allows_event(prefs, event_key, default=True):
+                        collected.append(addr)
+                continue
             prefs = (self.group_prefs or {}).get(group_name, {})
             if not self._pref_allows_event(prefs, event_key, default=True):
                 continue
-            collected.extend((self.groups or {}).get(group_name, []) or [])
+            collected.extend(runtime_groups.get(group_name, []) or [])
 
         deduped = self._dedupe_valid_emails(collected)
         if deduped:
@@ -1213,7 +1263,7 @@ def _normalize_groups(value: Any) -> Dict[str, List[str]]:
         raise ValueError("groups must be a mapping of group names to email lists")
     result: Dict[str, List[str]] = {}
     for group_name, members in value.items():
-        normalized_name = _coerce_string(group_name, allow_empty=False)
+        normalized_name = EmailConfig.ensure_group_name_allowed(group_name, context="groups")
         result[normalized_name] = _normalize_email_list(members, label=f"groups['{normalized_name}']")
     return result
 
@@ -1224,7 +1274,7 @@ def _normalize_active_groups(value: Any, *, known_groups: Dict[str, List[str]]) 
     result: List[str] = []
     unknown_groups: List[str] = []
     for item in value:
-        name = _coerce_string(item, allow_empty=False)
+        name = EmailConfig.ensure_group_name_allowed(item, context="active_groups")
         result.append(name)
         if name not in known_groups:
             unknown_groups.append(name)
@@ -1253,7 +1303,7 @@ def _normalize_group_prefs(value: Any, *, known_groups: Dict[str, List[str]]) ->
     result: Dict[str, Dict[str, bool]] = {}
     unknown_groups: List[str] = []
     for group_name, prefs in value.items():
-        normalized_name = _coerce_string(group_name, allow_empty=False)
+        normalized_name = EmailConfig.ensure_group_name_allowed(group_name, context="group_prefs")
         if normalized_name not in known_groups:
             unknown_groups.append(normalized_name)
         if not isinstance(prefs, dict):

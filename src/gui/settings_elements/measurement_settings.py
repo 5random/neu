@@ -1,11 +1,25 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import json
 from typing import Optional, Callable, Any
 
 from nicegui import ui
 
 from src.config import EmailConfig, get_global_config, save_global_config, get_logger
+from src.gui.email_visibility import (
+    get_visible_active_groups as get_gui_visible_active_groups,
+    get_visible_groups as get_gui_visible_groups,
+)
+from src.gui.duration_utils import (
+    DURATION_UNIT_OPTIONS,
+    DurationDisplayConfig,
+    build_duration_display_config,
+    coerce_duration_value,
+    duration_value_to_seconds,
+    normalize_duration_unit,
+    pick_duration_unit,
+)
 from src.measurement import MeasurementController
 from src.gui import instances
 from src.gui.settings_elements.ui_helpers import create_action_button, create_heading_row
@@ -58,6 +72,24 @@ def _get_known_recipients(email_cfg: Any) -> list[str]:
     return _iterable_str_list(getattr(email_cfg, 'recipients', []))
 
 
+def _visible_groups(email_cfg: Any) -> dict[str, list[str]]:
+    return get_gui_visible_groups(email_cfg)
+
+
+def _visible_active_groups(email_cfg: Any) -> list[str]:
+    return get_gui_visible_active_groups(email_cfg)
+
+
+def _apply_duration_control_display(number_ctrl: Any, display: DurationDisplayConfig) -> None:
+    number_ctrl.min = display.min_value
+    number_ctrl.max = display.max_value
+    number_ctrl.format = display.format
+    number_ctrl.props(remove='step suffix')
+    number_ctrl.props(f'step={display.step} suffix={json.dumps(display.suffix)}')
+    number_ctrl.value = display.display_value
+    number_ctrl.update()
+
+
 def create_measurement_settings_card(
     measurement_controller: Optional[MeasurementController] = None,
     show_header: bool = True,
@@ -85,12 +117,13 @@ def create_measurement_settings_card(
     }
 
     recipient_pool = _get_known_recipients(email_cfg)
-    active_groups = _iterable_str_list(getattr(email_cfg, 'active_groups', []))
-    group_names = list((getattr(email_cfg, 'groups', {}) or {}).keys())
+    groups = _visible_groups(email_cfg)
+    active_groups = _visible_active_groups(email_cfg)
+    group_names = list(groups.keys())
 
     notification_state: dict[str, Any] = {
         'recipient_pool': list(recipient_pool),
-        'groups': dict(getattr(email_cfg, 'groups', {}) or {}),
+        'groups': groups,
         'notifications': _event_prefs(dict(getattr(email_cfg, 'notifications', {}) or {}), default=False),
         'active_groups': active_groups,
         'static_recipients': list(email_cfg.get_static_recipients_for_editor()),
@@ -117,12 +150,66 @@ def create_measurement_settings_card(
 
     from src.gui.bindings import bind_number_slider
 
+    TIME_CONTROL_CONFIGS: dict[str, dict[str, Any]] = {
+        'alert_delay_seconds': {
+            'title': 'Alert Delay',
+            'tooltip': 'How long no motion may be detected before the first alert is sent.',
+            'min_seconds': 30.0,
+            'max_seconds': 3600.0,
+            'allowed_units': ('s', 'min', 'h'),
+            'default_unit': 'min',
+            'allow_zero': False,
+            'integer_seconds': True,
+        },
+        'alert_check_interval': {
+            'title': 'Check Interval',
+            'tooltip': 'How often the controller evaluates alert conditions.',
+            'min_seconds': 0.5,
+            'max_seconds': 120.0,
+            'allowed_units': ('s', 'min'),
+            'default_unit': 's',
+            'allow_zero': False,
+            'integer_seconds': False,
+        },
+        'alert_cooldown_seconds': {
+            'title': 'Alert Cooldown',
+            'tooltip': 'Minimum time between two alerts.',
+            'min_seconds': 0.0,
+            'max_seconds': 3600.0,
+            'allowed_units': ('s', 'min', 'h'),
+            'default_unit': 'min',
+            'allow_zero': True,
+            'integer_seconds': True,
+        },
+        'inactivity_timeout_minutes': {
+            'title': 'Inactivity Timeout',
+            'tooltip': 'Stop session after prolonged inactivity (0 = disabled).',
+            'min_seconds': 0.0,
+            'max_seconds': 43200.0,
+            'allowed_units': ('min', 'h'),
+            'default_unit': 'min',
+            'allow_zero': True,
+            'integer_seconds': True,
+        },
+        'motion_summary_interval_seconds': {
+            'title': 'Summary Interval',
+            'tooltip': 'Period for motion summary logs (>= 5 seconds).',
+            'min_seconds': 5.0,
+            'max_seconds': 3600.0,
+            'allowed_units': ('s', 'min', 'h'),
+            'default_unit': 'min',
+            'allow_zero': False,
+            'integer_seconds': True,
+        },
+    }
+
     counts_labels: dict[str, ui.label] = {}
     active_groups_select: Optional[ui.select] = None
     group_table: Optional[ui.table] = None
     static_table: Optional[ui.table] = None
     preview_table: Optional[ui.table] = None
     notification_apply_btn: Optional[ui.button] = None
+    duration_controls: dict[str, dict[str, Any]] = {}
 
     def _cast_to_int(value: Any, fallback: float) -> Optional[float]:
         try:
@@ -184,6 +271,160 @@ def create_measurement_settings_card(
         )
         return number_ctrl, slider_ctrl
 
+    def _state_value_to_seconds(key: str, source_state: Optional[dict[str, Any]] = None) -> float:
+        current_state = source_state or state
+        raw_value = current_state[key]
+        if key == 'inactivity_timeout_minutes':
+            return float(int(raw_value or 0) * 60)
+        return float(raw_value or 0)
+
+    def _seconds_to_state_value(key: str, seconds: float) -> Any:
+        if key == 'alert_check_interval':
+            return float(seconds)
+        if key == 'inactivity_timeout_minutes':
+            return int(round(float(seconds) / 60.0))
+        return int(round(float(seconds)))
+
+    def _build_duration_display(key: str, *, seconds_value: float, unit: str) -> DurationDisplayConfig:
+        config_meta = TIME_CONTROL_CONFIGS[key]
+        return build_duration_display_config(
+            seconds_value,
+            unit,
+            min_seconds=config_meta['min_seconds'],
+            max_seconds=config_meta['max_seconds'],
+            allowed_units=config_meta['allowed_units'],
+            allow_zero=config_meta['allow_zero'],
+        )
+
+    def _refresh_duration_control(key: str, *, seconds_value: Optional[float] = None) -> None:
+        control = duration_controls[key]
+        config_meta = TIME_CONTROL_CONFIGS[key]
+        unit = normalize_duration_unit(
+            getattr(control['unit'], 'value', config_meta['default_unit']),
+            allowed_units=config_meta['allowed_units'],
+            default=config_meta['default_unit'],
+        )
+        if control['meta'].get('unit') != unit:
+            control['meta']['unit'] = unit
+            try:
+                control['unit'].value = unit
+            except Exception:
+                pass
+
+        current_seconds = _state_value_to_seconds(key) if seconds_value is None else float(seconds_value)
+        display = _build_duration_display(key, seconds_value=current_seconds, unit=unit)
+        _apply_duration_control_display(control['number'], display)
+        control['unit'].update()
+
+    def _read_duration_control_seconds(key: str) -> float:
+        control = duration_controls[key]
+        config_meta = TIME_CONTROL_CONFIGS[key]
+        unit = normalize_duration_unit(
+            getattr(control['unit'], 'value', config_meta['default_unit']),
+            allowed_units=config_meta['allowed_units'],
+            default=config_meta['default_unit'],
+        )
+        raw_value = coerce_duration_value(
+            getattr(control['number'], 'value', 0.0),
+            default=0.0,
+        )
+        seconds = duration_value_to_seconds(
+            raw_value,
+            unit,
+            minimum_seconds=config_meta['min_seconds'],
+            allowed_units=config_meta['allowed_units'],
+            allow_zero=config_meta['allow_zero'],
+        )
+        seconds = min(float(config_meta['max_seconds']), float(seconds))
+        if config_meta['allow_zero'] and raw_value <= 0:
+            seconds = 0.0
+        if config_meta['integer_seconds']:
+            return float(int(round(seconds)))
+        return round(float(seconds), 3)
+
+    def _build_duration_card(key: str, *, wrap_card: bool = True) -> tuple[Any, Any]:
+        config_meta = TIME_CONTROL_CONFIGS[key]
+        initial_seconds = _state_value_to_seconds(key)
+        selected_unit = pick_duration_unit(
+            initial_seconds,
+            allowed_units=config_meta['allowed_units'],
+            default=config_meta['default_unit'],
+        )
+        if config_meta['allow_zero'] and initial_seconds <= 0:
+            selected_unit = normalize_duration_unit(
+                config_meta['default_unit'],
+                allowed_units=config_meta['allowed_units'],
+                default=config_meta['default_unit'],
+            )
+        initial_display = _build_duration_display(key, seconds_value=initial_seconds, unit=selected_unit)
+        selected_unit = initial_display.unit
+
+        parent = ui.card().tight().classes('p-3 flex flex-col self-start w-full').style('align-items:stretch;') if wrap_card else ui.column().classes('w-full gap-2')
+        with parent:
+            if wrap_card:
+                ui.label(config_meta['title']).classes('font-semibold mb-1 self-start')
+            with ui.row().classes('items-center gap-2 w-full flex-nowrap'):
+                number_ctrl = (
+                    ui.number(
+                        value=initial_display.display_value,
+                        min=initial_display.min_value,
+                        max=initial_display.max_value,
+                        step=initial_display.step,
+                        format=initial_display.format,
+                    )
+                    .props(f'dense outlined hide-bottom-space suffix={json.dumps(initial_display.suffix)}')
+                    .tooltip(config_meta['tooltip'])
+                    .classes(value_classes)
+                )
+                unit_ctrl = (
+                    ui.select(
+                        options={unit: DURATION_UNIT_OPTIONS[unit] for unit in config_meta['allowed_units']},
+                        value=selected_unit,
+                    )
+                    .props('dense outlined options-dense')
+                    .tooltip(config_meta['tooltip'])
+                    .classes('w-32 shrink-0')
+                )
+
+        duration_controls[key] = {
+            'number': number_ctrl,
+            'unit': unit_ctrl,
+            'meta': {'unit': selected_unit},
+        }
+
+        def _on_number_change(_: Any = None) -> None:
+            _on_change()
+
+        def _on_unit_change(_: Any = None) -> None:
+            previous_unit = duration_controls[key]['meta']['unit']
+            new_unit = normalize_duration_unit(
+                getattr(unit_ctrl, 'value', selected_unit),
+                allowed_units=config_meta['allowed_units'],
+                default=config_meta['default_unit'],
+            )
+            current_seconds = duration_value_to_seconds(
+                coerce_duration_value(
+                    getattr(number_ctrl, 'value', 0.0),
+                    default=0.0,
+                ),
+                previous_unit,
+                minimum_seconds=config_meta['min_seconds'],
+                allowed_units=config_meta['allowed_units'],
+                allow_zero=config_meta['allow_zero'],
+            )
+            if config_meta['allow_zero'] and coerce_duration_value(getattr(number_ctrl, 'value', 0.0), default=0.0) <= 0:
+                current_seconds = 0.0
+            duration_controls[key]['meta']['unit'] = new_unit
+            unit_ctrl.value = new_unit
+            _refresh_duration_control(key, seconds_value=current_seconds)
+            _on_change()
+
+        number_ctrl.on('update:model-value', _on_number_change)
+        number_ctrl.on('blur', _on_number_change)
+        unit_ctrl.on('update:model-value', _on_unit_change)
+        _refresh_duration_control(key, seconds_value=initial_seconds)
+        return number_ctrl, unit_ctrl
+
     def _build_toggle_card(title: str, checkbox_label: str, value: bool, tooltip: str) -> Any:
         with ui.card().tight().classes('p-3 flex flex-col self-start w-full').style('align-items:stretch;'):
             ui.label(title).classes('font-semibold mb-1 self-start')
@@ -223,7 +464,7 @@ def create_measurement_settings_card(
             smtp_port=current_email_cfg.smtp_port,
             sender_email=current_email_cfg.sender_email,
             templates={name: dict(template_cfg) for name, template_cfg in current_email_cfg.templates.items()},
-            groups={group: list(members) for group, members in current_email_cfg.groups.items()},
+            groups={group: list(members) for group, members in notification_state['groups'].items()},
             active_groups=list(notification_state['active_groups']),
             static_recipients=list(notification_state['static_recipients']),
             explicit_targeting=True,
@@ -344,12 +585,9 @@ def create_measurement_settings_card(
             return
 
         current_email_cfg = current_cfg.email
-        current_groups = {
-            group: list(members)
-            for group, members in (getattr(current_email_cfg, 'groups', {}) or {}).items()
-        }
+        current_groups = _visible_groups(current_email_cfg)
         current_recipient_pool = _get_known_recipients(current_email_cfg)
-        current_active_groups = _iterable_str_list(getattr(current_email_cfg, 'active_groups', []))
+        current_active_groups = _visible_active_groups(current_email_cfg)
         current_static = current_email_cfg.get_static_recipients_for_editor()
 
         is_dirty = _normalize_notification_state() != notification_saved_state
@@ -447,13 +685,13 @@ def create_measurement_settings_card(
     def _on_change(_: Any = None) -> None:
         try:
             current = {
-                'alert_delay_seconds': int(_get_control_value(alert_delay_inp, state['alert_delay_seconds']) or 0),
+                'alert_delay_seconds': int(round(_read_duration_control_seconds('alert_delay_seconds'))),
                 'max_alerts_per_session': int(_get_control_value(max_alerts_inp, state['max_alerts_per_session']) or 0),
-                'alert_check_interval': float(_get_control_value(check_interval_inp, state['alert_check_interval']) or 0),
-                'alert_cooldown_seconds': int(_get_control_value(cooldown_inp, state['alert_cooldown_seconds']) or 0),
+                'alert_check_interval': float(_read_duration_control_seconds('alert_check_interval')),
+                'alert_cooldown_seconds': int(round(_read_duration_control_seconds('alert_cooldown_seconds'))),
                 'alert_include_snapshot': bool(_get_control_value(include_snapshot_cb, state['alert_include_snapshot'])),
-                'inactivity_timeout_minutes': int(_get_control_value(inactivity_inp, state['inactivity_timeout_minutes']) or 0),
-                'motion_summary_interval_seconds': int(_get_control_value(summary_interval_inp, state['motion_summary_interval_seconds']) or 0),
+                'inactivity_timeout_minutes': int(_seconds_to_state_value('inactivity_timeout_minutes', _read_duration_control_seconds('inactivity_timeout_minutes'))),
+                'motion_summary_interval_seconds': int(round(_read_duration_control_seconds('motion_summary_interval_seconds'))),
                 'enable_motion_summary_logs': bool(_get_control_value(enable_summary_cb, state['enable_motion_summary_logs'])),
             }
             if current != state:
@@ -472,17 +710,20 @@ def create_measurement_settings_card(
         try:
             violations = []
             new_state = {
-                'alert_delay_seconds': max(30, int(_get_control_value(alert_delay_inp, 0) or 0)),
+                'alert_delay_seconds': max(30, int(round(_read_duration_control_seconds('alert_delay_seconds')))),
                 'max_alerts_per_session': max(1, int(_get_control_value(max_alerts_inp, 1) or 1)),
-                'alert_check_interval': max(0.5, float(_get_control_value(check_interval_inp, 0.5) or 0.5)),
-                'alert_cooldown_seconds': max(0, int(_get_control_value(cooldown_inp, 0) or 0)),
+                'alert_check_interval': max(0.5, float(_read_duration_control_seconds('alert_check_interval'))),
+                'alert_cooldown_seconds': max(0, int(round(_read_duration_control_seconds('alert_cooldown_seconds')))),
                 'alert_include_snapshot': bool(_get_control_value(include_snapshot_cb, False)),
-                'inactivity_timeout_minutes': max(0, int(_get_control_value(inactivity_inp, 0) or 0)),
-                'motion_summary_interval_seconds': max(5, int(_get_control_value(summary_interval_inp, 5) or 5)),
+                'inactivity_timeout_minutes': max(
+                    0,
+                    int(_seconds_to_state_value('inactivity_timeout_minutes', _read_duration_control_seconds('inactivity_timeout_minutes'))),
+                ),
+                'motion_summary_interval_seconds': max(5, int(round(_read_duration_control_seconds('motion_summary_interval_seconds')))),
                 'enable_motion_summary_logs': bool(_get_control_value(enable_summary_cb, True)),
             }
 
-            if int(_get_control_value(alert_delay_inp, 0) or 0) < 30:
+            if float(_read_duration_control_seconds('alert_delay_seconds')) < 30:
                 violations.append('Alert delay minimum is 30 seconds')
 
             if violations:
@@ -505,6 +746,8 @@ def create_measurement_settings_card(
                 if email_system is not None:
                     email_system.refresh_config()
                 state = new_state
+                for duration_key in TIME_CONTROL_CONFIGS.keys():
+                    _refresh_duration_control(duration_key, seconds_value=_state_value_to_seconds(duration_key, state))
                 apply_btn.disable()
                 notify_user('Measurement settings saved', kind='positive')
             else:
@@ -516,18 +759,7 @@ def create_measurement_settings_card(
     with ui.grid(columns=2).classes('w-full gap-3 mb-3 items-start').style(
         'grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); grid-auto-rows:min-content;'
     ):
-        alert_delay_inp, alert_delay_slider = _build_numeric_card(
-            'alert_delay_seconds',
-            title='Alert Delay',
-            tooltip='Seconds without motion before the first alert is sent',
-            min_value=30,
-            max_value=3600,
-            step=5,
-            fmt='%.0f',
-            suffix='s',
-            caster=_cast_to_int,
-            as_int=True,
-        )
+        alert_delay_inp, alert_delay_unit = _build_duration_card('alert_delay_seconds')
         max_alerts_inp, max_alerts_slider = _build_numeric_card(
             'max_alerts_per_session',
             title='Max Alerts Per Session',
@@ -540,54 +772,9 @@ def create_measurement_settings_card(
             caster=_cast_to_int,
             as_int=True,
         )
-        check_interval_inp, check_interval_slider = _build_numeric_card(
-            'alert_check_interval',
-            title='Check Interval',
-            tooltip='How often the controller evaluates alert conditions',
-            min_value=0.5,
-            max_value=120.0,
-            step=0.5,
-            fmt='%.1f',
-            suffix='s',
-            caster=_cast_to_float,
-            as_int=False,
-        )
-        cooldown_inp, cooldown_slider = _build_numeric_card(
-            'alert_cooldown_seconds',
-            title='Alert Cooldown',
-            tooltip='Minimum time between two alerts',
-            min_value=0,
-            max_value=3600,
-            step=5,
-            fmt='%.0f',
-            suffix='s',
-            caster=_cast_to_int,
-            as_int=True,
-        )
-        inactivity_inp, inactivity_slider = _build_numeric_card(
-            'inactivity_timeout_minutes',
-            title='Inactivity Timeout',
-            tooltip='Stop session after prolonged inactivity (0 = disabled)',
-            min_value=0,
-            max_value=720,
-            step=5,
-            fmt='%.0f',
-            suffix='min',
-            caster=_cast_to_int,
-            as_int=True,
-        )
-        summary_interval_inp, summary_interval_slider = _build_numeric_card(
-            'motion_summary_interval_seconds',
-            title='Summary Interval',
-            tooltip='Period for motion summary logs (>= 5 seconds)',
-            min_value=5,
-            max_value=3600,
-            step=5,
-            fmt='%.0f',
-            suffix='s',
-            caster=_cast_to_int,
-            as_int=True,
-        )
+        check_interval_inp, check_interval_unit = _build_duration_card('alert_check_interval')
+        cooldown_inp, cooldown_unit = _build_duration_card('alert_cooldown_seconds')
+        inactivity_inp, inactivity_unit = _build_duration_card('inactivity_timeout_minutes')
 
     with ui.grid(columns=2).classes('w-full gap-3 items-start').style(
         'grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); grid-auto-rows:min-content;'
@@ -598,12 +785,23 @@ def create_measurement_settings_card(
             bool(state['alert_include_snapshot']),
             'Attach a snapshot to alert emails when an alert is sent',
         )
-        enable_summary_cb = _build_toggle_card(
-            'Motion Summary Logs',
-            'Enable motion summary logs',
-            bool(state['enable_motion_summary_logs']),
-            'Master switch for periodic motion summary logging',
-        )
+        with ui.card().tight().classes('p-3 flex flex-col self-start w-full gap-3').style('align-items:stretch;'):
+            ui.label('Motion Summary Logs').classes('font-semibold mb-1 self-start')
+            enable_summary_cb = (
+                ui.checkbox(
+                    'Enable motion summary logs',
+                    value=bool(state['enable_motion_summary_logs']),
+                )
+                .tooltip('Master switch for periodic motion summary logging')
+                .classes('self-start')
+            )
+            ui.label('Summary Interval').classes('text-caption text-grey-7')
+            summary_interval_inp, summary_interval_unit = _build_duration_card(
+                'motion_summary_interval_seconds',
+                wrap_card=False,
+            )
+            summary_interval_inp.bind_enabled_from(enable_summary_cb, 'value')
+            summary_interval_unit.bind_enabled_from(enable_summary_cb, 'value')
 
     with ui.row().classes('items-center q-gutter-sm q-mt-sm justify-end'):
         apply_btn = create_action_button(
@@ -638,7 +836,7 @@ def create_measurement_settings_card(
             icon_classes='text-primary text-xl shrink-0',
         )
         ui.label(
-            'Configure lifecycle emails, choose the active groups for the current run, and review static-recipient permissions managed in E-Mail settings.'
+            'Configure lifecycle emails, choose the active groups for the current run, and review the always-active static-recipient permissions managed in E-Mail settings.'
         ).classes('text-body2 text-grey-7')
 
         with ui.grid(columns=4).classes('w-full gap-3').style(

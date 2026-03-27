@@ -194,18 +194,19 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
             roi_hint_label.visible = True
             return
         if not b:
-            roi_hint_label.text = ''
-            roi_hint_label.visible = False
+            roi_hint_label.text = 'No ROI selected'
+            roi_hint_label.classes(remove='text-warning text-positive', add='text-grey')
+            roi_hint_label.visible = True
             return
         x0, y0, x1, y1 = b
         w = max(1, x1 - x0)
         h = max(1, y1 - y0)
         if w < MIN_ROI_SIZE_PX or h < MIN_ROI_SIZE_PX:
-            roi_hint_label.text = f'ROI too small: {w}×{h} px (min {MIN_ROI_SIZE_PX}px)'
+            roi_hint_label.text = f'Area too small: {w} x {h} px (minimum {MIN_ROI_SIZE_PX} px)'
             roi_hint_label.classes(remove='text-grey text-positive', add='text-warning')
             roi_hint_label.visible = True
         else:
-            roi_hint_label.text = f'ROI: {w}×{h} px'
+            roi_hint_label.text = f'Selected area: {w} x {h} px'
             roi_hint_label.classes(remove='text-grey text-warning', add='text-positive')
             roi_hint_label.visible = True
 
@@ -573,13 +574,6 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
                 ui.timer(0.2, _refresh_stream)
 
             
-            create_heading_row(
-                'ROI Values',
-                icon='straighten',
-                title_classes='text-subtitle2 font-semibold',
-                row_classes='items-center gap-2 mb-2',
-                icon_classes='text-primary text-lg shrink-0',
-            )
             with ui.column().classes('w-full gap-3'):
                 with ui.row().classes('items-center gap-4 text-sm w-full flex-wrap'):
                     ui.label('upper left:')
@@ -606,13 +600,6 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
                     roi_hint_label = ui.label('').classes('text-sm text-grey')
 
         
-            create_heading_row(
-                'ROI Actions',
-                icon='crop',
-                title_classes='text-subtitle2 font-semibold',
-                row_classes='items-center gap-2 mb-2',
-                icon_classes='text-primary text-lg shrink-0',
-            )
             with ui.row().classes('items-center gap-2 w-full flex-wrap'):
                 roi_enabled_checkbox = ui.checkbox('ROI enabled', value=True).tooltip('Enable/disable Region of Interest')
                 roi_enabled_checkbox.on('change', lambda e: update_roi_enabled(bool(getattr(e, 'value', True))))

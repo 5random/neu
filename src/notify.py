@@ -177,6 +177,43 @@ class EMailSystem:
             self._alert_session_id = session_id
             self.logger.debug("Alert state reset for session %s", session_id or "<none>")
 
+    def decrement_alert_count(self, session_id: Optional[str] = None, *, amount: int = 1) -> bool:
+        """Decrease the per-session alert counter without touching cooldown state.
+
+        Non-positive decrement requests are treated as no-ops and return ``False``.
+        """
+        decrement_by = max(0, int(amount)) if amount is not None else 1
+        with self._state_lock:
+            if not self._matches_alert_session_unsafe(session_id):
+                return False
+            if self._alert_session_id is None or self.alerts_sent_count <= 0 or decrement_by <= 0:
+                return False
+            previous_count = self.alerts_sent_count
+            self.alerts_sent_count = max(0, self.alerts_sent_count - decrement_by)
+            self.logger.debug(
+                "Alert count decremented for session %s: %s -> %s",
+                session_id or "<none>",
+                previous_count,
+                self.alerts_sent_count,
+            )
+            return True
+
+    def reset_alert_count(self, session_id: Optional[str] = None) -> bool:
+        """Reset the per-session alert counter without touching cooldown state."""
+        with self._state_lock:
+            if not self._matches_alert_session_unsafe(session_id):
+                return False
+            if self._alert_session_id is None:
+                return False
+            previous_count = self.alerts_sent_count
+            self.alerts_sent_count = 0
+            self.logger.debug(
+                "Alert count reset for session %s: %s -> 0",
+                session_id or "<none>",
+                previous_count,
+            )
+            return True
+
     def can_send_alert(self, session_id: Optional[str] = None) -> bool:
         with self._state_lock:
             if not self._matches_alert_session_unsafe(session_id):
@@ -1036,9 +1073,11 @@ class EMailSystem:
         """
         current_email_config = self._get_current_email_config()
         with self._state_lock:
+            max_alerts = max(1, int(getattr(self.measurement_config, 'max_alerts_per_session', 1)))
             return {
                 'last_alert_time': self.last_alert_time,
                 'alerts_sent_count': self.alerts_sent_count,
+                'max_alerts_per_session': max_alerts,
                 'cooldown_remaining': self._get_cooldown_remaining_unsafe(),
                 'can_send_alert': self._alert_session_id is not None and self._should_send_alert_unsafe(),
                 'configured_recipients': len(self._get_effective_recipients()),

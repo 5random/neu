@@ -4,7 +4,7 @@ import json
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import quote
 
 from src.config import get_global_config, get_logger
@@ -19,6 +19,63 @@ HISTORY_FILE_NAME = 'history.json'
 HISTORY_STATIC_ROUTE = '/history'
 
 _history_file_lock = threading.Lock()
+_history_revisions: dict[str, int] = {}
+_history_listeners: dict[str, list[Callable[[int], None]]] = {}
+
+
+def _history_revision_key(history_file: Path) -> str:
+    return str(Path(history_file).resolve(strict=False))
+
+
+def _bump_history_revision_unlocked(history_file: Path) -> int:
+    key = _history_revision_key(history_file)
+    next_revision = _history_revisions.get(key, 0) + 1
+    _history_revisions[key] = next_revision
+    return next_revision
+
+
+def get_history_revision(*, history_file: Path | None = None) -> int:
+    """Return the in-process revision counter for the given history file."""
+    target_file = history_file or get_history_file()
+    with _history_file_lock:
+        return _history_revisions.get(_history_revision_key(target_file), 0)
+
+
+def register_history_listener(listener: Callable[[int], None], *, history_file: Path | None = None) -> None:
+    """Register a listener that is notified when the given history file changes."""
+    target_file = history_file or get_history_file()
+    key = _history_revision_key(target_file)
+    with _history_file_lock:
+        listeners = _history_listeners.setdefault(key, [])
+        if listener not in listeners:
+            listeners.append(listener)
+
+
+def unregister_history_listener(listener: Callable[[int], None], *, history_file: Path | None = None) -> None:
+    """Remove a previously registered history change listener."""
+    target_file = history_file or get_history_file()
+    key = _history_revision_key(target_file)
+    with _history_file_lock:
+        listeners = _history_listeners.get(key)
+        if not listeners:
+            return
+        try:
+            listeners.remove(listener)
+        except ValueError:
+            return
+        if not listeners:
+            _history_listeners.pop(key, None)
+
+
+def _notify_history_listeners(history_file: Path, revision: int) -> None:
+    key = _history_revision_key(history_file)
+    with _history_file_lock:
+        listeners = list(_history_listeners.get(key, []))
+    for listener in listeners:
+        try:
+            listener(revision)
+        except Exception:
+            logger.exception('Failed to notify history listener')
 
 
 def get_history_dir(config: AppConfig | MeasurementConfig | None = None) -> Path:
@@ -88,13 +145,19 @@ def append_history_entry(
     target_file = history_file or get_history_file()
     target_file.parent.mkdir(parents=True, exist_ok=True)
 
+    revision = 0
+    entries_snapshot: list[dict[str, Any]] = []
     with _history_file_lock:
         entries = _load_history_entries_unlocked(target_file, repair=True)
         entries.append(dict(entry))
         if max_entries > 0 and len(entries) > max_entries:
             entries = entries[-max_entries:]
         _write_history_entries_unlocked(target_file, entries)
-        return list(entries)
+        revision = _bump_history_revision_unlocked(target_file)
+        entries_snapshot = list(entries)
+
+    _notify_history_listeners(target_file, revision)
+    return entries_snapshot
 
 
 def replace_history_entries(
@@ -107,8 +170,12 @@ def replace_history_entries(
     target_file.parent.mkdir(parents=True, exist_ok=True)
 
     sanitized_entries = [dict(entry) for entry in entries if isinstance(entry, dict)]
+    revision = 0
     with _history_file_lock:
         _write_history_entries_unlocked(target_file, sanitized_entries)
+        revision = _bump_history_revision_unlocked(target_file)
+
+    _notify_history_listeners(target_file, revision)
 
 
 def to_history_image_storage_path(image_file: Path, history_dir: Path | None = None) -> str:

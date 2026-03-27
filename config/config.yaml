@@ -67,10 +67,10 @@ uvc_controls:
 motion_detection:
   region_of_interest:
     enabled: true
-    x: 374
-    y: 248
-    width: 1000
-    height: 511
+    x: 750
+    y: 501
+    width: 85
+    height: 110
   sensitivity: 0.1
   background_learning_rate: 0.005
   min_contour_area: 252
@@ -85,7 +85,7 @@ measurement:
   image_save_path: ./alerts/
   image_format: jpg
   image_quality: 85
-  alert_delay_seconds: 300
+  alert_delay_seconds: 30
   session_timeout_seconds: 0
   max_alerts_per_session: 5
   alert_check_interval: 5.0

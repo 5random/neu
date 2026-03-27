@@ -50,6 +50,8 @@ def test_send_motion_alert_includes_image(monkeypatch):
 def test_send_motion_alert_uses_single_recipient_headers(monkeypatch):
     cfg = _create_default_config()
     cfg.email.recipients = ["first@example.com", "second@example.com"]
+    cfg.email.static_recipients = []
+    cfg.email.explicit_targeting = False
     cfg.email.sender_email = "sender@example.com"
     cfg.email.smtp_server = "localhost"
     cfg.email.smtp_port = 25
@@ -250,6 +252,8 @@ def test_send_motion_alert_aborted_after_partial_delivery_is_not_success(monkeyp
 
     cfg = _create_default_config()
     cfg.email.recipients = ["first@example.com", "second@example.com"]
+    cfg.email.static_recipients = []
+    cfg.email.explicit_targeting = False
     cfg.email.sender_email = "sender@example.com"
     cfg.email.smtp_server = "localhost"
     cfg.email.smtp_port = 25
@@ -365,6 +369,85 @@ def test_alert_limits_use_cooldown_and_max_per_session():
         email_system.alerts_sent_count = 2
         assert email_system.can_send_alert(session_id="session-1") is False
     finally:
+        email_system.close()
+
+
+def test_alert_counter_adjustments_do_not_reset_cooldown():
+    cfg = _create_default_config()
+    cfg.measurement.alert_cooldown_seconds = 120
+    cfg.measurement.max_alerts_per_session = 3
+    email_system = EMailSystem(cfg.email, cfg.measurement, cfg)
+    try:
+        email_system.reset_alert_state(session_id="session-1")
+        previous_alert_time = datetime.now()
+        email_system.last_alert_time = previous_alert_time
+        email_system.alerts_sent_count = 2
+
+        assert email_system.decrement_alert_count(session_id="session-1") is True
+        assert email_system.alerts_sent_count == 1
+        assert email_system.last_alert_time is previous_alert_time
+        assert email_system.can_send_alert(session_id="session-1") is False
+
+        assert email_system.reset_alert_count(session_id="session-1") is True
+        assert email_system.alerts_sent_count == 0
+        assert email_system.last_alert_time is previous_alert_time
+        assert email_system.can_send_alert(session_id="session-1") is False
+    finally:
+        email_system.close()
+
+
+def test_alert_counter_decrement_rejects_non_positive_amounts():
+    cfg = _create_default_config()
+    email_system = EMailSystem(cfg.email, cfg.measurement, cfg)
+    try:
+        email_system.reset_alert_state(session_id="session-1")
+        previous_alert_time = datetime.now()
+        email_system.last_alert_time = previous_alert_time
+        email_system.alerts_sent_count = 2
+
+        assert email_system.decrement_alert_count(session_id="session-1", amount=0) is False
+        assert email_system.decrement_alert_count(session_id="session-1", amount=-3) is False
+        assert email_system.alerts_sent_count == 2
+        assert email_system.last_alert_time is previous_alert_time
+    finally:
+        email_system.close()
+
+
+def test_measurement_controller_exposes_alert_runtime_and_counter_actions():
+    cfg = _create_default_config()
+    cfg.email.recipients = ["recipient@example.com"]
+    cfg.email.sender_email = "sender@example.com"
+    cfg.email.smtp_server = "localhost"
+    cfg.email.smtp_port = 25
+    cfg.measurement.max_alerts_per_session = 4
+    cfg.measurement.alert_cooldown_seconds = 90
+
+    email_system = EMailSystem(cfg.email, cfg.measurement, cfg)
+    controller = MeasurementController(cfg.measurement, email_system=email_system, camera=None)
+    try:
+        assert controller.start_session() is True
+        assert controller.session_id is not None
+        email_system.alerts_sent_count = 3
+        email_system.last_alert_time = datetime.now()
+
+        status = controller.get_session_status()
+
+        assert status["alerts_sent_count"] == 3
+        assert status["max_alerts_per_session"] == 4
+        assert status["cooldown_remaining"] is not None
+        assert status["can_send_alert"] is False
+
+        assert controller.decrement_alert_count() is True
+        assert email_system.alerts_sent_count == 2
+        previous_alert_time = email_system.last_alert_time
+        assert controller.decrement_alert_count(amount=0) is False
+        assert email_system.alerts_sent_count == 2
+        assert email_system.last_alert_time is previous_alert_time
+        assert controller.reset_alert_count() is True
+        assert email_system.alerts_sent_count == 0
+        assert email_system.last_alert_time is previous_alert_time
+    finally:
+        controller.cleanup()
         email_system.close()
 
 

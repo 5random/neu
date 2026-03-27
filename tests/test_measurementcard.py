@@ -96,4 +96,72 @@ def test_measurement_card_tooltips_cover_active_group_quick_selector():
         'active_groups': 'Quick selection of the recipient groups for the current measurement run. Static recipients are added automatically.',
         'active_groups_apply': 'Save the selected active groups for the current measurement run.',
         'active_groups_info': 'Static recipients always receive emails in addition to the active groups selected here.',
+        'alert_counter': 'Shows how many alerts count against the current session limit.',
+        'alert_counter_decrement': 'Decrease the current session alert counter by one without changing cooldown.',
+        'alert_counter_reset': 'Reset the current session alert counter to zero without changing cooldown.',
+        'alert_cooldown': 'Remaining time until another alert may be sent.',
     }
+
+
+def test_derive_alert_counter_view_state_marks_ready_session() -> None:
+    view = measurementcard._derive_alert_counter_view_state(
+        {
+            'is_active': True,
+            'alerts_sent_count': 1,
+            'max_alerts_per_session': 3,
+            'cooldown_remaining': None,
+            'can_send_alert': True,
+        }
+    )
+
+    assert view['alerts_count_text'] == '1 / 3'
+    assert view['cooldown_state'] == 'ready'
+    assert view['show_decrement'] is True
+    assert view['enable_reset'] is True
+
+
+def test_derive_alert_counter_view_state_marks_limit_reached() -> None:
+    view = measurementcard._derive_alert_counter_view_state(
+        {
+            'is_active': True,
+            'alerts_sent_count': 3,
+            'max_alerts_per_session': 3,
+            'cooldown_remaining': 0,
+            'can_send_alert': False,
+        }
+    )
+
+    assert view['cooldown_state'] == 'limit'
+    assert view['show_decrement'] is True
+    assert view['show_reset'] is True
+
+
+def test_derive_alert_counter_view_state_marks_running_cooldown() -> None:
+    view = measurementcard._derive_alert_counter_view_state(
+        {
+            'is_active': True,
+            'alerts_sent_count': 1,
+            'max_alerts_per_session': 3,
+            'cooldown_remaining': 12.5,
+            'can_send_alert': False,
+        }
+    )
+
+    assert view['cooldown_state'] == 'cooldown'
+    assert view['cooldown_remaining'] == 12.5
+
+
+def test_derive_alert_counter_view_state_hides_buttons_for_inactive_session() -> None:
+    view = measurementcard._derive_alert_counter_view_state(
+        {
+            'is_active': False,
+            'alerts_sent_count': 0,
+            'max_alerts_per_session': 3,
+            'cooldown_remaining': None,
+            'can_send_alert': False,
+        }
+    )
+
+    assert view['cooldown_state'] == 'idle'
+    assert view['show_decrement'] is False
+    assert view['show_reset'] is False

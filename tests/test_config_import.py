@@ -92,6 +92,22 @@ email:
     assert "unknown groups" in entry.reason
 
 
+def test_analyze_imported_config_rejects_reserved_system_group_name() -> None:
+    preview = analyze_imported_config_text(
+        """
+email:
+  groups:
+    __static__:
+      - hidden@example.com
+""",
+        current_config=_create_default_config(),
+    )
+
+    entry = _entry(preview, "email.groups")
+    assert entry.status == "invalid"
+    assert "reserved group name" in entry.reason
+
+
 def test_analyze_imported_config_accepts_static_recipients_and_group_prefs() -> None:
     current_cfg = _create_default_config()
     current_cfg.email.explicit_targeting = False

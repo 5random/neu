@@ -53,9 +53,6 @@ def settings_page(request: Request) -> None:
     # Persist last visited route for this browser session
     set_ui_pref(StorageKeys.LAST_ROUTE, '/settings')
 
-    # Hinweis: Der Browser-Tab-Titel wird ausschließlich beim Start über ui.run gesetzt.
-    # Auf der Settings-Seite erfolgt keine dynamische Anpassung mehr.
-
     # Gemeinsamen Header/Footer der App verwenden
     from .layout import build_header, build_footer
     build_header(current_route='/settings')

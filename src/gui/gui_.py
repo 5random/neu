@@ -30,6 +30,27 @@ _title_sync_registered = False
 cleanup.register_signal_handlers()
 
 
+def refresh_connected_clients(*, client: Any = None, broadcast: bool = False, delay_ms: int = 150) -> None:
+    """Trigger a one-time page reload for the given or all connected clients."""
+    reload_delay = max(0, int(delay_ms))
+    reload_code = f'window.setTimeout(() => window.location.reload(), {reload_delay});'
+
+    try:
+        if client is not None:
+            if hasattr(client, 'run_javascript'):
+                client.run_javascript(reload_code)
+        elif broadcast:
+            clients_dict = getattr(app, 'clients', {})
+            try:
+                clients = list(getattr(clients_dict, 'values', lambda: [])())
+            except Exception:
+                clients = []
+            for connected_client in clients:
+                refresh_connected_clients(client=connected_client, delay_ms=reload_delay)
+    except Exception:
+        logger.debug('Failed to refresh client(s)', exc_info=True)
+
+
 def sync_runtime_gui_title(*, title: str | None = None, client: Any = None, broadcast: bool = False) -> str:
     """Sync the current metadata-based GUI title into NiceGUI runtime state and clients."""
     resolved_title = str(title or compute_gui_title())

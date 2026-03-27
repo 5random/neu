@@ -671,6 +671,32 @@ class MeasurementController:
                 float(getattr(config, 'alert_delay_seconds', 0) or 0) - time_since_motion,
             )
 
+        max_alerts_per_session = max(
+            1,
+            int(getattr(config, 'max_alerts_per_session', 1) or 1),
+        )
+        alert_runtime: dict[str, Any] = {
+            "alerts_sent_count": 0,
+            "max_alerts_per_session": max_alerts_per_session,
+            "cooldown_remaining": None,
+            "can_send_alert": False,
+        }
+        if self.email_system is not None and hasattr(self.email_system, "get_alert_status"):
+            try:
+                runtime_status = self.email_system.get_alert_status()
+                alert_runtime.update(
+                    {
+                        "alerts_sent_count": int(runtime_status.get("alerts_sent_count", 0) or 0),
+                        "max_alerts_per_session": int(
+                            runtime_status.get("max_alerts_per_session", max_alerts_per_session) or max_alerts_per_session
+                        ),
+                        "cooldown_remaining": runtime_status.get("cooldown_remaining"),
+                        "can_send_alert": bool(runtime_status.get("can_send_alert", False)),
+                    }
+                )
+            except Exception:
+                self.logger.debug("Failed to read email alert runtime state", exc_info=True)
+
         return {
             "is_active": active,
             "session_id": sid,
@@ -681,8 +707,33 @@ class MeasurementController:
             "session_timeout_minutes": session_timeout_minutes,
             "recent_motion_detected": recent_motion_detected,
             "time_since_motion": time_since_motion,
-            "alert_countdown": alert_countdown
+            "alert_countdown": alert_countdown,
+            **alert_runtime,
         }
+
+    def decrement_alert_count(self, *, amount: int = 1) -> bool:
+        """Decrease the active session alert counter without resetting cooldown."""
+        with self.session_lock:
+            session_id = self.session_id if self.is_session_active else None
+        if not session_id or self.email_system is None or not hasattr(self.email_system, "decrement_alert_count"):
+            return False
+        try:
+            return bool(self.email_system.decrement_alert_count(session_id=session_id, amount=amount))
+        except Exception:
+            self.logger.error("Failed to decrement alert count", exc_info=True)
+            return False
+
+    def reset_alert_count(self) -> bool:
+        """Reset the active session alert counter without resetting cooldown."""
+        with self.session_lock:
+            session_id = self.session_id if self.is_session_active else None
+        if not session_id or self.email_system is None or not hasattr(self.email_system, "reset_alert_count"):
+            return False
+        try:
+            return bool(self.email_system.reset_alert_count(session_id=session_id))
+        except Exception:
+            self.logger.error("Failed to reset alert count", exc_info=True)
+            return False
 
     def cleanup(self) -> None:
         """Cleanup resources."""

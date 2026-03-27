@@ -125,6 +125,17 @@ def test_enable_explicit_targeting_materializes_legacy_targets_when_requested() 
     assert email.static_recipients == ["a@example.com", "b@example.com"]
 
 
+def test_visible_groups_hide_reserved_static_group_name() -> None:
+    email = _email_cfg()
+    email.groups = {
+        "ops": ["a@example.com"],
+        email.SYSTEM_STATIC_GROUP: ["hidden@example.com"],
+    }
+
+    assert email.get_visible_groups() == {"ops": ["a@example.com"]}
+    assert email.get_visible_group_names() == ["ops"]
+
+
 def test_validate_rejects_unknown_group_prefs() -> None:
     email = _email_cfg()
     email.group_prefs = {"missing": {"on_start": True}}
@@ -146,3 +157,12 @@ def test_validate_rejects_unknown_event_keys_in_notifications_and_prefs() -> Non
     assert any("notifications contains unknown event key" in error for error in errors)
     assert any("group_prefs['ops'] contains unknown event key" in error for error in errors)
     assert any("recipient_prefs['a@example.com'] contains unknown event key" in error for error in errors)
+
+
+def test_validate_rejects_reserved_group_name() -> None:
+    email = _email_cfg()
+    email.groups = {email.SYSTEM_STATIC_GROUP: ["a@example.com"]}
+
+    errors = email.validate()
+
+    assert any("reserved group name" in error for error in errors)

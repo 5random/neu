@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, Callable
+
 from nicegui import ui
 
 from src.config import get_global_config, save_global_config, get_logger
@@ -9,6 +11,17 @@ from src.gui.settings_elements.ui_helpers import create_action_button, create_se
 from src.gui.storage import set_ui_pref
 
 logger = get_logger('gui.metadata')
+
+
+def _sync_saved_metadata_title(
+    cfg: Any,
+    *,
+    sync_title: Callable[..., str],
+    set_pref: Callable[[str, str], None],
+) -> str:
+    new_title = sync_title(title=compute_gui_title(cfg), broadcast=True)
+    set_pref(StorageKeys.GUI_TITLE, new_title)
+    return new_title
 
 
 def create_metadata_settings() -> None:
@@ -89,13 +102,17 @@ def create_metadata_settings() -> None:
                     cfg.metadata.cvd_name = str(cvd_name_inp.value or '').strip()
 
                     if save_global_config():
-                        from src.gui.gui_ import sync_runtime_gui_title
+                        from src.gui.gui_ import refresh_connected_clients, sync_runtime_gui_title
 
-                        new_title = sync_runtime_gui_title(title=compute_gui_title(cfg), broadcast=True)
-                        set_ui_pref(StorageKeys.GUI_TITLE, new_title)
+                        new_title = _sync_saved_metadata_title(
+                            cfg,
+                            sync_title=sync_runtime_gui_title,
+                            set_pref=set_ui_pref,
+                        )
                         ui.notify('Metadata saved.', type='positive', position='bottom-right')
                         logger.info('Metadata updated: id=%s, name=%s', cfg.metadata.cvd_id, cfg.metadata.cvd_name)
                         _update_ui_from_inputs()
+                        refresh_connected_clients(broadcast=True)
                     else:
                         ui.notify('Failed to save metadata', type='negative', position='bottom-right')
                 except Exception as exc:  # noqa: BLE001

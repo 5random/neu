@@ -7,7 +7,7 @@ help:
         Welcome to the CVD-Tracker application. This page explains where the main workflows live in the current UI.
 
         ## Main Areas
-        - **Dashboard**: Start and stop measurements, monitor live status, and quickly change the active email groups for the current run.
+        - **Dashboard**: Start and stop measurements, monitor live status, adjust the session alert counter, review alert history, and quickly change the active email groups for the current run.
         - **Settings**: Configure camera behavior, motion sensitivity, measurement timing, email recipients, appearance, metadata, configuration import, updates, and logs.
 
         ## Typical First-Time Workflow
@@ -65,16 +65,19 @@ help:
         - **Alert Delay** defines how long no motion may be detected before an alert can be triggered.
         - **Cooldown** prevents repeated alerts from firing too quickly.
         - **Snapshot** controls whether alert emails include an image.
+        - Time-based controls support multiple units so you can switch between seconds, minutes, or hours where it fits the setting.
+        - The Dashboard includes an alert counter block so a false alarm can be decremented or reset during an active session without clearing cooldown.
 
         ## Lifecycle Email Routing
         - Global switches define whether **start**, **end**, and **stop** emails are enabled.
         - **Active Groups** define which recipient groups are used for the current run.
-        - **Static recipients** are always added automatically and are managed in the E-Mail section.
+        - **Static recipients** behave like an always-active hidden system group and are managed in the E-Mail section.
         - Per-group and per-static-recipient event permissions define which lifecycle events each source may receive.
+        - Group lifecycle permissions can be edited both here and in the E-Mail group stepper.
 
         ## Where To Change What
         - Use **Settings > Measurement** for runtime routing and lifecycle event permissions.
-        - Use the **Dashboard** as a quick selector for active groups during operation.
+        - Use the **Dashboard** as a quick selector for active groups during operation and to review alert history.
         - If no groups are available on the Dashboard, create them first in **Settings > E-Mail Notifications**.
         - Use **Settings > E-Mail Notifications** to manage the address book, static recipients, groups, and SMTP delivery.
 
@@ -95,10 +98,13 @@ help:
         ## Static Recipients
         - Use the **Static** column in the address-book table to mark recipients that should always receive emails.
         - Static recipients are always included in addition to any currently active groups.
+        - Internally they behave like an always-active system group, but that group stays hidden from the normal group selectors.
 
         ## Groups
         - Use the guided group stepper to create, edit, review, save, or delete recipient groups.
+        - Selecting an existing group loads it immediately into the stepper so you can continue editing without an extra load button.
         - Groups are used to organize non-static recipients and to select the audience for the current run.
+        - Lifecycle permissions for each group can be edited here and in **Settings > Measurement**.
 
         ## Important Workflow Note
         - This page manages addresses, static recipients, groups, and SMTP settings.
@@ -129,6 +135,7 @@ help:
         ## Applying Changes
         - Click **Apply** to save metadata changes.
         - The preview title updates immediately so you can verify the naming before saving.
+        - After saving, the browser tab title and shared header/footer title update immediately as well.
 
     - title: "Configuration"
       link: "/settings#config"

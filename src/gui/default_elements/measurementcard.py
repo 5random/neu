@@ -6,6 +6,21 @@ from nicegui import ui
 from src.notify import EMailSystem
 from src.config import get_global_config, save_global_config, get_logger
 from src.cam.camera import Camera
+from src.gui.email_visibility import get_visible_group_names
+from src.gui.duration_utils import (
+    DEFAULT_DURATION_SECONDS,
+    MIN_DURATION_SECONDS,
+    DURATION_UNIT_OPTIONS,
+    DURATION_UNIT_SUFFIXES,
+    coerce_duration_value,
+    duration_value_to_seconds,
+    get_duration_min_value,
+    get_duration_step,
+    normalize_duration_unit,
+    pick_duration_unit,
+    round_duration_value,
+    seconds_to_duration_value,
+)
 from src.gui.ui_helpers import SECTION_ICONS, create_heading_row
 from src.gui.util import notify_user, schedule_bg
 from typing import TYPE_CHECKING, Optional, Any
@@ -19,6 +34,10 @@ MEASUREMENT_CARD_TOOLTIPS = {
     'active_groups': 'Quick selection of the recipient groups for the current measurement run. Static recipients are added automatically.',
     'active_groups_apply': 'Save the selected active groups for the current measurement run.',
     'active_groups_info': 'Static recipients always receive emails in addition to the active groups selected here.',
+    'alert_counter': 'Shows how many alerts count against the current session limit.',
+    'alert_counter_decrement': 'Decrease the current session alert counter by one without changing cooldown.',
+    'alert_counter_reset': 'Reset the current session alert counter to zero without changing cooldown.',
+    'alert_cooldown': 'Remaining time until another alert may be sent.',
 }
 
 
@@ -93,6 +112,43 @@ def _needs_active_groups_value_refresh(current_selection: Any, next_value: list[
     return _normalize_active_groups_value(current_selection) != _normalize_active_groups_value(next_value)
 
 
+def _derive_alert_counter_view_state(status: dict[str, Any]) -> dict[str, Any]:
+    session_active = bool(status.get('is_active', False))
+    alerts_sent_count = max(0, int(status.get('alerts_sent_count', 0) or 0))
+    max_alerts = max(1, int(status.get('max_alerts_per_session', 1) or 1))
+    can_send_alert = bool(status.get('can_send_alert', False))
+    raw_cooldown_remaining = status.get('cooldown_remaining')
+    cooldown_remaining = None
+    if raw_cooldown_remaining is not None:
+        try:
+            remaining = float(raw_cooldown_remaining)
+        except (TypeError, ValueError):
+            remaining = 0.0
+        if remaining > 0:
+            cooldown_remaining = remaining
+
+    if cooldown_remaining is not None:
+        cooldown_state = 'cooldown'
+    elif session_active and alerts_sent_count >= max_alerts:
+        cooldown_state = 'limit'
+    elif session_active and can_send_alert:
+        cooldown_state = 'ready'
+    else:
+        cooldown_state = 'idle'
+
+    return {
+        'alerts_count_text': f'{alerts_sent_count} / {max_alerts}',
+        'alerts_sent_count': alerts_sent_count,
+        'max_alerts': max_alerts,
+        'cooldown_state': cooldown_state,
+        'cooldown_remaining': cooldown_remaining,
+        'show_decrement': session_active and alerts_sent_count > 0,
+        'enable_decrement': session_active and alerts_sent_count > 0,
+        'show_reset': session_active,
+        'enable_reset': session_active and alerts_sent_count > 0,
+    }
+
+
 def create_measurement_card(
     measurement_controller: Optional['MeasurementController'] = None,
     camera: Camera | None = None,
@@ -138,19 +194,6 @@ def create_measurement_card(
 
     # ------------------------- Zustände -------------------------
 
-    DURATION_UNIT_SECONDS = {'s': 1, 'min': 60, 'h': 3600, 'd': 86400}
-    DURATION_UNIT_OPTIONS = {
-        's': 'Seconds',
-        'min': 'Minutes',
-        'h': 'Hours',
-        'd': 'Days',
-    }
-    DURATION_UNIT_SUFFIXES = {'s': 's', 'min': 'min', 'h': 'h', 'd': 'd'}
-    DURATION_UNIT_STEP = {'s': 1.0, 'min': 0.1, 'h': 0.01, 'd': 0.001}
-    DURATION_UNIT_PRECISION = {'s': 0, 'min': 1, 'h': 2, 'd': 3}
-    DEFAULT_DURATION_SECONDS = 60
-    MIN_DURATION_SECONDS = 1
-
     last_measurement: datetime | None = None
     status_error_logged = False
     refresh_error_logged = False
@@ -160,12 +203,6 @@ def create_measurement_card(
         secs = max(0, int(td.total_seconds()))
         h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
         return f'{h:02}:{m:02}:{s:02}'
-
-    def _coerce_duration_value(value: Any, *, default: float) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return default
 
     def _get_config_session_timeout_seconds() -> int:
         measurement_config = measurement_controller.config if measurement_controller is not None else config.measurement
@@ -209,36 +246,26 @@ def create_measurement_card(
             logger.warning('Invalid legacy session_timeout_minutes in measurement status: %r', raw_minutes)
             return 0
 
+    def _coerce_duration_value(value: Any, *, default: float) -> float:
+        return coerce_duration_value(value, default=default)
+
     def _get_duration_unit(unit: Any) -> str:
-        return str(unit) if unit in DURATION_UNIT_SECONDS else 'min'
+        return normalize_duration_unit(unit, allowed_units=('s', 'min', 'h', 'd'), default='min')
 
     def _get_duration_step(unit: str) -> float:
-        return DURATION_UNIT_STEP[_get_duration_unit(unit)]
+        return get_duration_step(unit, allowed_units=('s', 'min', 'h', 'd'))
 
     def _round_duration_value(value: float, unit: str) -> float:
-        precision = DURATION_UNIT_PRECISION[_get_duration_unit(unit)]
-        return round(value, precision)
+        return round_duration_value(value, unit, allowed_units=('s', 'min', 'h', 'd'))
 
     def _get_unit_min_value(unit: str) -> float:
-        normalized_unit = _get_duration_unit(unit)
-        return max(
-            MIN_DURATION_SECONDS / DURATION_UNIT_SECONDS[normalized_unit],
-            _get_duration_step(normalized_unit),
-        )
+        return get_duration_min_value(unit, min_seconds=MIN_DURATION_SECONDS, allowed_units=('s', 'min', 'h', 'd'))
 
     def _seconds_to_duration_value(total_seconds: int, unit: str) -> float:
-        normalized_unit = _get_duration_unit(unit)
-        value = max(0, int(total_seconds or 0)) / DURATION_UNIT_SECONDS[normalized_unit]
-        return _round_duration_value(value, normalized_unit)
+        return seconds_to_duration_value(total_seconds, unit, allowed_units=('s', 'min', 'h', 'd'))
 
     def _pick_duration_unit(total_seconds: int) -> str:
-        if total_seconds <= 0:
-            return 'min'
-        for unit in ('d', 'h', 'min', 's'):
-            divisor = DURATION_UNIT_SECONDS[unit]
-            if total_seconds % divisor == 0:
-                return unit
-        return 's'
+        return pick_duration_unit(total_seconds, allowed_units=('s', 'min', 'h', 'd'), default='min')
 
     def _get_elapsed_duration(status: dict[str, Any]) -> timedelta | None:
         elapsed = status.get('duration')
@@ -284,6 +311,10 @@ def create_measurement_card(
             'recent_motion_detected': False,
             'time_since_motion': 0.0,
             'alert_countdown': None,
+            'alerts_sent_count': 0,
+            'max_alerts_per_session': max(1, int(getattr(config.measurement, 'max_alerts_per_session', 1) or 1)),
+            'cooldown_remaining': None,
+            'can_send_alert': False,
         }
 
         if measurement_controller is None:
@@ -333,6 +364,10 @@ def create_measurement_card(
     initial_start_time = _get_session_start_time(initial_status)
     if initial_start_time is not None:
         last_measurement = initial_start_time
+    alerts_count_label: Optional[ui.label] = None
+    alert_cooldown_label: Optional[ui.label] = None
+    alert_decrement_btn: Optional[ui.button] = None
+    alert_reset_btn: Optional[ui.button] = None
 
     def _update_view(status: dict[str, Any] | None = None) -> None:
         """Aktualisiert Laufzeit, Fortschritt und Status-Labels."""
@@ -415,6 +450,39 @@ def create_measurement_card(
             last_measurement.strftime('%H:%M:%S')
             if last_measurement else '-'
         )
+
+        alert_counter_view = _derive_alert_counter_view_state(status)
+        if alerts_count_label is not None:
+            alerts_count_label.text = alert_counter_view['alerts_count_text']
+            alerts_count_label.update()
+        if alert_cooldown_label is not None:
+            if alert_counter_view['cooldown_state'] == 'limit':
+                alert_cooldown_label.text = 'Limit reached'
+                alert_cooldown_label.classes(remove='text-grey text-positive text-warning', add='text-negative')
+            elif alert_counter_view['cooldown_state'] == 'ready':
+                alert_cooldown_label.text = 'Ready'
+                alert_cooldown_label.classes(remove='text-negative text-warning text-grey', add='text-positive')
+            elif alert_counter_view['cooldown_state'] == 'cooldown':
+                alert_cooldown_label.text = fmt(timedelta(seconds=float(alert_counter_view['cooldown_remaining'] or 0.0)))
+                alert_cooldown_label.classes(remove='text-grey text-positive', add='text-warning')
+            else:
+                alert_cooldown_label.text = '-'
+                alert_cooldown_label.classes(remove='text-negative text-positive text-warning', add='text-grey')
+            alert_cooldown_label.update()
+        if alert_decrement_btn is not None:
+            alert_decrement_btn.visible = bool(alert_counter_view['show_decrement'])
+            if alert_counter_view['enable_decrement']:
+                alert_decrement_btn.enable()
+            else:
+                alert_decrement_btn.disable()
+            alert_decrement_btn.update()
+        if alert_reset_btn is not None:
+            alert_reset_btn.visible = bool(alert_counter_view['show_reset'])
+            if alert_counter_view['enable_reset']:
+                alert_reset_btn.enable()
+            else:
+                alert_reset_btn.disable()
+            alert_reset_btn.update()
 
         timer_label.update()
         progress.update()
@@ -518,7 +586,16 @@ def create_measurement_card(
 
         unit = _get_duration_unit(duration_unit.value)
         raw_value = _coerce_duration_value(duration_input.value, default=_get_unit_min_value(unit))
-        seconds = max(MIN_DURATION_SECONDS, int(round(raw_value * DURATION_UNIT_SECONDS[unit])))
+        seconds = int(
+            round(
+                duration_value_to_seconds(
+                    raw_value,
+                    unit,
+                    minimum_seconds=MIN_DURATION_SECONDS,
+                    allowed_units=('s', 'min', 'h', 'd'),
+                )
+            )
+        )
 
         if hasattr(cfg, 'set_session_timeout_seconds'):
             cfg.set_session_timeout_seconds(seconds)
@@ -620,6 +697,37 @@ def create_measurement_card(
                 ui.label('Last Run:').classes('text-caption font-bold text-grey-7')
             last_label = ui.label('-').classes('text-caption text-grey')
 
+        ui.separator().classes('my-4')
+
+        with ui.card().classes('w-full p-3 gap-3'):
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('notifications').classes('text-grey-7 text-sm shrink-0')
+                ui.label('Alert Counter').classes('text-caption font-bold text-grey-7')
+            with ui.row().classes('items-center justify-between gap-3 flex-wrap'):
+                with ui.column().classes('gap-1'):
+                    ui.label('Session Alerts').classes('text-caption text-grey-7')
+                    alerts_count_label = ui.label('0 / 0').classes('text-subtitle1 font-semibold').tooltip(
+                        MEASUREMENT_CARD_TOOLTIPS['alert_counter']
+                    )
+                with ui.column().classes('gap-1'):
+                    ui.label('Cooldown').classes('text-caption text-grey-7')
+                    alert_cooldown_label = ui.label('-').classes('text-caption text-grey').tooltip(
+                        MEASUREMENT_CARD_TOOLTIPS['alert_cooldown']
+                    )
+                with ui.row().classes('items-center gap-2 ml-auto'):
+                    alert_decrement_btn = ui.button(
+                        '-1',
+                        icon='remove',
+                        on_click=lambda: _adjust_alert_count(reset=False),
+                    ).props('outline dense')
+                    alert_decrement_btn.tooltip(MEASUREMENT_CARD_TOOLTIPS['alert_counter_decrement'])
+                    alert_reset_btn = ui.button(
+                        'Reset',
+                        icon='restart_alt',
+                        on_click=lambda: _adjust_alert_count(reset=True),
+                    ).props('outline dense')
+                    alert_reset_btn.tooltip(MEASUREMENT_CARD_TOOLTIPS['alert_counter_reset'])
+
         if show_recipients:
             ui.separator().classes('my-4')
 
@@ -662,7 +770,7 @@ def create_measurement_card(
                     nonlocal groups_select, groups_hint_label, _last_groups_opts, _last_synced_active_groups, apply_btn
                     async with groups_build_lock:
                         cfg = await asyncio.to_thread(get_global_config)
-                        opts = list(getattr(cfg.email, 'groups', {}).keys()) if cfg and cfg.email else []
+                        opts = get_visible_group_names(cfg.email) if cfg and cfg.email else []
                         vals = list(getattr(cfg.email, 'active_groups', [])) if cfg and cfg.email else []
                         _last_groups_opts = list(opts)
                         _last_synced_active_groups = _normalize_active_groups_value(vals, valid_options=opts)
@@ -757,7 +865,7 @@ def create_measurement_card(
                     if not conf or not getattr(conf, 'email', None):
                         return
 
-                    new_opts = list(getattr(conf.email, 'groups', {}).keys())
+                    new_opts = get_visible_group_names(conf.email)
                     configured_active = list(getattr(conf.email, 'active_groups', []) or [])
                     if groups_select is None:
                         if new_opts != _last_groups_opts:
@@ -810,7 +918,16 @@ def create_measurement_card(
         new_unit = _get_duration_unit(duration_unit.value)
 
         current_value = _coerce_duration_value(duration_input.value, default=_get_unit_min_value(old_unit))
-        seconds = max(MIN_DURATION_SECONDS, int(round(current_value * DURATION_UNIT_SECONDS[old_unit])))
+        seconds = int(
+            round(
+                duration_value_to_seconds(
+                    current_value,
+                    old_unit,
+                    minimum_seconds=MIN_DURATION_SECONDS,
+                    allowed_units=('s', 'min', 'h', 'd'),
+                )
+            )
+        )
         min_val = _get_unit_min_value(new_unit)
         new_value = max(_seconds_to_duration_value(seconds, new_unit), min_val)
 
@@ -877,6 +994,23 @@ def create_measurement_card(
         current_status = _safe_get_status()
         _request_view_refresh(current_status)
         style_start_button(current_status)
+
+    def _adjust_alert_count(*, reset: bool) -> None:
+        if measurement_controller is None:
+            notify_user('Measurement controller unavailable', kind='negative')
+            return
+        changed = measurement_controller.reset_alert_count() if reset else measurement_controller.decrement_alert_count(amount=1)
+        current_status = _safe_get_status()
+        _request_view_refresh(current_status)
+        if not changed:
+            if not bool(current_status.get('is_active', False)):
+                notify_user('No active session for alert counter changes', kind='warning')
+            elif not reset and int(current_status.get('alerts_sent_count', 0) or 0) <= 0:
+                notify_user('Alert counter is already at zero', kind='info')
+            else:
+                notify_user('Alert counter could not be updated', kind='warning')
+            return
+        notify_user('Alert counter reset' if reset else 'Alert counter decreased', kind='positive')
 
 
     def tick() -> None:

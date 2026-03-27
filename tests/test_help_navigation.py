@@ -23,8 +23,9 @@ def test_email_help_section_describes_static_recipients_and_active_groups() -> N
     content = str(section.get('content') or '').lower()
 
     assert 'static recipients' in content
+    assert 'system group' in content
     assert 'active groups' in content
-    assert 'dashboard quick selector' in content
+    assert 'loads it immediately' in content
     assert 'template' not in content
 
 
@@ -33,7 +34,8 @@ def test_measurement_help_section_mentions_dashboard_quick_selector_and_group_cr
     content = str(section.get('content') or '').lower()
 
     assert 'dashboard' in content
-    assert 'quick selector' in content
+    assert 'alert counter' in content
+    assert 'alert history' in content
     assert 'create them first in **settings > e-mail notifications**'.lower() in content
 
 
