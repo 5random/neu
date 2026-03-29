@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, fields
 import re
 from typing import Optional, Any, Callable
 
@@ -125,10 +126,14 @@ def _event_model_value(event: Any) -> Any:
     if event is None:
         return None
     if hasattr(event, "value"):
-        return getattr(event, "value")
+        value = getattr(event, "value")
+        if value is not None:
+            return value
     args = getattr(event, "args", None)
     if isinstance(args, dict):
         return args.get("value")
+    if isinstance(args, (list, tuple)) and len(args) == 1:
+        return args[0]
     return args
 
 
@@ -314,6 +319,62 @@ def _build_email_preview_cfg(
     )
 
 
+def _snapshot_email_config_state(email_cfg: EmailConfig) -> dict[str, Any]:
+    return {
+        config_field.name: deepcopy(getattr(email_cfg, config_field.name))
+        for config_field in fields(EmailConfig)
+    }
+
+
+def _restore_email_config_state(email_cfg: EmailConfig, snapshot: dict[str, Any]) -> None:
+    for config_field in fields(EmailConfig):
+        if config_field.name in snapshot:
+            setattr(email_cfg, config_field.name, deepcopy(snapshot[config_field.name]))
+
+
+def _snapshot_group_editor_state(group_editor: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "selected": group_editor.get("selected"),
+        "name": (group_editor.get("name") or "").strip(),
+        "members": sanitize_group_addresses(list(group_editor.get("members", []) or [])),
+        "event_prefs": _event_prefs(group_editor.get("event_prefs"), default=True),
+    }
+
+
+def _restore_group_editor_state(group_editor: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    group_editor.clear()
+    group_editor.update(_snapshot_group_editor_state(snapshot))
+
+
+def _group_editor_baseline_state(
+    groups: dict[str, list[str]],
+    group_prefs: dict[str, dict[str, bool]],
+    selected_name: Optional[str],
+) -> dict[str, Any]:
+    baseline_state, _ = _resolve_group_editor_state(groups, group_prefs, selected_name)
+    return baseline_state
+
+
+def _is_group_editor_dirty(
+    group_editor: dict[str, Any],
+    groups: dict[str, list[str]],
+    group_prefs: dict[str, dict[str, bool]],
+) -> bool:
+    current_state = _snapshot_group_editor_state(group_editor)
+    baseline_state = _group_editor_baseline_state(groups, group_prefs, current_state.get("selected"))
+    return current_state != baseline_state
+
+
+def _resolve_group_delete_target(
+    group_editor: dict[str, Any],
+    groups: dict[str, list[str]],
+) -> Optional[str]:
+    selected_name = group_editor.get("selected")
+    if isinstance(selected_name, str) and selected_name in groups:
+        return selected_name
+    return None
+
+
 def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
     """Render email setup, address book, and guided group management."""
     config = get_global_config()
@@ -354,6 +415,15 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
     group_event_toggles: dict[str, ui.checkbox] = {}
     overview_counts: dict[str, ui.label] = {}
     notification_labels: dict[str, ui.label] = {}
+    discard_group_dialog: Optional[ui.dialog] = None
+    discard_group_title_label: Optional[ui.label] = None
+    discard_group_message_label: Optional[ui.label] = None
+    discard_group_confirm_btn: Optional[ui.button] = None
+    delete_group_btn: Optional[ui.button] = None
+    delete_group_tooltip: Optional[ui.tooltip] = None
+    _pending_group_editor_action: Optional[Callable[[], None]] = None
+    _pending_group_select_restore_value: Any = None
+    _group_select_event_guard = False
 
     if email_system is None:
         logger.error("Email system is not initialized, email functionality will be disabled.")
@@ -377,6 +447,20 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
     def _restore_state(snapshot: dict[str, Any]) -> None:
         for key, value in snapshot.items():
             state[key] = value
+
+    def _sync_state_from_email_cfg(email_cfg_obj: EmailConfig) -> None:
+        state["recipients"] = list(_known_recipients(email_cfg_obj))
+        state["smtp"] = {
+            "server": email_cfg_obj.smtp_server,
+            "port": email_cfg_obj.smtp_port,
+            "sender": email_cfg_obj.sender_email,
+        }
+        state["groups"] = _visible_groups(email_cfg_obj)
+        state["static_recipients"] = list(email_cfg_obj.get_static_recipients_for_editor())
+        state["group_prefs"] = {
+            name: _event_prefs((email_cfg_obj.group_prefs or {}).get(name), default=True)
+            for name in state["groups"].keys()
+        }
 
     def _preview_email_cfg() -> EmailConfig:
         return _build_email_preview_cfg(
@@ -474,11 +558,86 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
         )
         group_name_status_label.update()
 
+    def _set_existing_group_select_value(value: Optional[str]) -> None:
+        nonlocal _group_select_event_guard
+        if existing_group_select is None:
+            return
+        _group_select_event_guard = True
+        try:
+            existing_group_select.value = value
+            existing_group_select.update()
+        finally:
+            _group_select_event_guard = False
+
+    def _run_pending_group_action() -> None:
+        nonlocal _pending_group_editor_action, _pending_group_select_restore_value
+        pending_action = _pending_group_editor_action
+        _pending_group_editor_action = None
+        _pending_group_select_restore_value = None
+        if discard_group_dialog is not None:
+            discard_group_dialog.close()
+        if pending_action is not None:
+            pending_action()
+
+    def _cancel_pending_group_action() -> None:
+        nonlocal _pending_group_editor_action, _pending_group_select_restore_value
+        restore_value = _pending_group_select_restore_value
+        _pending_group_editor_action = None
+        _pending_group_select_restore_value = None
+        if discard_group_dialog is not None:
+            discard_group_dialog.close()
+        if restore_value is not None or group_editor["selected"] is None:
+            _set_existing_group_select_value(restore_value)
+
+    def _confirm_group_editor_action(
+        *,
+        title: str,
+        message: str,
+        confirm_label: str,
+        action: Callable[[], None],
+        restore_select_value: Any = None,
+    ) -> None:
+        nonlocal _pending_group_editor_action, _pending_group_select_restore_value
+        _pending_group_editor_action = action
+        _pending_group_select_restore_value = restore_select_value
+        if discard_group_title_label is not None:
+            discard_group_title_label.text = title
+            discard_group_title_label.update()
+        if discard_group_message_label is not None:
+            discard_group_message_label.text = message
+            discard_group_message_label.update()
+        if discard_group_confirm_btn is not None:
+            discard_group_confirm_btn.set_text(confirm_label)
+            discard_group_confirm_btn.update()
+        if discard_group_dialog is not None:
+            discard_group_dialog.open()
+
+    def _request_group_editor_action(
+        action: Callable[[], None],
+        *,
+        title: str,
+        message: str,
+        confirm_label: str = "Discard changes",
+        restore_select_value: Any = None,
+    ) -> None:
+        _collect_group_form()
+        if not _is_group_editor_dirty(group_editor, state["groups"], state["group_prefs"]):
+            action()
+            return
+        if restore_select_value is not None or group_editor["selected"] is None:
+            _set_existing_group_select_value(restore_select_value)
+        _confirm_group_editor_action(
+            title=title,
+            message=message,
+            confirm_label=confirm_label,
+            action=action,
+            restore_select_value=restore_select_value,
+        )
+
     def _refresh_group_editor() -> None:
         if existing_group_select is not None:
             existing_group_select.options = list(state["groups"].keys())
-            existing_group_select.value = group_editor["selected"]
-            existing_group_select.update()
+            _set_existing_group_select_value(group_editor["selected"])
         if group_name_input is not None:
             group_name_input.value = group_editor["name"]
             group_name_input.update()
@@ -492,6 +651,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             toggle.update()
         if group_review_label is not None:
             name = group_editor["name"] or "<new group>"
+            target = _resolve_group_delete_target(group_editor, state["groups"])
             enabled_events = [
                 EVENT_LABELS[event_key]
                 for event_key in EVENT_KEYS
@@ -499,7 +659,8 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             ]
             event_summary = ", ".join(enabled_events) if enabled_events else "none"
             group_review_label.text = (
-                f"Group: {name} | Members: {len(group_editor['members'])} | Lifecycle: {event_summary}"
+                f"Draft: {name} | Loaded: {target or '-'} | Delete target: {target or '-'} "
+                f"| Members: {len(group_editor['members'])} | Lifecycle: {event_summary}"
             )
             group_review_label.update()
         if group_members_list is not None:
@@ -507,6 +668,27 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             with group_members_list:
                 for addr in group_editor["members"]:
                     ui.item(addr)
+        target = _resolve_group_delete_target(group_editor, state["groups"])
+        if delete_group_btn is not None:
+            delete_group_btn.set_text(f"Delete Loaded Group ({target})" if target else "Delete Loaded Group")
+            if target is None:
+                delete_group_btn.disable()
+            else:
+                delete_group_btn.enable()
+            delete_group_btn.update()
+        if delete_group_tooltip is not None:
+            draft_name = (group_editor["name"] or "").strip()
+            if target is None:
+                delete_group_tooltip.text = "Load an existing group to delete it."
+            elif draft_name and draft_name != target:
+                delete_group_tooltip.text = (
+                    f"Delete loaded group '{target}'. Unsaved draft changes for '{draft_name}' will be discarded."
+                )
+            else:
+                delete_group_tooltip.text = (
+                    f"Delete loaded group '{target}' and remove it from the active group selection."
+                )
+            delete_group_tooltip.update()
 
     def _set_group_step(name: str) -> None:
         if group_stepper is None:
@@ -530,6 +712,34 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
     def _load_group(name: Optional[str]) -> None:
         next_state, step_name = _resolve_group_editor_state(state["groups"], state["group_prefs"], name)
         _apply_group_editor_state(next_state, step_name)
+
+    def _on_existing_group_selection_change(event: events.GenericEventArguments) -> None:
+        if _group_select_event_guard:
+            return
+        target_name = _event_model_value(event)
+        _request_group_editor_action(
+            lambda target_name=target_name: _load_group(target_name),
+            title="Discard unsaved group changes?",
+            message="Loading another group will discard the current unsaved draft.",
+            confirm_label="Discard and load",
+            restore_select_value=group_editor["selected"],
+        )
+
+    def _start_new_group() -> None:
+        _request_group_editor_action(
+            _reset_group_editor,
+            title="Discard unsaved group changes?",
+            message="Starting a new group will discard the current unsaved draft.",
+            confirm_label="Discard and start new",
+        )
+
+    def _request_group_editor_reset() -> None:
+        _request_group_editor_action(
+            _reset_group_editor,
+            title="Discard unsaved group changes?",
+            message="Resetting the group editor will discard the current unsaved draft.",
+            confirm_label="Discard and reset",
+        )
 
     def _collect_group_form() -> tuple[str, list[str], dict[str, bool]]:
         name = (getattr(group_name_input, "value", group_editor["name"]) or "").strip()
@@ -575,6 +785,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
         if not current_cfg:
             logger.error("Global config not available for saving email settings")
             return PersistResult(False, "Configuration not available")
+        email_snapshot = _snapshot_email_config_state(current_cfg.email)
         try:
             _ensure_address_book()
             current_cfg.email.recipients = list(state["recipients"])
@@ -590,22 +801,20 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             if routing_mutator is not None:
                 routing_mutator(current_cfg.email)
             _finalize_structural_email_config(current_cfg.email)
-            state["recipients"] = list(current_cfg.email.recipients)
-            state["static_recipients"] = list(current_cfg.email.static_recipients)
-            state["groups"] = _visible_groups(current_cfg.email)
-            state["group_prefs"] = {
-                name: _event_prefs((current_cfg.email.group_prefs or {}).get(name), default=True)
-                for name in state["groups"].keys()
-            }
+            _sync_state_from_email_cfg(current_cfg.email)
 
             if save_global_config():
                 if email_system is not None:
                     email_system.refresh_config()
                 logger.info(_summarize_email_config(current_cfg.email))
                 return PersistResult(True, "Email settings saved")
+            _restore_email_config_state(current_cfg.email, email_snapshot)
+            _sync_state_from_email_cfg(current_cfg.email)
             logger.error("Failed to save configuration")
             return PersistResult(False, "Failed to save email settings")
         except Exception as exc:
+            _restore_email_config_state(current_cfg.email, email_snapshot)
+            _sync_state_from_email_cfg(current_cfg.email)
             logger.error("Failed to save configuration: %s", exc, exc_info=True)
             return PersistResult(False, f"Failed to save email settings: {exc}")
 
@@ -784,6 +993,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             notify_user(validation_error, kind="warning")
             return
         snapshot = _snapshot_state()
+        editor_snapshot = _snapshot_group_editor_state(group_editor)
         if original_name and original_name in state["groups"] and original_name != name:
             state["groups"].pop(original_name, None)
             state["group_prefs"].pop(original_name, None)
@@ -808,18 +1018,15 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             return
 
         _restore_state(snapshot)
+        _restore_group_editor_state(group_editor, editor_snapshot)
         _refresh_group_editor()
         refresh_recipient_table()
         refresh_overview()
         _notify_persist_failure(result)
 
-    def delete_group() -> None:
-        name, _, _ = _collect_group_form()
-        target = group_editor["selected"] or name
-        if not target or target not in state["groups"]:
-            notify_user("No existing group selected", kind="warning")
-            return
+    def _execute_delete_group(target: str) -> None:
         snapshot = _snapshot_state()
+        editor_snapshot = _snapshot_group_editor_state(group_editor)
         state["groups"].pop(target, None)
         state["group_prefs"].pop(target, None)
         result = persist_state(routing_mutator=lambda email_cfg_obj: _delete_group_routing_refs(email_cfg_obj, target))
@@ -831,10 +1038,36 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             return
 
         _restore_state(snapshot)
+        _restore_group_editor_state(group_editor, editor_snapshot)
         _refresh_group_editor()
         refresh_recipient_table()
         refresh_overview()
         _notify_persist_failure(result)
+
+    def delete_group() -> None:
+        _collect_group_form()
+        target = _resolve_group_delete_target(group_editor, state["groups"])
+        if not target or target not in state["groups"]:
+            notify_user("No existing group selected", kind="warning")
+            return
+        draft_name = (group_editor["name"] or "").strip()
+        if _is_group_editor_dirty(group_editor, state["groups"], state["group_prefs"]):
+            discard_message = (
+                f"Delete loaded group '{target}'. Unsaved draft changes will be discarded."
+            )
+            if draft_name != target:
+                discard_message = (
+                    f"Delete loaded group '{target}'. Unsaved draft changes for '{draft_name or '<unnamed group>'}' "
+                    "will be discarded."
+                )
+            _confirm_group_editor_action(
+                title="Delete loaded group?",
+                message=discard_message,
+                confirm_label=f"Delete '{target}'",
+                action=lambda target=target: _execute_delete_group(target),
+            )
+            return
+        _execute_delete_group(target)
 
     with ui.column().classes("w-full gap-6"):
         with ui.card().classes("w-full p-4 gap-4"):
@@ -967,6 +1200,17 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             "text-body2 text-grey-7"
         )
 
+        discard_group_dialog = ui.dialog().classes("items-center justify-center")
+        with discard_group_dialog:
+            with ui.card().classes("w-[460px] max-w-full"):
+                discard_group_title_label = ui.label("Discard unsaved group changes?").classes("text-h6")
+                discard_group_message_label = ui.label("").classes("text-body1")
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("Keep editing", on_click=_cancel_pending_group_action).props("flat")
+                    discard_group_confirm_btn = ui.button("Discard changes", on_click=_run_pending_group_action).props(
+                        "color=warning"
+                    )
+
         with ui.stepper(value="select").props("vertical flat animated").classes("w-full") as group_stepper:
             with ui.step("select", title="Select or create group", icon="group_work"):
                 ui.label("Step 1: Choose an existing group or define the name of a new group.").classes("text-body2")
@@ -979,9 +1223,9 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                     existing_group_select.tooltip(EMAIL_TOOLTIP_TEXTS["group_select"])
                     existing_group_select.on(
                         "update:model-value",
-                        lambda e: _load_group(_event_model_value(e)),
+                        _on_existing_group_selection_change,
                     )
-                    ui.button("New Group", icon="add", on_click=_reset_group_editor).props("outline").tooltip(EMAIL_TOOLTIP_TEXTS["group_new"])
+                    ui.button("New Group", icon="add", on_click=_start_new_group).props("outline").tooltip(EMAIL_TOOLTIP_TEXTS["group_new"])
                 group_name_input = ui.input("Group Name", value=group_editor["name"]).classes("w-full").props("outlined maxlength=20")
                 group_name_input.tooltip(EMAIL_TOOLTIP_TEXTS["group_name"])
                 group_name_input.on("update:model-value", lambda _: (_collect_group_form(), _refresh_group_name_status()))
@@ -1040,9 +1284,11 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                         ui.button("Back", icon="arrow_back", on_click=lambda: _set_group_step("events")).props("flat no-caps").tooltip(
                             EMAIL_TOOLTIP_TEXTS["group_back_review"]
                         )
-                        ui.button("Reset", icon="restart_alt", on_click=_reset_group_editor).props("outline").tooltip(EMAIL_TOOLTIP_TEXTS["group_reset"])
+                        ui.button("Reset", icon="restart_alt", on_click=_request_group_editor_reset).props("outline").tooltip(EMAIL_TOOLTIP_TEXTS["group_reset"])
                     with ui.row().classes("gap-2 flex-wrap"):
-                        ui.button("Delete Group", icon="delete", color="negative", on_click=delete_group).tooltip(EMAIL_TOOLTIP_TEXTS["group_delete"])
+                        delete_group_btn = ui.button("Delete Loaded Group", icon="delete", color="negative", on_click=delete_group)
+                        with delete_group_btn:
+                            delete_group_tooltip = ui.tooltip(EMAIL_TOOLTIP_TEXTS["group_delete"])
                         ui.button("Save Group", icon="save", color="primary", on_click=save_group).tooltip(EMAIL_TOOLTIP_TEXTS["group_save"])
 
         ui.separator()

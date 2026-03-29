@@ -18,6 +18,7 @@ from src.alert_history import HISTORY_STATIC_ROUTE, get_history_dir
 # Register help and default page routes via import side effect
 from .help.help import help_page  # noqa: F401
 from src.gui.default_page import index_page as default_page  # noqa: F401
+from .power_actions import get_power_action_spec
 
 logger = get_logger("gui")
 
@@ -107,6 +108,45 @@ def _ensure_title_sync_registered() -> None:
     app.on_connect(_sync_title_on_connect)
     _title_sync_registered = True
 
+
+def build_post_restart_redirect_script(
+    *,
+    marker_key: str,
+    target_route: str = '/',
+) -> str:
+    """Return browser-side logic that redirects to the dashboard after a restart rebuild."""
+    return f"""
+    (function() {{
+        const markerKey = {json.dumps(marker_key)};
+        const targetRoute = {json.dumps(target_route)};
+        try {{
+            const isPending = window.sessionStorage.getItem(markerKey) === 'pending';
+            if (isPending) {{
+                window.sessionStorage.removeItem(markerKey);
+                window.location.replace(targetRoute);
+                return;
+            }}
+            window.sessionStorage.setItem(markerKey, 'pending');
+        }} catch (error) {{
+            console.warn('CVD restart redirect setup failed', error);
+        }}
+    }})();
+    """
+
+
+def install_post_restart_redirect(
+    *,
+    marker_key: str,
+    target_route: str = '/',
+) -> None:
+    """Install a one-time redirect that returns the browser to the dashboard after restart."""
+    ui.run_javascript(
+        build_post_restart_redirect_script(
+            marker_key=marker_key,
+            target_route=target_route,
+        )
+    )
+
 def create_gui(config_path: str = "config/config.yaml") -> None:
     """Initialisierung vor ui.run(): Konfiguration laden und App initialisieren.
 
@@ -139,13 +179,35 @@ def create_gui(config_path: str = "config/config.yaml") -> None:
         logger.error(f"Failed to initialize GUI: {e}")
         # Nicht crashen, ui.run darf weiterlaufen
 
-@ui.page('/shutdown')
-def shutdown_page() -> None:
+def _build_power_action_status_page(action_key: str) -> None:
+    spec = get_power_action_spec(action_key)
     install_overlay_styles()
     with ui.column().classes('absolute-center items-center gap-6'):
-        ui.icon('power_settings_new').classes('text-6xl text-negative')
-        ui.label('Server shutdown').classes('text-h4 font-medium')
-        ui.label('You can close this window now.')
+        ui.icon(spec.status_icon).classes(spec.status_icon_classes)
+        ui.label(spec.status_title).classes('text-h4 font-medium text-center')
+        ui.label(spec.status_message).classes('text-body1 text-center max-w-[32rem]')
+
+
+@ui.page('/shutdown')
+def shutdown_page() -> None:
+    _build_power_action_status_page('app_shutdown')
+
+
+@ui.page('/restart')
+def restart_page() -> None:
+    _build_power_action_status_page('app_restart')
+    install_post_restart_redirect(marker_key='cvd.app_restart.pending_redirect')
+
+
+@ui.page('/pi-restart')
+def pi_restart_page() -> None:
+    _build_power_action_status_page('pi_restart')
+    install_post_restart_redirect(marker_key='cvd.pi_restart.pending_redirect')
+
+
+@ui.page('/pi-shutdown')
+def pi_shutdown_page() -> None:
+    _build_power_action_status_page('pi_shutdown')
 
 @ui.page('/updating')
 def updating_page() -> None:

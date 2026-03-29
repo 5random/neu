@@ -102,9 +102,7 @@ measurement:
 email:
   website_url: http://localhost:8080/
   recipients:
-    - custem.test@wild.com
-    - willemdittloff@gmail.com
-    - willem.dittloff@tuhh.de
+    - haha@tuhh.de
   smtp_server: smtp.freesmtpservers.com
   smtp_port: 25
   sender_email: CHANGE_ME@tuhh.de
@@ -195,14 +193,11 @@ email:
            Sensitivity:    {sensitivity}
            ROI enabled:    {roi_enabled}
   groups:
-    TEST:
-      - willemdittloff@gmail.com
-      - custem.test@wild.com
-    TEST2:
-      - willem.dittloff@tuhh.de
+    TEST: []
+    TEST2: []
   active_groups: []
   static_recipients:
-    - custem.test@wild.com
+    - haha@tuhh.de
   explicit_targeting: true
   notifications:
     on_start: true
@@ -218,7 +213,7 @@ email:
       on_end: true
       on_stop: true
   recipient_prefs:
-    custem.test@wild.com:
+    haha@tuhh.de:
       on_start: true
       on_end: true
       on_stop: true

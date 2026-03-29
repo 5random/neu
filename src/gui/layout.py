@@ -5,6 +5,7 @@ from urllib.parse import urlsplit, urlunsplit
 from nicegui import ui, app
 from src.config import AppConfig, get_global_config, save_global_config
 from .constants import StorageKeys
+from .power_actions import get_power_action_spec, list_power_actions, trigger_power_action
 from .storage import get_ui_pref, get_ui_storage, set_ui_pref
 
 logger = logging.getLogger('gui.layout')
@@ -201,25 +202,64 @@ def build_header(current_route: str | None = None) -> None:
 
         # --- Linke Seite -------------------------------------------
         with ui.row().classes('items-center gap-3'):
-            shutdown_dialog = ui.dialog().classes('items-center justify-center')
-            with shutdown_dialog:
-                with ui.card().classes('items-center justify-center'):
-                    ui.label('Shutdown the server?').classes('text-h6')
-                    
-                    async def do_shutdown() -> None:
-                        ui.navigate.to('/shutdown', new_tab=False)
-                        import asyncio
-                        await asyncio.sleep(2)
-                        app.shutdown()
+            action_state: dict[str, str | None] = {'key': None}
+            power_menu_dialog = ui.dialog().classes('items-center justify-center')
+            power_confirm_dialog = ui.dialog().classes('items-center justify-center')
 
-                    with ui.row().classes('gap-2 items-center justify-center'):
-                        ui.button('Yes', on_click=do_shutdown).props('color=negative').tooltip('Shutdown the server and close the application')
-                        ui.button('No', on_click=shutdown_dialog.close).props('color=positive').tooltip('Cancel shutdown')
+            async def execute_selected_power_action() -> None:
+                action_key = action_state.get('key')
+                if not action_key:
+                    return
 
-            def show_shutdown_dialog() -> None:
-                shutdown_dialog.open()
+                power_confirm_dialog.close()
+                spec = get_power_action_spec(action_key)
+                try:
+                    await trigger_power_action(action_key)
+                except Exception as exc:
+                    logger.exception('Failed to execute power action %s', action_key)
+                    ui.notify(
+                        f'"{spec.label}" konnte nicht ausgefuehrt werden: {exc}',
+                        type='negative',
+                        position='bottom-right',
+                    )
 
-            ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_shutdown_dialog).props('flat').style('max-height:72px; width:auto').tooltip('Shutdown the server and close the application')
+            with power_confirm_dialog:
+                with ui.card().classes('w-[440px] max-w-full'):
+                    confirm_title = ui.label('').classes('text-h6')
+                    confirm_message = ui.label('').classes('text-body1')
+                    with ui.row().classes('w-full justify-end gap-2'):
+                        ui.button('Zurueck', on_click=lambda: (power_confirm_dialog.close(), power_menu_dialog.open())).props('flat')
+                        confirm_button = ui.button('Bestaetigen', on_click=execute_selected_power_action).props('color=negative')
+
+            def open_confirmation_dialog(action_key: str) -> None:
+                spec = get_power_action_spec(action_key)
+                action_state['key'] = action_key
+                confirm_title.text = spec.confirmation_title
+                confirm_message.text = spec.confirmation_message
+                confirm_button.set_text(spec.confirm_label)
+                power_menu_dialog.close()
+                power_confirm_dialog.open()
+
+            with power_menu_dialog:
+                with ui.card().classes('w-[520px] max-w-full'):
+                    ui.label('Was moechten Sie tun?').classes('text-h6')
+                    ui.label('Bitte waehlen Sie die gewuenschte Aktion aus.').classes('text-body2')
+                    with ui.column().classes('w-full gap-2'):
+                        for spec in list_power_actions():
+                            with ui.column().classes('w-full gap-1'):
+                                ui.button(
+                                    spec.label,
+                                    icon=spec.icon,
+                                    on_click=lambda action_key=spec.key: open_confirmation_dialog(action_key),
+                                ).props('outline align=left').classes('w-full justify-start')
+                                ui.label(spec.description).classes('text-caption text-gray-500')
+                    with ui.row().classes('w-full justify-end'):
+                        ui.button('Abbrechen', on_click=power_menu_dialog.close).props('flat')
+
+            def show_power_menu_dialog() -> None:
+                power_menu_dialog.open()
+
+            ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_power_menu_dialog).props('flat').style('max-height:72px; width:auto').tooltip('Anwendung oder Raspberry Pi herunterfahren bzw. neu starten')
 
             title_label = ui.label().props('id=cvd-header-title').classes(
                 'text-xl font-semibold tracking-wider text-gray-100')

@@ -1,3 +1,4 @@
+import pytest
 from types import SimpleNamespace
 
 from src.config import _create_default_config
@@ -135,9 +136,161 @@ def test_resolve_group_editor_state_resets_when_group_is_missing() -> None:
     assert state == email_settings._default_group_editor_state()
 
 
+def test_snapshot_and_restore_email_config_state_rolls_back_mutations() -> None:
+    email = _email_cfg()
+    email.recipients = ["base@example.com"]
+    email.groups = {"ops": ["a@example.com"]}
+    email.active_groups = ["ops"]
+    email.static_recipients = ["base@example.com"]
+    email.group_prefs = {"ops": {"on_start": False}}
+    email.notifications = {"on_start": True}
+
+    snapshot = email_settings._snapshot_email_config_state(email)
+
+    email.recipients.append("changed@example.com")
+    email.groups["ops"].append("b@example.com")
+    email.active_groups = []
+    email.static_recipients = []
+    email.group_prefs["ops"]["on_start"] = True
+    email.notifications["on_start"] = False
+
+    email_settings._restore_email_config_state(email, snapshot)
+
+    assert email.recipients == ["base@example.com"]
+    assert email.groups == {"ops": ["a@example.com"]}
+    assert email.active_groups == ["ops"]
+    assert email.static_recipients == ["base@example.com"]
+    assert email.group_prefs == {"ops": {"on_start": False}}
+    assert email.notifications == {"on_start": True}
+
+
+def test_group_editor_snapshot_restore_restores_selected_and_draft_values() -> None:
+    group_editor = {
+        "selected": "ops",
+        "name": "night",
+        "members": ["a@example.com", "a@example.com", "invalid"],
+        "event_prefs": {"on_start": False},
+    }
+
+    snapshot = email_settings._snapshot_group_editor_state(group_editor)
+
+    group_editor["selected"] = "night"
+    group_editor["name"] = "broken"
+    group_editor["members"] = ["broken@example.com"]
+    group_editor["event_prefs"] = {"on_stop": False}
+
+    email_settings._restore_group_editor_state(group_editor, snapshot)
+
+    assert group_editor == {
+        "selected": "ops",
+        "name": "night",
+        "members": ["a@example.com"],
+        "event_prefs": {"on_start": False, "on_end": True, "on_stop": True},
+    }
+
+
+@pytest.mark.parametrize(
+    ("group_editor", "expected"),
+    [
+        (
+            {
+                "selected": "ops",
+                "name": "ops",
+                "members": ["a@example.com"],
+                "event_prefs": {"on_start": False, "on_end": True, "on_stop": True},
+            },
+            False,
+        ),
+        (
+            {
+                "selected": "ops",
+                "name": "night",
+                "members": ["a@example.com"],
+                "event_prefs": {"on_start": False, "on_end": True, "on_stop": True},
+            },
+            True,
+        ),
+        (
+            {
+                "selected": "ops",
+                "name": "ops",
+                "members": ["a@example.com", "b@example.com"],
+                "event_prefs": {"on_start": False, "on_end": True, "on_stop": True},
+            },
+            True,
+        ),
+        (
+            {
+                "selected": "ops",
+                "name": "ops",
+                "members": ["a@example.com"],
+                "event_prefs": {"on_start": True, "on_end": True, "on_stop": True},
+            },
+            True,
+        ),
+        (
+            {
+                "selected": None,
+                "name": "",
+                "members": [],
+                "event_prefs": {"on_start": True, "on_end": True, "on_stop": True},
+            },
+            False,
+        ),
+        (
+            {
+                "selected": None,
+                "name": "draft",
+                "members": [],
+                "event_prefs": {"on_start": True, "on_end": True, "on_stop": True},
+            },
+            True,
+        ),
+    ],
+)
+def test_is_group_editor_dirty_detects_loaded_and_new_draft_changes(group_editor, expected) -> None:
+    assert email_settings._is_group_editor_dirty(
+        group_editor,
+        {"ops": ["a@example.com"]},
+        {"ops": {"on_start": False}},
+    ) is expected
+
+
+def test_resolve_group_delete_target_uses_loaded_group_when_draft_is_renamed() -> None:
+    assert email_settings._resolve_group_delete_target(
+        {
+            "selected": "ops",
+            "name": "night",
+            "members": ["a@example.com"],
+            "event_prefs": {"on_start": False, "on_end": True, "on_stop": True},
+        },
+        {"ops": ["a@example.com"], "night": ["b@example.com"]},
+    ) == "ops"
+
+
+def test_resolve_group_delete_target_returns_none_for_new_group_draft() -> None:
+    assert email_settings._resolve_group_delete_target(
+        {
+            "selected": None,
+            "name": "night",
+            "members": ["a@example.com"],
+            "event_prefs": {"on_start": False, "on_end": True, "on_stop": True},
+        },
+        {"ops": ["a@example.com"]},
+    ) is None
+
+
 def test_event_model_value_reads_select_payload_from_args() -> None:
     assert email_settings._event_model_value(SimpleNamespace(args="ops")) == "ops"
     assert email_settings._event_model_value(SimpleNamespace(args={"value": "ops"})) == "ops"
+
+
+def test_event_model_value_unwraps_single_item_args_list() -> None:
+    assert email_settings._event_model_value(SimpleNamespace(args=["ops"])) == "ops"
+
+
+def test_event_model_value_falls_back_to_args_when_value_is_none() -> None:
+    assert email_settings._event_model_value(SimpleNamespace(value=None, args="ops")) == "ops"
 
 
 def test_validate_group_name_rejects_duplicate_for_new_group_in_step_one() -> None:
