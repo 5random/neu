@@ -200,7 +200,7 @@ def create_config_settings(
 
         if upload_status_label is not None:
             if preview is None:
-                upload_status_label.text = "Upload a .yaml file to start the guided import."
+                upload_status_label.text = "Upload a .yaml file."
             elif preview.errors:
                 upload_status_label.text = f"Uploaded file: {source_name}"
             else:
@@ -365,7 +365,7 @@ def create_config_settings(
         create_section_heading(
             "Configuration",
             icon="description",
-            caption="Import another config.yaml in a guided flow: upload, review blocked values, then select what should be adopted.",
+            caption="Import another config.yaml: upload, review blocked values, then select what should be adopted.",
             anchor_id="config",
             title_classes="text-subtitle1 font-semibold",
             row_classes="items-center gap-2",
@@ -388,7 +388,7 @@ def create_config_settings(
                         on_upload=_handle_upload,
                         on_rejected=lambda: ui.notify("Upload rejected", type="warning", position="bottom-right"),
                     ).props("accept=.yaml,.yml color=secondary flat bordered")
-                upload_status_label = ui.label("Upload a .yaml file to start the guided import.").classes("text-body2 text-grey-8")
+                upload_status_label = ui.label("Upload a .yaml file to start.").classes("text-body2 text-grey-8")
                 upload_error_label = ui.label("").classes("text-body2 text-negative")
                 with ui.row().classes("w-full justify-end gap-2 mt-2"):
                     next_button = create_action_button(

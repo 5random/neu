@@ -41,6 +41,10 @@ MEASUREMENT_CARD_TOOLTIPS = {
 }
 
 
+def _is_deleted_parent_slot_error(exc: BaseException) -> bool:
+    return isinstance(exc, RuntimeError) and 'parent element this slot belongs to has been deleted' in str(exc).lower()
+
+
 def _derive_elapsed_duration(start_time: datetime) -> timedelta:
     """Return elapsed time using a current timestamp that matches start_time awareness."""
     if start_time.tzinfo is not None and start_time.utcoffset() is not None:
@@ -496,6 +500,8 @@ def create_measurement_card(
 
     configured_timeout_seconds = _get_config_session_timeout_seconds()
     initial_duration_unit = _pick_duration_unit(configured_timeout_seconds or DEFAULT_DURATION_SECONDS)
+    start_stop_tooltip: Any | None = None
+    measurement_refresh_timer: Any | None = None
 
     def sync_duration_controls(session_active: bool) -> None:
         if session_active:
@@ -513,17 +519,28 @@ def create_measurement_card(
             duration_unit.disable()
 
     def style_start_button(status: dict[str, Any] | None = None) -> None:
-        current_status = _safe_get_status() if status is None else status
-        if current_status['is_active']:
-            start_stop_btn.icon = 'stop'
-            start_stop_btn.props('color=negative')
-            start_stop_btn.tooltip('Stop Session')
-        else:
-            start_stop_btn.icon = 'play_arrow'
-            start_stop_btn.props('color=positive')
-            start_stop_btn.tooltip('Start Session')
-        sync_duration_controls(bool(current_status.get('is_active', False)))
-        start_stop_btn.update()
+        try:
+            if getattr(start_stop_btn, '_deleted', False):
+                return
+            current_status = _safe_get_status() if status is None else status
+            if current_status['is_active']:
+                start_stop_btn.icon = 'stop'
+                start_stop_btn.props('color=negative')
+                tooltip_text = 'Stop Session'
+            else:
+                start_stop_btn.icon = 'play_arrow'
+                start_stop_btn.props('color=positive')
+                tooltip_text = 'Start Session'
+
+            if start_stop_tooltip is not None:
+                start_stop_tooltip.text = tooltip_text
+                start_stop_tooltip.update()
+            sync_duration_controls(bool(current_status.get('is_active', False)))
+            start_stop_btn.update()
+        except RuntimeError as exc:
+            if _is_deleted_parent_slot_error(exc):
+                return
+            raise
 
     # ---------------- UI-Update -----------------
 
@@ -636,7 +653,9 @@ def create_measurement_card(
             # Big Start Button
             start_stop_btn = ui.button(icon='play_arrow', color='positive').props('round size=lg') \
                 .classes('shadow-lg')
-            
+            with start_stop_btn:
+                start_stop_tooltip = ui.tooltip('Start Session')
+             
             # Duration Controls Group
             with ui.column().classes('gap-1 flex-1'):
                 with ui.row().classes('items-center gap-2'):
@@ -1015,11 +1034,20 @@ def create_measurement_card(
 
     def tick() -> None:
         """Per-client UI refresh. Session timeout is checked centrally by the controller."""
-        if measurement_controller is None:
-            return
-        current_status = _safe_get_status()
-        _request_view_refresh(current_status)
-        style_start_button(current_status)
+        try:
+            if measurement_controller is None or getattr(start_stop_btn, '_deleted', False):
+                if measurement_refresh_timer is not None:
+                    measurement_refresh_timer.cancel()
+                return
+            current_status = _safe_get_status()
+            _request_view_refresh(current_status)
+            style_start_button(current_status)
+        except RuntimeError as exc:
+            if _is_deleted_parent_slot_error(exc):
+                if measurement_refresh_timer is not None:
+                    measurement_refresh_timer.cancel()
+                return
+            raise
 
 
     # --------------------- Handler registrieren -----------------
@@ -1040,7 +1068,7 @@ def create_measurement_card(
     duration_unit.on('update:model-value', on_duration_unit_change)
     duration_input.on('update:model-value', on_duration_input_change)
 
-    ui.timer(1.0, tick)
+    measurement_refresh_timer = ui.timer(1.0, tick)
 
     sync_duration_controls(bool(initial_status.get('is_active', False)))
     update_duration_ui()

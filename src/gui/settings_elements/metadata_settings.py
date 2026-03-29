@@ -17,7 +17,7 @@ def _sync_saved_metadata_title(
     cfg: Any,
     *,
     sync_title: Callable[..., str],
-    set_pref: Callable[[str, str], None],
+    set_pref: Callable[[str, Any], bool | None],
 ) -> str:
     new_title = sync_title(title=compute_gui_title(cfg), broadcast=True)
     set_pref(StorageKeys.GUI_TITLE, new_title)

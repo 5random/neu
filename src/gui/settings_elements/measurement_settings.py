@@ -154,6 +154,7 @@ def create_measurement_settings_card(
         'alert_delay_seconds': {
             'title': 'Alert Delay',
             'tooltip': 'How long no motion may be detected before the first alert is sent.',
+            'description': 'Wait time without motion before the first inactivity alert is triggered.',
             'min_seconds': 30.0,
             'max_seconds': 3600.0,
             'allowed_units': ('s', 'min', 'h'),
@@ -164,6 +165,7 @@ def create_measurement_settings_card(
         'alert_check_interval': {
             'title': 'Check Interval',
             'tooltip': 'How often the controller evaluates alert conditions.',
+            'description': 'How frequently the no-motion condition is checked in the background.',
             'min_seconds': 0.5,
             'max_seconds': 120.0,
             'allowed_units': ('s', 'min'),
@@ -174,6 +176,7 @@ def create_measurement_settings_card(
         'alert_cooldown_seconds': {
             'title': 'Alert Cooldown',
             'tooltip': 'Minimum time between two alerts.',
+            'description': 'Pause between repeated alerts after one has already been sent.',
             'min_seconds': 0.0,
             'max_seconds': 3600.0,
             'allowed_units': ('s', 'min', 'h'),
@@ -184,6 +187,7 @@ def create_measurement_settings_card(
         'inactivity_timeout_minutes': {
             'title': 'Inactivity Timeout',
             'tooltip': 'Stop session after prolonged inactivity (0 = disabled).',
+            'description': 'Optional hard stop for a session that remains idle for a longer period.',
             'min_seconds': 0.0,
             'max_seconds': 43200.0,
             'allowed_units': ('min', 'h'),
@@ -194,6 +198,7 @@ def create_measurement_settings_card(
         'motion_summary_interval_seconds': {
             'title': 'Summary Interval',
             'tooltip': 'Period for motion summary logs (>= 5 seconds).',
+            'description': 'How often periodic motion summaries are written to the logs.',
             'min_seconds': 5.0,
             'max_seconds': 3600.0,
             'allowed_units': ('s', 'min', 'h'),
@@ -234,6 +239,7 @@ def create_measurement_settings_card(
         key: str,
         *,
         title: str,
+        description: str | None,
         tooltip: str,
         min_value: float,
         max_value: float,
@@ -247,6 +253,8 @@ def create_measurement_settings_card(
         fallback = float(initial)
         with ui.card().tight().classes('p-3 flex flex-col self-start w-full').style('align-items:stretch;'):
             ui.label(f'{title}:').classes('font-semibold mb-1 self-start')
+            if description:
+                ui.label(description).classes('text-caption text-grey-7 mb-2 self-start')
             with ui.row().classes('items-center gap-2 w-full flex-nowrap'):
                 number_ctrl = (
                     ui.number(value=initial, min=min_value, max=max_value, step=step, format=fmt)
@@ -363,6 +371,9 @@ def create_measurement_settings_card(
         with parent:
             if wrap_card:
                 ui.label(config_meta['title']).classes('font-semibold mb-1 self-start')
+                description = str(config_meta.get('description') or '').strip()
+                if description:
+                    ui.label(description).classes('text-caption text-grey-7 mb-2 self-start')
             with ui.row().classes('items-center gap-2 w-full flex-nowrap'):
                 number_ctrl = (
                     ui.number(
@@ -425,9 +436,17 @@ def create_measurement_settings_card(
         _refresh_duration_control(key, seconds_value=initial_seconds)
         return number_ctrl, unit_ctrl
 
-    def _build_toggle_card(title: str, checkbox_label: str, value: bool, tooltip: str) -> Any:
+    def _build_toggle_card(
+        title: str,
+        checkbox_label: str,
+        value: bool,
+        tooltip: str,
+        description: str | None = None,
+    ) -> Any:
         with ui.card().tight().classes('p-3 flex flex-col self-start w-full').style('align-items:stretch;'):
             ui.label(title).classes('font-semibold mb-1 self-start')
+            if description:
+                ui.label(description).classes('text-caption text-grey-7 mb-2 self-start')
             checkbox = (
                 ui.checkbox(checkbox_label, value=value)
                 .tooltip(tooltip)
@@ -756,6 +775,10 @@ def create_measurement_settings_card(
             logger.error('Failed to save measurement settings: %s', exc, exc_info=True)
             notify_user(f'Error saving settings: {exc}', kind='negative')
 
+    ui.label(
+        'These controls define when inactivity alerts start, how often follow-up alerts may be sent, and which extra context is included.'
+    ).classes('text-body2 text-grey-7 mb-1')
+
     with ui.grid(columns=2).classes('w-full gap-3 mb-3 items-start').style(
         'grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); grid-auto-rows:min-content;'
     ):
@@ -763,6 +786,7 @@ def create_measurement_settings_card(
         max_alerts_inp, max_alerts_slider = _build_numeric_card(
             'max_alerts_per_session',
             title='Max Alerts Per Session',
+            description='Limits the number of inactivity alerts within one session to avoid spamming.',
             tooltip='Upper bound on alerts within a single session (spam protection)',
             min_value=1,
             max_value=50,
@@ -784,9 +808,13 @@ def create_measurement_settings_card(
             'Include snapshot in alert',
             bool(state['alert_include_snapshot']),
             'Attach a snapshot to alert emails when an alert is sent',
+            description='Adds the current camera frame to alert emails for faster diagnosis.',
         )
         with ui.card().tight().classes('p-3 flex flex-col self-start w-full gap-3').style('align-items:stretch;'):
             ui.label('Motion Summary Logs').classes('font-semibold mb-1 self-start')
+            ui.label(
+                'Enable periodic log entries to track long-running sessions even when no alert is sent.'
+            ).classes('text-caption text-grey-7 self-start')
             enable_summary_cb = (
                 ui.checkbox(
                     'Enable motion summary logs',
@@ -796,6 +824,9 @@ def create_measurement_settings_card(
                 .classes('self-start')
             )
             ui.label('Summary Interval').classes('text-caption text-grey-7')
+            ui.label(
+                'Sets how often the summary logger writes the latest motion status to the logs.'
+            ).classes('text-caption text-grey-7 self-start')
             summary_interval_inp, summary_interval_unit = _build_duration_card(
                 'motion_summary_interval_seconds',
                 wrap_card=False,
@@ -859,12 +890,15 @@ def create_measurement_settings_card(
 
         with ui.card().classes('w-full p-4 gap-4'):
             create_heading_row(
-                'Lifecycle Switches',
+                'Global Notification Preferences',
                 icon='tune',
                 title_classes='text-subtitle1 font-semibold',
                 row_classes='items-center gap-2',
                 icon_classes='text-primary text-lg shrink-0',
             )
+            ui.label(
+            'Global notification preferences: overrides individual group settings.'
+        ).classes('text-body2 text-grey-7')
             with ui.row().classes('items-center gap-4 flex-wrap'):
                 start_toggle = ui.checkbox(
                     'Send email on measurement start',

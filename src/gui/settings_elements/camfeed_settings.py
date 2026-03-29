@@ -511,6 +511,9 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
                 row_classes='items-center gap-2',
                 icon_classes='text-primary text-xl shrink-0',
             )
+            ui.label(
+            'Edit Region of Interest (ROI) by clicking on the feed to set corners or using the inputs below.'
+            ).classes('text-body2 text-grey-7')
             # Ensure correct aspect ratio for coordinate mapping
             # Avoid fixed aspect-ratio (can desync if camera stream resolution differs); let the image keep its natural ratio
             ratio_style = "width:100%;height:auto;"

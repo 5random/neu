@@ -18,7 +18,16 @@ from fastapi import Response
 from nicegui import Client, app, core, run, ui
 import logging
 
-from src.config import AppConfig, WebcamConfig, UVCConfig, load_config, save_config, get_logger
+from src.config import (
+    AppConfig,
+    WebcamConfig,
+    UVCConfig,
+    get_global_config,
+    get_logger,
+    load_config,
+    save_config,
+    save_global_config,
+)
 from .motion import MotionResult, MotionDetector
 
 
@@ -36,6 +45,18 @@ class Camera:
     FRAME_WAIT_SECONDS = 0.03
     RECONNECT_INTERVAL_SECONDS = 5
     MAX_RECONNECT_ATTEMPTS = 5
+    UVC_DEFAULTS: Dict[str, Any] = {
+        "brightness": 0,
+        "contrast": 16,
+        "saturation": 64,
+        "hue": 0,
+        "gain": 10,
+        "sharpness": 2,
+        "gamma": 164,
+        "backlight_compensation": 42,
+        "white_balance": {"auto": True, "value": 4600},
+        "exposure": {"auto": True, "value": -6},
+    }
 
     # ------------------------- Initialisierung ------------------------- #
 
@@ -302,6 +323,71 @@ class Camera:
             self.logger.error(f"Error setting property {prop}: {e}")
             return False
     
+    def _schedule_uvc_config_save(self) -> None:
+        self._config_dirty = True
+
+        existing_timer = getattr(self, "_config_save_timer", None)
+        if existing_timer is not None:
+            try:
+                existing_timer.cancel()
+            except Exception:
+                pass
+
+        self._config_save_timer = threading.Timer(5.0, self._auto_save_config)
+        self._config_save_timer.start()
+
+    def get_uvc_defaults(self) -> dict:
+        defaults = self.UVC_DEFAULTS
+        return {
+            "brightness": int(defaults["brightness"]),
+            "contrast": int(defaults["contrast"]),
+            "saturation": int(defaults["saturation"]),
+            "hue": int(defaults["hue"]),
+            "gain": int(defaults["gain"]),
+            "sharpness": int(defaults["sharpness"]),
+            "gamma": int(defaults["gamma"]),
+            "backlight_compensation": int(defaults["backlight_compensation"]),
+            "white_balance": {
+                "auto": bool(defaults["white_balance"]["auto"]),
+                "value": int(defaults["white_balance"]["value"]),
+            },
+            "exposure": {
+                "auto": bool(defaults["exposure"]["auto"]),
+                "value": int(defaults["exposure"]["value"]),
+            },
+        }
+
+    def get_uvc_default_control_values(self) -> dict:
+        defaults = self.get_uvc_defaults()
+        return {
+            "brightness": defaults["brightness"],
+            "contrast": defaults["contrast"],
+            "saturation": defaults["saturation"],
+            "sharpness": defaults["sharpness"],
+            "gamma": defaults["gamma"],
+            "gain": defaults["gain"],
+            "backlight_compensation": defaults["backlight_compensation"],
+            "hue": defaults["hue"],
+            "white_balance_auto": defaults["white_balance"]["auto"],
+            "white_balance_manual": defaults["white_balance"]["value"],
+            "exposure_auto": defaults["exposure"]["auto"],
+            "exposure_manual": defaults["exposure"]["value"],
+        }
+
+    def _sync_uvc_config_from_defaults(self, defaults: dict) -> None:
+        self.uvc_config.brightness = int(defaults["brightness"])
+        self.uvc_config.contrast = int(defaults["contrast"])
+        self.uvc_config.saturation = int(defaults["saturation"])
+        self.uvc_config.hue = int(defaults["hue"])
+        self.uvc_config.gain = int(defaults["gain"])
+        self.uvc_config.sharpness = int(defaults["sharpness"])
+        self.uvc_config.gamma = int(defaults["gamma"])
+        self.uvc_config.backlight_compensation = int(defaults["backlight_compensation"])
+        self.uvc_config.white_balance.auto = bool(defaults["white_balance"]["auto"])
+        self.uvc_config.white_balance.value = int(defaults["white_balance"]["value"])
+        self.uvc_config.exposure.auto = bool(defaults["exposure"]["auto"])
+        self.uvc_config.exposure.value = int(defaults["exposure"]["value"])
+
     def save_uvc_config(self, path: Optional[str] = None) -> bool:
             """Speichert die aktuellen UVC-Einstellungen zurück in die Config-Datei."""
 
@@ -310,7 +396,14 @@ class Camera:
                 return True
 
             try:
-                save_config(self.app_config)
+                global_cfg = get_global_config()
+                if path is not None:
+                    save_config(self.app_config, path)
+                elif global_cfg is self.app_config:
+                    if not save_global_config():
+                        return False
+                else:
+                    save_config(self.app_config)
                 self._config_dirty = False
                 self.logger.info(f"UVC-Configuration saved!")
                 return True
@@ -381,18 +474,8 @@ class Camera:
         
         try:
             setattr(self.uvc_config, name, value)  # nur RAM - Persistenz separat
-            self._config_dirty = True
             self._invalidate_uvc_cache()
-
-            if self._config_save_timer:
-                try:
-                    self._config_save_timer.cancel()
-                except Exception:
-                    pass
-
-            self._config_save_timer = threading.Timer(5.0, self._auto_save_config)
-            self._config_save_timer.start()
-
+            self._schedule_uvc_config_save()
             return True
         except Exception as e:
             self.logger.error(f"Error setting config for {name}: {e}")
@@ -419,8 +502,8 @@ class Camera:
         if success and hasattr(self.uvc_config, "exposure") and self.uvc_config.exposure:
             self.uvc_config.exposure.value = int_value
             self.uvc_config.exposure.auto = False
-            self._config_dirty = True
             self._invalidate_uvc_cache()
+            self._schedule_uvc_config_save()
         return success
 
     def set_hue(self, value: float) -> bool:
@@ -447,8 +530,8 @@ class Camera:
         # Update der verschachtelten Konfiguration
         if result and hasattr(self.uvc_config, "exposure") and self.uvc_config.exposure:
             self.uvc_config.exposure.auto = auto
-            self._config_dirty = True
             self._invalidate_uvc_cache()
+            self._schedule_uvc_config_save()
         return result
 
     def set_manual_exposure(self, value: float) -> bool:
@@ -462,8 +545,8 @@ class Camera:
         # Update der verschachtelten Konfiguration
         if result and hasattr(self.uvc_config, "white_balance") and self.uvc_config.white_balance:
             self.uvc_config.white_balance.auto = auto
-            self._config_dirty = True
             self._invalidate_uvc_cache()
+            self._schedule_uvc_config_save()
         return result
 
     def set_manual_white_balance(self, value: float) -> bool:
@@ -473,9 +556,10 @@ class Camera:
         int_value = int(value)
         success = self._safe_set(cv2.CAP_PROP_WHITE_BALANCE_BLUE_U, int_value)
         if success and hasattr(self.uvc_config, "white_balance") and self.uvc_config.white_balance:
+            self.uvc_config.white_balance.auto = False
             self.uvc_config.white_balance.value = int_value
-            self._config_dirty = True
             self._invalidate_uvc_cache()
+            self._schedule_uvc_config_save()
         return success
 
     def set_white_balance(self, value: float, auto: Optional[bool] = None) -> bool:
@@ -490,8 +574,8 @@ class Camera:
         if success and hasattr(self.uvc_config, "white_balance") and self.uvc_config.white_balance:
             self.uvc_config.white_balance.value = int_value
             self.uvc_config.white_balance.auto = False
-            self._config_dirty = True
             self._invalidate_uvc_cache()      
+            self._schedule_uvc_config_save()
         return success
     
     def _auto_save_config(self) -> None:
@@ -886,21 +970,22 @@ class Camera:
     def get_uvc_ranges(self) -> dict:
         """Gibt Min/Max-Werte für GUI-Slider zurück"""
 
+        defaults = self.get_uvc_defaults()
         return {
-            "brightness": {"min": -64, "max": 64, "default": 0},
-            "contrast": {"min": 0, "max": 64, "default": 16},
-            "saturation": {"min": 0, "max": 128, "default": 64},
-            "hue": {"min": -40, "max": 40, "default": 0},
-            "gain": {"min": 0, "max": 100, "default": 10},
-            "sharpness": {"min": 0, "max": 14, "default": 2},
-            "gamma": {"min": 72, "max": 500, "default": 164},
-            "backlight_compensation": {"min": 0, "max": 160, "default": 42},
-            "exposure": {"min": -13, "max": -1, "default": -6},
-            "white_balance": {"min": 2800, "max": 6500, "default": 4600},
+            "brightness": {"min": -64, "max": 64, "default": defaults["brightness"]},
+            "contrast": {"min": 0, "max": 64, "default": defaults["contrast"]},
+            "saturation": {"min": 0, "max": 128, "default": defaults["saturation"]},
+            "hue": {"min": -40, "max": 40, "default": defaults["hue"]},
+            "gain": {"min": 0, "max": 100, "default": defaults["gain"]},
+            "sharpness": {"min": 0, "max": 14, "default": defaults["sharpness"]},
+            "gamma": {"min": 72, "max": 500, "default": defaults["gamma"]},
+            "backlight_compensation": {"min": 0, "max": 160, "default": defaults["backlight_compensation"]},
+            "exposure": {"min": -13, "max": -1, "default": defaults["exposure"]["value"]},
+            "white_balance": {"min": 2800, "max": 6500, "default": defaults["white_balance"]["value"]},
         }
     
 
-    def reset_uvc_to_defaults(self) -> bool:
+    def _legacy_reset_uvc_to_defaults(self) -> bool:
         """Setzt alle UVC-Parameter auf Default-Werte zurück"""
         try:
             ranges = self.get_uvc_ranges()
@@ -921,6 +1006,56 @@ class Camera:
 
             self._invalidate_uvc_cache()  # Cache invalidieren
             return success
+        except Exception as e:
+            self.logger.error(f"Error resetting UVC defaults: {e}")
+            return False
+
+    def reset_uvc_to_defaults(self) -> bool:
+        """Setzt alle UVC-Parameter auf Default-Werte zurÃƒÂ¼ck."""
+        try:
+            defaults = self.get_uvc_defaults()
+            failed_params: list[str] = []
+
+            scalar_setters = {
+                "brightness": self.set_brightness,
+                "contrast": self.set_contrast,
+                "saturation": self.set_saturation,
+                "sharpness": self.set_sharpness,
+                "gamma": self.set_gamma,
+                "gain": self.set_gain,
+                "backlight_compensation": self.set_backlight_compensation,
+                "hue": self.set_hue,
+            }
+            for param, setter in scalar_setters.items():
+                if not setter(defaults[param]):
+                    failed_params.append(param)
+
+            white_balance_defaults = defaults["white_balance"]
+            if white_balance_defaults["auto"]:
+                if not self.set_auto_white_balance(True):
+                    failed_params.append("white_balance.auto")
+            else:
+                if not self.set_manual_white_balance(white_balance_defaults["value"]):
+                    failed_params.append("white_balance.value")
+
+            exposure_defaults = defaults["exposure"]
+            if exposure_defaults["auto"]:
+                if not self.set_auto_exposure(True):
+                    failed_params.append("exposure.auto")
+            else:
+                if not self.set_manual_exposure(exposure_defaults["value"]):
+                    failed_params.append("exposure.value")
+
+            self._sync_uvc_config_from_defaults(defaults)
+            self._invalidate_uvc_cache()
+            self._schedule_uvc_config_save()
+
+            if failed_params:
+                self.logger.warning(
+                    "Some UVC defaults could not be applied by the driver: %s",
+                    ", ".join(failed_params),
+                )
+            return True
         except Exception as e:
             self.logger.error(f"Error resetting UVC defaults: {e}")
             return False

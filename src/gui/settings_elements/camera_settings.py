@@ -206,29 +206,14 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
         try:
             if camera.reset_uvc_to_defaults():
                 for task in debounce_tasks.values():
-                    if not task.done():
-                        task.cancel()
+                    cancel_task_safely(task)
                 debounce_tasks.clear()
-                # Neue Werte von der Kamera abrufen
-                updated_current = camera.get_uvc_current_values()
-                updated_ranges = camera.get_uvc_ranges()
-                
-                # Alle Regler aktualisieren
-                updates = {
-                    'brightness': int(updated_current.get('brightness', updated_ranges.get('brightness', {}).get('default', 0))),
-                    'contrast': int(updated_current.get('contrast', updated_ranges.get('contrast', {}).get('default', 16))),
-                    'saturation': int(updated_current.get('saturation', updated_ranges.get('saturation', {}).get('default', 64))),
-                    'sharpness': int(updated_current.get('sharpness', updated_ranges.get('sharpness', {}).get('default', 2))),
-                    'gamma': int(updated_current.get('gamma', updated_ranges.get('gamma', {}).get('default', 164))),
-                    'gain': int(updated_current.get('gain', updated_ranges.get('gain', {}).get('default', 10))),
-                    'backlight_compensation': int(updated_current.get('backlight_compensation', updated_ranges.get('backlight_compensation', {}).get('default', 42))),
-                    'hue': int(updated_current.get('hue', updated_ranges.get('hue', {}).get('default', 0))),
-                    # Use correct keys from Camera.get_uvc_current_values
-                    'white_balance_auto': bool(updated_current.get('auto_white_balance', 1)),
-                    'white_balance_manual': int(updated_current.get('white_balance', updated_ranges.get('white_balance', {}).get('default', 4600))),
-                    'exposure_auto': _to_bool_auto_exposure(updated_current.get('auto_exposure', 1)),
-                    'exposure_manual': int(updated_current.get('exposure', updated_ranges.get('exposure', {}).get('default', -6)))
-                }
+                save_ok = camera.save_uvc_config() if hasattr(camera, 'save_uvc_config') else save_global_config()
+                updates = (
+                    camera.get_uvc_default_control_values()
+                    if hasattr(camera, 'get_uvc_default_control_values')
+                    else {}
+                )
                 
                 # UI-Controls aktualisieren (Sliders / Checkboxes)
                 for name, value in updates.items():
@@ -248,7 +233,10 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                     except Exception as e:
                         logger.warning(f'Failed to update control {name}: {e}')
 
-                ui.notify('UVC settings reset to defaults!', type='positive', position='bottom-right')        
+                if save_ok:
+                    ui.notify('UVC settings reset to defaults!', type='positive', position='bottom-right')
+                else:
+                    ui.notify('UVC settings were reset, but could not be saved.', type='warning', position='bottom-right')
                 return True
         
         except Exception as e:

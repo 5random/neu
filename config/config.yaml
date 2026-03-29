@@ -54,7 +54,7 @@ uvc_controls:
   gamma: 164
   white_balance:
     auto: true
-    value: 4000
+    value: 4600
   gain: 10
   backlight_compensation: 42
   exposure:
@@ -67,10 +67,10 @@ uvc_controls:
 motion_detection:
   region_of_interest:
     enabled: true
-    x: 750
-    y: 501
-    width: 85
-    height: 110
+    x: 502
+    y: 244
+    width: 1004
+    height: 591
   sensitivity: 0.1
   background_learning_rate: 0.005
   min_contour_area: 252
@@ -92,7 +92,7 @@ measurement:
   alert_cooldown_seconds: 300
   alert_include_snapshot: true
   inactivity_timeout_minutes: 120
-  motion_summary_interval_seconds: 60
+  motion_summary_interval_seconds: 900
   enable_motion_summary_logs: true
   history_path: data/history
 
@@ -200,6 +200,10 @@ email:
       - haha@tuhh.de
       - hoho@tuhh.de
       - wild@tuhh.de
+    TEST2:
+      - wild@tuhh.de
+      - haha@tuhh.de
+    TEST3:
       - lols@tuhh.de
   active_groups: []
   static_recipients:
@@ -213,6 +217,14 @@ email:
     TEST:
       on_start: true
       on_end: true
+      on_stop: false
+    TEST2:
+      on_start: true
+      on_end: true
+      on_stop: true
+    TEST3:
+      on_start: false
+      on_end: false
       on_stop: true
   recipient_prefs:
     haha@tuhh.de:

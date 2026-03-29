@@ -38,6 +38,6 @@ def create_appearance_settings() -> None:
                     ui.label('Switch between the light and dark application theme.').classes('text-body2 text-grey-7')
                 ui.switch(
                     'Enabled',
-                    value=bool(get_ui_pref(StorageKeys.DARK_MODE, False)),
+                    value=bool(get_ui_pref(StorageKeys.DARK_MODE, True)),
                     on_change=lambda event: _apply_dark_mode(bool(event.value)),
                 ).props('color=primary')

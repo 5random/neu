@@ -132,7 +132,7 @@ def _persist_dark_mode_preference(enabled: bool) -> None:
 def apply_dark_mode_preference() -> Any:
     """Create the page-local dark mode controller from persisted UI preferences."""
     dark = ui.dark_mode(
-        value=bool(get_ui_pref(StorageKeys.DARK_MODE, False)),
+        value=bool(get_ui_pref(StorageKeys.DARK_MODE, True)),
         on_change=lambda event: _persist_dark_mode_preference(bool(event.value)),
     )
     try:
@@ -250,7 +250,7 @@ def build_header(current_route: str | None = None) -> None:
                                 ui.button(
                                     spec.label,
                                     icon=spec.icon,
-                                    on_click=lambda action_key=spec.key: open_confirmation_dialog(action_key),
+                                    on_click=lambda _event=None, action_key=spec.key: open_confirmation_dialog(action_key),
                                 ).props('outline align=left').classes('w-full justify-start')
                                 ui.label(spec.description).classes('text-caption text-gray-500')
                     with ui.row().classes('w-full justify-end'):
@@ -259,7 +259,7 @@ def build_header(current_route: str | None = None) -> None:
             def show_power_menu_dialog() -> None:
                 power_menu_dialog.open()
 
-            ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_power_menu_dialog).props('flat').style('max-height:72px; width:auto').tooltip('Anwendung oder Raspberry Pi herunterfahren bzw. neu starten')
+            ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_power_menu_dialog).props('flat').style('max-height:72px; width:auto').tooltip('Shut down or restart the application or Raspberry Pi')
 
             title_label = ui.label().props('id=cvd-header-title').classes(
                 'text-xl font-semibold tracking-wider text-gray-100')

@@ -268,7 +268,7 @@ def create_history_card(*, max_entries: int = 5) -> None:
             with ui.row().classes('gap-2 flex-wrap'):
                 ui.button(icon='download', on_click=download_history).props('flat round').tooltip('Download history.json')
                 ui.button(icon='refresh', on_click=lambda: refresh_display(notify=True)).props('flat round').tooltip('Refresh')
-                create_action_button('clear', label='Clear History', icon='delete', on_click=clear_history)
+                create_action_button('clear', label='Delete History', icon='delete', on_click=clear_history)
         ui.label(f'Showing latest {max(0, int(max_entries))} alerts').classes('text-caption text-grey-7')
 
         # Container for history rows – managed manually to avoid Quasar table

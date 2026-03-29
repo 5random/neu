@@ -317,3 +317,17 @@ def test_validate_group_name_allows_loaded_existing_group_name() -> None:
     )
 
     assert message is None
+
+
+def test_describe_group_name_status_is_helpful_for_empty_name() -> None:
+    text, color = email_settings._describe_group_name_status("", {})
+
+    assert text == "Enter a unique name for the new group."
+    assert color == "text-grey-7"
+
+
+def test_describe_group_name_status_reports_availability_and_remaining_chars() -> None:
+    text, color = email_settings._describe_group_name_status("ops", {})
+
+    assert text == "Name available. 17 characters remaining."
+    assert color == "text-positive"

@@ -37,59 +37,59 @@ class PowerActionSpec:
 _POWER_ACTIONS: tuple[PowerActionSpec, ...] = (
     PowerActionSpec(
         key="app_shutdown",
-        label="Anwendung herunterfahren",
-        description="Beendet nur die laufende Anwendung bzw. den Webserver.",
+        label="Shut Down Application",
+        description="Stops only the running application and web server.",
         icon="power_settings_new",
         route="/shutdown",
-        confirmation_title="Anwendung herunterfahren?",
-        confirmation_message="M\u00f6chten Sie die Anwendung wirklich herunterfahren?",
-        confirm_label="Ja, Anwendung herunterfahren",
+        confirmation_title="Shut down application?",
+        confirmation_message="Do you really want to shut down the application?",
+        confirm_label="Yes, shut down application",
         status_icon="power_settings_new",
         status_icon_classes="text-6xl text-negative",
-        status_title="Anwendung wird heruntergefahren",
-        status_message="Sie k\u00f6nnen dieses Fenster jetzt schlie\u00dfen.",
+        status_title="Shutting down application",
+        status_message="You can close this window now.",
     ),
     PowerActionSpec(
         key="app_restart",
-        label="Anwendung neu starten",
-        description="Startet nur die Anwendung neu, der Raspberry Pi bleibt an.",
+        label="Restart Application",
+        description="Restarts only the application; the Raspberry Pi stays on.",
         icon="restart_alt",
         route="/restart",
-        confirmation_title="Anwendung neu starten?",
-        confirmation_message="M\u00f6chten Sie die Anwendung wirklich neu starten?",
-        confirm_label="Ja, Anwendung neu starten",
+        confirmation_title="Restart application?",
+        confirmation_message="Do you really want to restart the application?",
+        confirm_label="Yes, restart application",
         status_icon="restart_alt",
         status_icon_classes="text-6xl text-warning",
-        status_title="Anwendung wird neu gestartet",
-        status_message="Bitte warten Sie einen Moment, die Oberfl\u00e4che verbindet sich danach erneut.",
+        status_title="Restarting application",
+        status_message="Please wait a moment; the interface will reconnect afterward.",
     ),
     PowerActionSpec(
         key="pi_restart",
-        label="Pi neu starten",
-        description="Startet den Raspberry Pi samt Anwendung komplett neu.",
+        label="Restart Raspberry Pi",
+        description="Restarts the Raspberry Pi and the application.",
         icon="restart_alt",
         route="/pi-restart",
-        confirmation_title="Raspberry Pi neu starten?",
-        confirmation_message="M\u00f6chten Sie den Raspberry Pi wirklich neu starten?",
-        confirm_label="Ja, Raspberry Pi neu starten",
+        confirmation_title="Restart Raspberry Pi?",
+        confirmation_message="Do you really want to restart the Raspberry Pi?",
+        confirm_label="Yes, restart Raspberry Pi",
         status_icon="restart_alt",
         status_icon_classes="text-6xl text-warning",
-        status_title="Raspberry Pi wird neu gestartet",
-        status_message="Die Verbindung wird kurz unterbrochen und danach automatisch wieder aufgebaut.",
+        status_title="Restarting Raspberry Pi",
+        status_message="The connection will be interrupted briefly and then restored automatically.",
     ),
     PowerActionSpec(
         key="pi_shutdown",
-        label="Pi herunterfahren",
-        description="F\u00e4hrt den Raspberry Pi vollst\u00e4ndig herunter.",
+        label="Shut Down Raspberry Pi",
+        description="Shuts down the Raspberry Pi completely.",
         icon="power_settings_new",
         route="/pi-shutdown",
-        confirmation_title="Raspberry Pi herunterfahren?",
-        confirmation_message="M\u00f6chten Sie den Raspberry Pi wirklich herunterfahren?",
-        confirm_label="Ja, Raspberry Pi herunterfahren",
+        confirmation_title="Shut down Raspberry Pi?",
+        confirmation_message="Do you really want to shut down the Raspberry Pi?",
+        confirm_label="Yes, shut down Raspberry Pi",
         status_icon="power_settings_new",
         status_icon_classes="text-6xl text-negative",
-        status_title="Raspberry Pi wird heruntergefahren",
-        status_message="Nach dem Abschluss kann das Ger\u00e4t sicher ausgeschaltet werden.",
+        status_title="Shutting down Raspberry Pi",
+        status_message="After shutdown completes, the device can be powered off safely.",
     ),
 )
 _POWER_ACTIONS_BY_KEY = {spec.key: spec for spec in _POWER_ACTIONS}
@@ -181,23 +181,29 @@ def get_system_power_command_candidates(
 
 def _spawn_detached_command(command: Sequence[str]) -> None:
     """Start a detached command without inheriting the current process streams."""
-    kwargs: dict[str, object] = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "close_fds": True,
-    }
     if os.name == "nt":
         creationflags = (
             getattr(subprocess, "DETACHED_PROCESS", 0)
             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         )
-        if creationflags:
-            kwargs["creationflags"] = creationflags
-    else:
-        kwargs["start_new_session"] = True
+        subprocess.Popen(
+            list(command),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=creationflags,
+        )
+        return
 
-    subprocess.Popen(list(command), **kwargs)
+    subprocess.Popen(
+        list(command),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True,
+    )
 
 
 def execute_system_power_action(
@@ -209,7 +215,7 @@ def execute_system_power_action(
     """Run the first working detached system power command for the given action."""
     candidates = [list(command) for command in (command_candidates or get_system_power_command_candidates(action_key))]
     if not candidates:
-        raise RuntimeError("Keine passende Systemaktion fuer diese Plattform oder Benutzerrechte gefunden.")
+        raise RuntimeError("No suitable system power action was found for this platform or user permissions.")
 
     failures: list[str] = []
     for command in candidates:
@@ -221,7 +227,7 @@ def execute_system_power_action(
             failures.append(f"{command}: {exc}")
             logger.warning("Failed to trigger %s via %s", action_key, command, exc_info=True)
 
-    raise RuntimeError("Systemaktion konnte nicht gestartet werden: " + "; ".join(failures))
+    raise RuntimeError("System power action could not be started: " + "; ".join(failures))
 
 
 async def trigger_power_action(
@@ -238,13 +244,17 @@ async def trigger_power_action(
     spec = get_power_action_spec(action_key)
 
     if action_key in _SYSTEM_POWER_ACTIONS and not get_system_power_command_candidates(action_key):
-        raise RuntimeError("Fuer diese Aktion wurde kein passendes Systemkommando gefunden.")
+        raise RuntimeError("No suitable system command was found for this action.")
 
     if navigate is None:
-        def navigate(route: str) -> None:
+        def _default_navigate(route: str) -> None:
             ui.navigate.to(route, new_tab=False)
 
-    navigate(spec.route)
+        navigate_func = _default_navigate
+    else:
+        navigate_func = navigate
+
+    navigate_func(spec.route)
     await sleep_func(_STATUS_PAGE_DELAY_SECONDS)
     cleanup_func()
     await sleep_func(0.2)
