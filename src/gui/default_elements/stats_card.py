@@ -61,7 +61,7 @@ def create_stats_card() -> None:
             'categories': labels,
             'data': values
         }
-
+    
     with ui.card().classes('w-full h-full'):
         create_heading_row(
             'Alert Statistics (Events/Hour)',
@@ -69,9 +69,6 @@ def create_stats_card() -> None:
             title_classes='text-h6',
             row_classes='items-center gap-2',
             icon_classes='text-primary text-xl shrink-0',
-        )
-        ui.label('Shows the alert history from the last 24 hours, grouped by hour.').classes(
-            'text-caption text-grey-7 mb-2'
         )
         
         chart = ui.echart({
