@@ -51,18 +51,6 @@ def test_finalize_structural_email_config_drops_reserved_group_name() -> None:
     assert email.group_prefs == {"ops": {"on_start": True, "on_end": True, "on_stop": True}}
 
 
-def test_rename_group_routing_refs_moves_active_groups_and_prefs() -> None:
-    email = _email_cfg()
-    email.groups = {"ops": ["a@example.com"], "lab": ["b@example.com"]}
-    email.active_groups = ["ops", "lab"]
-    email.group_prefs = {"ops": {"on_start": False}, "lab": {"on_start": True}}
-
-    email_settings._rename_group_routing_refs(email, "ops", "night")
-
-    assert email.active_groups == ["night", "lab"]
-    assert email.group_prefs == {"night": {"on_start": False}, "lab": {"on_start": True}}
-
-
 def test_delete_group_routing_refs_removes_group_everywhere() -> None:
     email = _email_cfg()
     email.groups = {"ops": ["a@example.com"]}
@@ -243,6 +231,24 @@ def test_group_editor_snapshot_restore_restores_selected_and_draft_values() -> N
                 "name": "draft",
                 "members": [],
                 "event_prefs": {"on_start": True, "on_end": True, "on_stop": True},
+            },
+            True,
+        ),
+        (
+            {
+                "selected": None,
+                "name": "",
+                "members": ["a@example.com"],
+                "event_prefs": {"on_start": True, "on_end": True, "on_stop": True},
+            },
+            True,
+        ),
+        (
+            {
+                "selected": None,
+                "name": "",
+                "members": [],
+                "event_prefs": {"on_start": False, "on_end": True, "on_stop": True},
             },
             True,
         ),

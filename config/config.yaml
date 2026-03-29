@@ -193,8 +193,8 @@ email:
            Sensitivity:    {sensitivity}
            ROI enabled:    {roi_enabled}
   groups:
-    TEST: []
     TEST2: []
+    TEST: []
   active_groups: []
   static_recipients:
     - haha@tuhh.de
@@ -204,11 +204,11 @@ email:
     on_end: true
     on_stop: true
   group_prefs:
-    TEST:
-      on_start: true
-      on_end: false
-      on_stop: true
     TEST2:
+      on_start: true
+      on_end: true
+      on_stop: true
+    TEST:
       on_start: true
       on_end: true
       on_stop: true
