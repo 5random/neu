@@ -103,6 +103,9 @@ email:
   website_url: http://localhost:8080/
   recipients:
     - haha@tuhh.de
+    - hoho@tuhh.de
+    - wild@tuhh.de
+    - lols@tuhh.de
   smtp_server: smtp.freesmtpservers.com
   smtp_port: 25
   sender_email: CHANGE_ME@tuhh.de
@@ -193,8 +196,11 @@ email:
            Sensitivity:    {sensitivity}
            ROI enabled:    {roi_enabled}
   groups:
-    TEST2: []
-    TEST: []
+    TEST:
+      - haha@tuhh.de
+      - hoho@tuhh.de
+      - wild@tuhh.de
+      - lols@tuhh.de
   active_groups: []
   static_recipients:
     - haha@tuhh.de
@@ -204,10 +210,6 @@ email:
     on_end: true
     on_stop: true
   group_prefs:
-    TEST2:
-      on_start: true
-      on_end: true
-      on_stop: true
     TEST:
       on_start: true
       on_end: true

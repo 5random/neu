@@ -54,6 +54,7 @@ EMAIL_TOOLTIP_TEXTS = {
     "group_next": "Continue to member selection for the current group definition.",
     "group_members": "Choose which address-book entries belong to this group.",
     "group_back_select": "Return to the naming step for the new group.",
+    "group_back_delete": "Return to the delete-group step for the loaded group.",
     "group_back_events": "Return to the member selection step.",
     "group_events": "Choose which lifecycle emails this group may receive when it is active.",
     "group_back_review": "Return to the event-permission step.",
@@ -413,10 +414,13 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
     edit_group_browser: Optional[ui.column] = None
     edit_group_loaded_label: Optional[ui.label] = None
     edit_group_hint_label: Optional[ui.label] = None
-    edit_group_members_select: Optional[ui.select] = None
+    edit_group_add_members_select: Optional[ui.select] = None
+    edit_group_add_members_btn: Optional[ui.button] = None
+    edit_group_member_editor_list: Optional[ui.column] = None
     edit_group_review_label: Optional[ui.label] = None
     edit_group_members_list: Optional[ui.list] = None
     edit_group_event_toggles: dict[str, ui.checkbox] = {}
+    edit_group_delete_next_btn: Optional[ui.button] = None
     edit_group_reset_btn: Optional[ui.button] = None
     edit_group_save_btn: Optional[ui.button] = None
     overview_counts: dict[str, ui.label] = {}
@@ -637,8 +641,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
 
     def _collect_edit_group_form() -> tuple[str, list[str], dict[str, bool]]:
         name = loaded_group_name or ""
-        raw_members = getattr(edit_group_members_select, "value", edit_group_editor["members"]) or []
-        members = sanitize_group_addresses(list(raw_members))
+        members = sanitize_group_addresses(list(edit_group_editor["members"]))
         event_prefs = {
             event_key: bool(
                 getattr(edit_group_event_toggles.get(event_key), "value", edit_group_editor["event_prefs"].get(event_key, True))
@@ -650,6 +653,36 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
         edit_group_editor["members"] = members
         edit_group_editor["event_prefs"] = _event_prefs(event_prefs, default=True)
         return name, members, dict(edit_group_editor["event_prefs"])
+
+    def _remove_member_from_edit_group(addr: str) -> None:
+        _collect_edit_group_form()
+        edit_group_editor["members"] = [member for member in edit_group_editor["members"] if member != addr]
+        _refresh_edit_group_editor()
+
+    def _refresh_edit_group_add_members_button() -> None:
+        if edit_group_add_members_btn is None:
+            return
+        available_members_to_add = [addr for addr in state["recipients"] if addr not in edit_group_editor["members"]]
+        selected_members = getattr(edit_group_add_members_select, "value", []) or []
+        can_add = bool(loaded_group_name in state["groups"]) and bool(available_members_to_add) and bool(selected_members)
+        if can_add:
+            edit_group_add_members_btn.enable()
+        else:
+            edit_group_add_members_btn.disable()
+        edit_group_add_members_btn.update()
+
+    def _add_members_to_edit_group() -> None:
+        _collect_edit_group_form()
+        raw_members = getattr(edit_group_add_members_select, "value", []) or []
+        members_to_add = sanitize_group_addresses(list(raw_members))
+        if not members_to_add:
+            notify_user("Choose at least one recipient to add", kind="warning")
+            return
+        edit_group_editor["members"] = sanitize_group_addresses(edit_group_editor["members"] + members_to_add)
+        if edit_group_add_members_select is not None:
+            edit_group_add_members_select.value = []
+            edit_group_add_members_select.update()
+        _refresh_edit_group_editor()
 
     def _refresh_create_group_editor() -> None:
         if create_group_name_input is not None:
@@ -733,14 +766,40 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                 hint_text = "You are editing the currently loaded group. Use the browser below to switch groups."
             edit_group_hint_label.text = hint_text
             edit_group_hint_label.update()
-        if edit_group_members_select is not None:
-            edit_group_members_select.options = list(state["recipients"])
-            edit_group_members_select.value = list(edit_group_editor["members"])
+        available_members_to_add = [
+            addr for addr in state["recipients"] if addr not in edit_group_editor["members"]
+        ]
+        if edit_group_add_members_select is not None:
+            current_add_selection = getattr(edit_group_add_members_select, "value", []) or []
+            filtered_selection = [addr for addr in current_add_selection if addr in available_members_to_add]
+            edit_group_add_members_select.options = available_members_to_add
+            edit_group_add_members_select.value = filtered_selection
             if edit_enabled:
-                edit_group_members_select.enable()
+                edit_group_add_members_select.enable()
             else:
-                edit_group_members_select.disable()
-            edit_group_members_select.update()
+                edit_group_add_members_select.disable()
+            edit_group_add_members_select.update()
+        _refresh_edit_group_add_members_button()
+        if edit_group_member_editor_list is not None:
+            edit_group_member_editor_list.clear()
+            with edit_group_member_editor_list:
+                if not edit_enabled:
+                    ui.label("Load an existing group to manage its members.").classes("text-body2 text-grey-7")
+                elif not edit_group_editor["members"]:
+                    ui.label("This group currently has no members.").classes("text-body2 text-grey-7")
+                else:
+                    for addr in edit_group_editor["members"]:
+                        with ui.card().classes("w-full p-2"):
+                            with ui.row().classes("w-full items-center justify-between gap-2 flex-wrap"):
+                                with ui.row().classes("items-center gap-2"):
+                                    ui.icon("mail").classes("text-primary")
+                                    ui.label(addr).classes("text-body2")
+                                ui.button(
+                                    "Remove",
+                                    icon="person_remove",
+                                    color="warning",
+                                    on_click=lambda _=None, target_addr=addr: _remove_member_from_edit_group(target_addr),
+                                ).props("outline")
         for event_key, toggle in edit_group_event_toggles.items():
             toggle.value = bool(edit_group_editor["event_prefs"].get(event_key, True))
             if edit_enabled:
@@ -786,6 +845,12 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             else:
                 edit_delete_group_btn.disable()
             edit_delete_group_btn.update()
+        if edit_group_delete_next_btn is not None:
+            if edit_enabled:
+                edit_group_delete_next_btn.enable()
+            else:
+                edit_group_delete_next_btn.disable()
+            edit_group_delete_next_btn.update()
         if edit_delete_group_tooltip is not None:
             if target is None:
                 edit_delete_group_tooltip.text = "Load an existing group to delete it."
@@ -804,7 +869,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
         _refresh_create_group_editor()
         _set_create_group_step("name")
 
-    def _load_edit_group(name: Optional[str], *, step_name: str = "members") -> None:
+    def _load_edit_group(name: Optional[str], *, step_name: str = "delete") -> None:
         nonlocal loaded_group_name
         if not name or name not in state["groups"]:
             loaded_group_name = None
@@ -818,9 +883,9 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
 
     def _reset_edit_group_editor() -> None:
         if loaded_group_name and loaded_group_name in state["groups"]:
-            _load_edit_group(loaded_group_name, step_name="members")
+            _load_edit_group(loaded_group_name, step_name="delete")
             return
-        _load_edit_group(None, step_name="members")
+        _load_edit_group(None, step_name="delete")
 
     def _request_group_tab_change(target_tab: str) -> None:
         source_tab = current_group_tab
@@ -887,7 +952,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
         _collect_edit_group_form()
         dirty = _is_group_editor_dirty(edit_group_editor, state["groups"], state["group_prefs"])
         if not dirty:
-            _load_edit_group(target, step_name="members")
+            _load_edit_group(target, step_name="delete")
             return
         load_message = (
             f"Loading '{target}' will discard the current unsaved changes."
@@ -898,7 +963,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             title="Discard unsaved group changes?",
             message=load_message,
             confirm_label="Discard and load",
-            action=lambda target=target: _load_edit_group(target, step_name="members"),
+            action=lambda target=target: _load_edit_group(target, step_name="delete"),
         )
 
     def _make_edit_group_load_handler(target: str) -> Callable[[events.ClickEventArguments], None]:
@@ -1189,13 +1254,9 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
         result = persist_state()
         if result.ok:
             if target in state["groups"]:
-                next_state, _ = _resolve_group_editor_state(state["groups"], state["group_prefs"], target)
-                loaded_group_name = target
-                _restore_group_editor_state(edit_group_editor, next_state)
+                _load_edit_group(target, step_name="delete")
             else:
-                loaded_group_name = None
-                _restore_group_editor_state(edit_group_editor, _default_group_editor_state())
-            _refresh_group_editors()
+                _load_edit_group(None, step_name="delete")
             refresh_recipient_table()
             refresh_overview()
             notify_user(f"Group '{target}' updated", kind="positive")
@@ -1499,26 +1560,79 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                 edit_group_loaded_label = ui.label("Loaded Group: -").classes("text-subtitle2")
                 edit_group_hint_label = ui.label("").classes("text-caption text-grey-7")
 
-                with ui.stepper(value="members").props("vertical flat animated").classes("w-full") as edit_group_stepper:
-                    with ui.step("members", title="Edit members", icon="group_add"):
-                        ui.label("Step 1: Adjust the members of the loaded group.").classes("text-body2")
-                        edit_group_members_select = ui.select(
-                            options=list(state["recipients"]),
-                            value=list(edit_group_editor["members"]),
-                            label="Group Members",
-                            multiple=True,
-                        ).classes("w-full").props("outlined use-chips")
-                        edit_group_members_select.tooltip(EMAIL_TOOLTIP_TEXTS["group_members"])
-                        edit_group_members_select.on("update:model-value", lambda _: _collect_edit_group_form())
+                with ui.stepper(value="delete").props("vertical flat animated").classes("w-full") as edit_group_stepper:
+                    with ui.step("delete", title="Delete group", icon="delete_forever"):
+                        ui.label(
+                            "Step 1: Delete the entire loaded group if you no longer need it. Otherwise continue to member changes."
+                        ).classes("text-body2")
+                        with ui.card().classes("w-full p-3 gap-2"):
+                            with ui.row().classes("items-start gap-3"):
+                                ui.icon("warning_amber").classes("text-negative text-2xl mt-1")
+                                with ui.column().classes("gap-1"):
+                                    ui.label("Delete the whole group").classes("text-subtitle2")
+                                    ui.label(
+                                        "This removes the loaded group from the configuration and from the active group selection."
+                                    ).classes("text-body2 text-grey-7")
+                            with ui.row().classes("w-full justify-end mt-2"):
+                                edit_delete_group_btn = ui.button(
+                                    "Delete Loaded Group",
+                                    icon="delete",
+                                    color="negative",
+                                    on_click=delete_existing_group,
+                                )
+                                with edit_delete_group_btn:
+                                    edit_delete_group_tooltip = ui.tooltip(EMAIL_TOOLTIP_TEXTS["group_delete"])
                         with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                            edit_group_delete_next_btn = ui.button(
+                                "Next",
+                                icon="arrow_forward",
+                                on_click=lambda: _set_edit_group_step("members"),
+                            ).props("color=primary").tooltip(EMAIL_TOOLTIP_TEXTS["group_next"])
+
+                    with ui.step("members", title="Manage members", icon="groups_2"):
+                        ui.label("Step 2: Add new members or remove existing members from the loaded group.").classes(
+                            "text-body2"
+                        )
+                        with ui.card().classes("w-full p-3 gap-2"):
+                            ui.label("Add Members").classes("text-subtitle2")
+                            ui.label(
+                                "Choose address-book entries to add to this group. Added members stay in the draft until you save."
+                            ).classes("text-caption text-grey-7")
+                            edit_group_add_members_select = ui.select(
+                                options=[],
+                                value=[],
+                                label="Recipients to Add",
+                                multiple=True,
+                            ).classes("w-full").props("outlined use-chips")
+                            edit_group_add_members_select.on(
+                                "update:model-value",
+                                lambda _: _refresh_edit_group_add_members_button(),
+                            )
+                            with ui.row().classes("w-full justify-end"):
+                                edit_group_add_members_btn = ui.button(
+                                    "Add Selected Members",
+                                    icon="person_add",
+                                    color="primary",
+                                    on_click=_add_members_to_edit_group,
+                                ).props("outline")
+                        with ui.card().classes("w-full p-3 gap-2"):
+                            ui.label("Current Members").classes("text-subtitle2")
+                            ui.label(
+                                "Remove individual members with the buttons below. The change stays in the draft until you save it in the review step."
+                            ).classes("text-caption text-grey-7")
+                            edit_group_member_editor_list = ui.column().classes("w-full gap-2")
+                        with ui.row().classes("w-full items-center justify-between gap-2 mt-2"):
+                            ui.button("Back", icon="arrow_back", on_click=lambda: _set_edit_group_step("delete")).props(
+                                "flat no-caps"
+                            ).tooltip(EMAIL_TOOLTIP_TEXTS["group_back_delete"])
                             ui.button(
                                 "Next",
                                 icon="arrow_forward",
                                 on_click=lambda: (_collect_edit_group_form(), _refresh_edit_group_editor(), _set_edit_group_step("events")),
                             ).props("color=primary").tooltip(EMAIL_TOOLTIP_TEXTS["group_events"])
 
-                    with ui.step("events", title="Lifecycle permissions", icon="event_available"):
-                        ui.label("Step 2: Adjust which lifecycle emails the loaded group may receive while active.").classes(
+                    with ui.step("events", title="Notification settings", icon="notifications_active"):
+                        ui.label("Step 3: Adjust which lifecycle emails the loaded group may receive while active.").classes(
                             "text-body2"
                         )
                         with ui.card().classes("w-full p-3 gap-2"):
@@ -1542,8 +1656,8 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                                 on_click=lambda: (_collect_edit_group_form(), _refresh_edit_group_editor(), _set_edit_group_step("review")),
                             ).props("color=primary").tooltip(EMAIL_TOOLTIP_TEXTS["group_review"])
 
-                    with ui.step("review", title="Review and save", icon="task_alt"):
-                        ui.label("Step 3: Review the loaded group and save or delete it.").classes("text-body2")
+                    with ui.step("review", title="Review changes", icon="fact_check"):
+                        ui.label("Step 4: Review the loaded group and either save or discard your changes.").classes("text-body2")
                         edit_group_review_label = ui.label("").classes("text-body2 text-grey-8")
                         with ui.card().classes("w-full p-3 gap-2"):
                             ui.label("Members").classes("text-subtitle2")
@@ -1554,18 +1668,10 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                                     "flat no-caps"
                                 ).tooltip(EMAIL_TOOLTIP_TEXTS["group_back_review"])
                                 edit_group_reset_btn = ui.button(
-                                    "Reset", icon="restart_alt", on_click=_request_edit_group_reset
+                                    "Discard Changes", icon="undo", on_click=_request_edit_group_reset
                                 ).props("outline")
                                 edit_group_reset_btn.tooltip(EMAIL_TOOLTIP_TEXTS["group_reset"])
                             with ui.row().classes("gap-2 flex-wrap"):
-                                edit_delete_group_btn = ui.button(
-                                    "Delete Loaded Group",
-                                    icon="delete",
-                                    color="negative",
-                                    on_click=delete_existing_group,
-                                )
-                                with edit_delete_group_btn:
-                                    edit_delete_group_tooltip = ui.tooltip(EMAIL_TOOLTIP_TEXTS["group_delete"])
                                 edit_group_save_btn = ui.button(
                                     "Save Changes",
                                     icon="save",
