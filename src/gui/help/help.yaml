@@ -85,13 +85,13 @@ help:
         - If you get too many alerts, reduce sensitivity first, then tighten the ROI if necessary.
           - If you miss alerts, increase sensitivity and consider expanding the ROI to include more of the monitored area.
   
-          ## Troubleshooting
-          - If you get too many false positives, try reducing sensitivity and adjusting the ROI to exclude irrelevant areas.
-          - If you miss real motion events, try increasing sensitivity and expanding the ROI to include more of the monitored area.
+        ## Troubleshooting
+        - If you get too many false positives, try reducing sensitivity and adjusting the ROI to exclude irrelevant areas.
+        - If you miss real motion events, try increasing sensitivity and expanding the ROI to include more of the monitored area.
 
-          ## Notes
-          - Note that the sensitivity setting is a trade-off and may require some experimentation to find the right balance for your specific environment and use case.
-          - Note that changes to the motion status are a bit laggy. This is wanted behavior to avoid rapid fluctuations and false positives.
+        ## Notes
+        - Note that the sensitivity setting is a trade-off and may require some experimentation to find the right balance for your specific environment and use case.
+        - Note that changes to the motion status are a bit laggy. This is wanted behavior to avoid rapid fluctuations and false positives.
 
     - title: "Measurement & Sessions"
       link: "/settings#measurement"
