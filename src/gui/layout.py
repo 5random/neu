@@ -218,7 +218,7 @@ def build_header(current_route: str | None = None) -> None:
                 except Exception as exc:
                     logger.exception('Failed to execute power action %s', action_key)
                     ui.notify(
-                        f'"{spec.label}" konnte nicht ausgefuehrt werden: {exc}',
+                        f'"{spec.label}" could not be executed: {exc}',
                         type='negative',
                         position='bottom-right',
                     )
@@ -228,8 +228,8 @@ def build_header(current_route: str | None = None) -> None:
                     confirm_title = ui.label('').classes('text-h6')
                     confirm_message = ui.label('').classes('text-body1')
                     with ui.row().classes('w-full justify-end gap-2'):
-                        ui.button('Zurueck', on_click=lambda: (power_confirm_dialog.close(), power_menu_dialog.open())).props('flat')
-                        confirm_button = ui.button('Bestaetigen', on_click=execute_selected_power_action).props('color=negative')
+                        ui.button('Back', on_click=lambda: (power_confirm_dialog.close(), power_menu_dialog.open())).props('flat')
+                        confirm_button = ui.button('Confirm', on_click=execute_selected_power_action).props('color=negative')
 
             def open_confirmation_dialog(action_key: str) -> None:
                 spec = get_power_action_spec(action_key)
@@ -242,8 +242,8 @@ def build_header(current_route: str | None = None) -> None:
 
             with power_menu_dialog:
                 with ui.card().classes('w-[520px] max-w-full'):
-                    ui.label('Was moechten Sie tun?').classes('text-h6')
-                    ui.label('Bitte waehlen Sie die gewuenschte Aktion aus.').classes('text-body2')
+                    ui.label('What would you like to do?').classes('text-h6')
+                    ui.label('Please select the desired action.').classes('text-body2')
                     with ui.column().classes('w-full gap-2'):
                         for spec in list_power_actions():
                             with ui.column().classes('w-full gap-1'):
@@ -254,7 +254,7 @@ def build_header(current_route: str | None = None) -> None:
                                 ).props('outline align=left').classes('w-full justify-start')
                                 ui.label(spec.description).classes('text-caption text-gray-500')
                     with ui.row().classes('w-full justify-end'):
-                        ui.button('Abbrechen', on_click=power_menu_dialog.close).props('flat')
+                        ui.button('Cancel', on_click=power_menu_dialog.close).props('flat')
 
             def show_power_menu_dialog() -> None:
                 power_menu_dialog.open()

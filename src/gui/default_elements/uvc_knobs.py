@@ -4,6 +4,7 @@ import asyncio
 
 from src.cam.camera import Camera
 from src.gui.util import schedule_bg, cancel_task_safely
+from src.gui.uvc_helpers import auto_exposure_value_is_auto, set_nested_config_value
 from src.config import get_logger, get_global_config, save_global_config
 
 logger = get_logger('gui.uvc_knobs')
@@ -145,13 +146,6 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
 
             knob_refs[name] = {'slider': slider_ctrl, 'number': number_ctrl}
 
-    def _to_bool_auto_exposure(val: Any) -> bool:
-        try:
-            f = float(val)
-        except Exception:
-            return bool(val)
-        return f > 0.5 or abs(f - 3.0) < 1e-6
-    
     def make_handler(camera_setter: Callable[[Any], Any], config_field: str, default_value: Any) -> Callable[[Any], None]:
         def handler(event: Any) -> None:
             if hasattr(event, 'args'):
@@ -174,11 +168,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                 try:
                     config = get_global_config()
                     if config:
-                        obj = config
-                        fields = config_field.split('.')
-                        for field in fields[:-1]:
-                            obj = getattr(obj, field)
-                        setattr(obj, fields[-1], value)
+                        set_nested_config_value(config, config_field, value)
 
                         save_global_config()
                         logger.info(f'Saved {config_field}: {value}')
@@ -217,11 +207,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
             try:
                 config = get_global_config()
                 if config:
-                    obj = config
-                    fields = config_field.split('.')
-                    for field in fields[:-1]:
-                        obj = getattr(obj, field)
-                    setattr(obj, fields[-1], value)
+                    set_nested_config_value(config, config_field, value)
 
                     save_global_config()
                     
@@ -240,18 +226,112 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
     ranges = camera.get_uvc_ranges() if camera else {}
     current = camera.get_uvc_current_values() if camera else {}
 
+    def _build_default_control_updates() -> dict[str, Any]:
+        if hasattr(camera, 'get_uvc_default_control_values'):
+            try:
+                updates = camera.get_uvc_default_control_values()
+                if isinstance(updates, dict) and updates:
+                    return dict(updates)
+            except Exception as e:
+                logger.debug(f'Could not read default control values directly: {e}')
+
+        if hasattr(camera, 'get_uvc_defaults'):
+            try:
+                defaults = camera.get_uvc_defaults()
+                if isinstance(defaults, dict) and defaults:
+                    white_balance = defaults.get('white_balance', {}) or {}
+                    exposure = defaults.get('exposure', {}) or {}
+                    return {
+                        'brightness': defaults.get('brightness', ranges.get('brightness', {}).get('default', 0)),
+                        'contrast': defaults.get('contrast', ranges.get('contrast', {}).get('default', 16)),
+                        'saturation': defaults.get('saturation', ranges.get('saturation', {}).get('default', 64)),
+                        'sharpness': defaults.get('sharpness', ranges.get('sharpness', {}).get('default', 2)),
+                        'gamma': defaults.get('gamma', ranges.get('gamma', {}).get('default', 164)),
+                        'gain': defaults.get('gain', ranges.get('gain', {}).get('default', 10)),
+                        'backlight_compensation': defaults.get(
+                            'backlight_compensation',
+                            ranges.get('backlight_compensation', {}).get('default', 42),
+                        ),
+                        'hue': defaults.get('hue', ranges.get('hue', {}).get('default', 0)),
+                        'white_balance_auto': bool(white_balance.get('auto', True)),
+                        'white_balance_manual': white_balance.get(
+                            'value',
+                            ranges.get('white_balance', {}).get('default', 4600),
+                        ),
+                        'exposure_auto': bool(exposure.get('auto', True)),
+                        'exposure_manual': exposure.get(
+                            'value',
+                            ranges.get('exposure', {}).get('default', -6),
+                        ),
+                    }
+            except Exception as e:
+                logger.debug(f'Could not reconstruct default control values from defaults: {e}')
+
+        if hasattr(camera, 'get_uvc_current_values'):
+            try:
+                current_values = camera.get_uvc_current_values() or {}
+                updates: dict[str, Any] = {}
+                passthrough = (
+                    'brightness',
+                    'contrast',
+                    'saturation',
+                    'hue',
+                    'gain',
+                    'sharpness',
+                    'gamma',
+                    'backlight_compensation',
+                )
+                for key in passthrough:
+                    if key in current_values:
+                        updates[key] = current_values[key]
+
+                if 'auto_white_balance' in current_values:
+                    updates['white_balance_auto'] = bool(current_values['auto_white_balance'])
+                if 'white_balance' in current_values:
+                    updates['white_balance_manual'] = current_values['white_balance']
+                if 'auto_exposure' in current_values:
+                    updates['exposure_auto'] = auto_exposure_value_is_auto(current_values['auto_exposure'])
+                if 'exposure' in current_values:
+                    updates['exposure_manual'] = current_values['exposure']
+
+                if updates:
+                    return updates
+            except Exception as e:
+                logger.debug(f'Could not rebuild control values from current UVC values: {e}')
+
+        return {
+            'brightness': ranges.get('brightness', {}).get('default', 0),
+            'contrast': ranges.get('contrast', {}).get('default', 16),
+            'saturation': ranges.get('saturation', {}).get('default', 64),
+            'sharpness': ranges.get('sharpness', {}).get('default', 2),
+            'gamma': ranges.get('gamma', {}).get('default', 164),
+            'gain': ranges.get('gain', {}).get('default', 10),
+            'backlight_compensation': ranges.get('backlight_compensation', {}).get('default', 42),
+            'hue': ranges.get('hue', {}).get('default', 0),
+            'white_balance_auto': True,
+            'white_balance_manual': ranges.get('white_balance', {}).get('default', 4600),
+            'exposure_auto': True,
+            'exposure_manual': ranges.get('exposure', {}).get('default', -6),
+        }
+
     def reset_uvc() -> bool:
         try:
             if camera.reset_uvc_to_defaults():
                 for task in debounce_tasks.values():
                     cancel_task_safely(task)
                 debounce_tasks.clear()
-                save_ok = camera.save_uvc_config() if hasattr(camera, 'save_uvc_config') else save_global_config()
-                updates = (
-                    camera.get_uvc_default_control_values()
-                    if hasattr(camera, 'get_uvc_default_control_values')
-                    else {}
-                )
+
+                try:
+                    if hasattr(camera, 'save_uvc_config'):
+                        save_result = camera.save_uvc_config()
+                    else:
+                        save_result = save_global_config()
+                    save_ok = True if save_result is None else bool(save_result)
+                except Exception as e:
+                    logger.warning(f'Could not persist reset UVC defaults: {e}')
+                    save_ok = False
+
+                updates = _build_default_control_updates()
                 
                 for name, value in updates.items():
                     ctrl = knob_refs.get(name)
@@ -374,7 +454,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                 # Exposure
                 with ui.card().tight().classes('p-3 flex flex-col gap-2'):
                     ui.label('Exposure').classes('text-caption font-medium text-grey-8')
-                    exp_auto_value = _to_bool_auto_exposure(current.get('auto_exposure', 1))
+                    exp_auto_value = auto_exposure_value_is_auto(current.get('auto_exposure', 1))
                     exp_auto = ui.checkbox('Auto', value=exp_auto_value).props('dense')
 
                     exp_manual_range = ranges.get('exposure', {'min': -13, 'max': -1, 'default': -6})

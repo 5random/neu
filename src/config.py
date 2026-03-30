@@ -186,6 +186,8 @@ class MeasurementConfig:
     auto_start: bool
     session_timeout_minutes: int
     save_alert_images: bool
+    # Legacy config field kept for backward-compatible imports.
+    # New alert images are persisted under history_path.
     image_save_path: str
     image_format: str
     image_quality: int
@@ -201,7 +203,7 @@ class MeasurementConfig:
     # Motion summary logging controls
     motion_summary_interval_seconds: int = 60
     enable_motion_summary_logs: bool = True
-    # History path for alert events (Issue #10)
+    # Primary persistence path for alert history JSON and alert images.
     history_path: str = "data/history"
 
     def get_session_timeout_seconds(self) -> int:
@@ -242,7 +244,14 @@ class MeasurementConfig:
         return errors
 
     def ensure_save_path(self) -> None:
-        Path(self.image_save_path).mkdir(parents=True, exist_ok=True)
+        history_path = str(getattr(self, "history_path", "") or "").strip()
+        if history_path:
+            Path(history_path).mkdir(parents=True, exist_ok=True)
+            return
+
+        legacy_image_path = str(getattr(self, "image_save_path", "") or "").strip()
+        if legacy_image_path:
+            Path(legacy_image_path).mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # E‑Mail

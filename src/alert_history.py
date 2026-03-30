@@ -17,6 +17,11 @@ logger = get_logger('alert_history')
 DEFAULT_HISTORY_DIR = Path('data/history')
 HISTORY_FILE_NAME = 'history.json'
 HISTORY_STATIC_ROUTE = '/history'
+MAX_HISTORY_ENTRIES = 100
+MAX_HISTORY_IMAGE_FILES = 25
+MAX_HISTORY_FILE_SIZE_BYTES = 10 * 1024 * 1024
+ALERT_IMAGE_PREFIX = 'alert_'
+ALERT_IMAGE_EXTENSIONS = frozenset({'.jpg', '.jpeg', '.png'})
 
 _history_file_lock = threading.Lock()
 _history_revisions: dict[str, int] = {}
@@ -139,7 +144,9 @@ def append_history_entry(
     entry: dict[str, Any],
     *,
     history_file: Path | None = None,
-    max_entries: int = 100,
+    max_entries: int = MAX_HISTORY_ENTRIES,
+    pending_image_filename: str | None = None,
+    pending_image_bytes: bytes | None = None,
 ) -> list[dict[str, Any]]:
     """Append a history entry and persist the truncated history atomically."""
     target_file = history_file or get_history_file()
@@ -147,14 +154,44 @@ def append_history_entry(
 
     revision = 0
     entries_snapshot: list[dict[str, Any]] = []
+    entry_to_store = dict(entry)
+    created_image_path: Path | None = None
     with _history_file_lock:
-        entries = _load_history_entries_unlocked(target_file, repair=True)
-        entries.append(dict(entry))
-        if max_entries > 0 and len(entries) > max_entries:
-            entries = entries[-max_entries:]
-        _write_history_entries_unlocked(target_file, entries)
-        revision = _bump_history_revision_unlocked(target_file)
-        entries_snapshot = list(entries)
+        try:
+            if pending_image_filename is not None or pending_image_bytes is not None:
+                if not pending_image_filename or pending_image_bytes is None:
+                    raise ValueError(
+                        'pending_image_filename and pending_image_bytes must be provided together'
+                    )
+                stored_image_path, created_image_path = _write_pending_history_image_unlocked(
+                    target_file.parent,
+                    image_filename=pending_image_filename,
+                    image_bytes=pending_image_bytes,
+                )
+                entry_to_store['image_path'] = stored_image_path
+
+            entries = _load_history_entries_unlocked(target_file, repair=True)
+            entries.append(entry_to_store)
+            entries = _prepare_history_entries_for_storage_unlocked(
+                entries,
+                history_file=target_file,
+                max_entries=max_entries,
+            )
+            _write_history_entries_unlocked(target_file, entries)
+            _cleanup_orphaned_history_images_unlocked(target_file.parent, entries)
+            revision = _bump_history_revision_unlocked(target_file)
+            entries_snapshot = list(entries)
+        except Exception:
+            if created_image_path is not None:
+                try:
+                    created_image_path.unlink(missing_ok=True)
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        'Failed to remove uncommitted history image %s: %s',
+                        created_image_path,
+                        cleanup_exc,
+                    )
+            raise
 
     _notify_history_listeners(target_file, revision)
     return entries_snapshot
@@ -169,10 +206,15 @@ def replace_history_entries(
     target_file = history_file or get_history_file()
     target_file.parent.mkdir(parents=True, exist_ok=True)
 
-    sanitized_entries = [dict(entry) for entry in entries if isinstance(entry, dict)]
     revision = 0
     with _history_file_lock:
+        sanitized_entries = _prepare_history_entries_for_storage_unlocked(
+            entries,
+            history_file=target_file,
+            max_entries=MAX_HISTORY_ENTRIES,
+        )
         _write_history_entries_unlocked(target_file, sanitized_entries)
+        _cleanup_orphaned_history_images_unlocked(target_file.parent, sanitized_entries)
         revision = _bump_history_revision_unlocked(target_file)
 
     _notify_history_listeners(target_file, revision)
@@ -264,10 +306,241 @@ def _load_history_entries_unlocked(history_file: Path, *, repair: bool = False) 
     return [entry for entry in raw_data if isinstance(entry, dict)]
 
 
+def _prepare_history_entries_for_storage_unlocked(
+    entries: list[dict[str, Any]],
+    *,
+    history_file: Path,
+    max_entries: int,
+) -> list[dict[str, Any]]:
+    history_dir = history_file.parent
+    sanitized_entries = [dict(entry) for entry in entries if isinstance(entry, dict)]
+    _normalize_history_image_paths_unlocked(sanitized_entries, history_dir)
+
+    if max_entries > 0 and len(sanitized_entries) > max_entries:
+        trimmed_count = len(sanitized_entries) - max_entries
+        sanitized_entries = _retain_newest_history_entries_unlocked(sanitized_entries, max_entries)
+        logger.info(
+            'Trimmed %s oldest history entries to enforce max entry limit (%s)',
+            trimmed_count,
+            max_entries,
+        )
+
+    _enforce_history_image_limit_unlocked(sanitized_entries)
+    return _enforce_history_file_size_limit_unlocked(sanitized_entries, history_file=history_file)
+
+
+def _normalize_history_image_paths_unlocked(entries: list[dict[str, Any]], history_dir: Path) -> None:
+    for entry in entries:
+        stored_image_path = entry.get('image_path')
+        if not stored_image_path:
+            entry['image_path'] = ''
+            continue
+
+        resolved_image_path = resolve_history_image_path(str(stored_image_path), history_dir)
+        if resolved_image_path is None:
+            logger.warning('Discarding invalid history image path: %r', stored_image_path)
+            entry['image_path'] = ''
+            continue
+
+        entry['image_path'] = to_history_image_storage_path(resolved_image_path, history_dir)
+
+
+def _history_entry_recency_key(entry: dict[str, Any], index: int) -> tuple[bool, datetime, int]:
+    parsed_timestamp = parse_history_timestamp(entry.get('timestamp'))
+    return (
+        parsed_timestamp is not None,
+        parsed_timestamp or datetime.min,
+        index,
+    )
+
+
+def _select_newest_history_entry_indexes_unlocked(entries: list[dict[str, Any]], keep_count: int) -> set[int]:
+    if keep_count <= 0:
+        return set()
+
+    return set(
+        sorted(
+            range(len(entries)),
+            key=lambda index: _history_entry_recency_key(entries[index], index),
+            reverse=True,
+        )[:keep_count]
+    )
+
+
+def _retain_newest_history_entries_unlocked(
+    entries: list[dict[str, Any]],
+    keep_count: int,
+) -> list[dict[str, Any]]:
+    keep_indexes = _select_newest_history_entry_indexes_unlocked(entries, keep_count)
+    return [
+        entry
+        for index, entry in enumerate(entries)
+        if index in keep_indexes
+    ]
+
+
+def _pop_oldest_history_entry_unlocked(entries: list[dict[str, Any]]) -> bool:
+    if not entries:
+        return False
+
+    oldest_index = min(
+        range(len(entries)),
+        key=lambda index: _history_entry_recency_key(entries[index], index),
+    )
+    entries.pop(oldest_index)
+    return True
+
+
+def _enforce_history_image_limit_unlocked(entries: list[dict[str, Any]]) -> None:
+    image_entry_indexes = [
+        index
+        for index, entry in enumerate(entries)
+        if str(entry.get('image_path') or '').strip()
+    ]
+    if MAX_HISTORY_IMAGE_FILES < 0 or len(image_entry_indexes) <= MAX_HISTORY_IMAGE_FILES:
+        return
+
+    keep_indexes = (
+        set(
+            sorted(
+                image_entry_indexes,
+                key=lambda index: _history_entry_recency_key(entries[index], index),
+                reverse=True,
+            )[:MAX_HISTORY_IMAGE_FILES]
+        )
+        if MAX_HISTORY_IMAGE_FILES > 0 else set()
+    )
+    cleared_count = 0
+    for index in image_entry_indexes:
+        if index in keep_indexes:
+            continue
+        if entries[index].get('image_path'):
+            entries[index]['image_path'] = ''
+            cleared_count += 1
+
+    if cleared_count > 0:
+        logger.info(
+            'Cleared %s older history image reference(s) to enforce image limit (%s)',
+            cleared_count,
+            MAX_HISTORY_IMAGE_FILES,
+        )
+
+
+def _enforce_history_file_size_limit_unlocked(
+    entries: list[dict[str, Any]],
+    *,
+    history_file: Path,
+) -> list[dict[str, Any]]:
+    if MAX_HISTORY_FILE_SIZE_BYTES <= 0:
+        return entries
+
+    limited_entries = list(entries)
+    removed_count = 0
+    while len(limited_entries) > 1 and _serialized_history_entries_size_bytes(limited_entries) > MAX_HISTORY_FILE_SIZE_BYTES:
+        if not _pop_oldest_history_entry_unlocked(limited_entries):
+            break
+        removed_count += 1
+
+    if removed_count > 0:
+        logger.info(
+            'Trimmed %s oldest history entries to enforce file size limit (%s bytes)',
+            removed_count,
+            MAX_HISTORY_FILE_SIZE_BYTES,
+        )
+
+    if (
+        limited_entries
+        and _serialized_history_entries_size_bytes(limited_entries) > MAX_HISTORY_FILE_SIZE_BYTES
+    ):
+        logger.warning(
+            'History file %s exceeds %s bytes even with a single entry; keeping newest entry',
+            history_file,
+            MAX_HISTORY_FILE_SIZE_BYTES,
+        )
+
+    return limited_entries
+
+
+def _cleanup_orphaned_history_images_unlocked(history_dir: Path, entries: list[dict[str, Any]]) -> None:
+    referenced_images: set[Path] = set()
+    for entry in entries:
+        resolved_image_path = resolve_history_image_path(entry.get('image_path'), history_dir)
+        if resolved_image_path is not None:
+            referenced_images.add(resolved_image_path.resolve(strict=False))
+
+    removed_count = 0
+    for image_file in _iter_history_image_files(history_dir):
+        resolved_image = image_file.resolve(strict=False)
+        if resolved_image in referenced_images:
+            continue
+        try:
+            image_file.unlink(missing_ok=True)
+            removed_count += 1
+        except Exception as exc:
+            logger.warning('Failed to remove orphaned history image %s: %s', image_file, exc)
+
+    if removed_count > 0:
+        logger.info('Removed %s orphaned history image file(s)', removed_count)
+
+
+def _iter_history_image_files(history_dir: Path):
+    if not history_dir.exists():
+        return
+
+    for candidate in history_dir.rglob('*'):
+        if (
+            candidate.is_file()
+            and candidate.name.startswith(ALERT_IMAGE_PREFIX)
+            and candidate.suffix.lower() in ALERT_IMAGE_EXTENSIONS
+        ):
+            yield candidate
+
+
+def _serialize_history_entries(entries: list[dict[str, Any]]) -> str:
+    return json.dumps(entries, indent=2, ensure_ascii=False)
+
+
+def _serialized_history_entries_size_bytes(entries: list[dict[str, Any]]) -> int:
+    return len(_serialize_history_entries(entries).encode('utf-8'))
+
+
+def _write_pending_history_image_unlocked(
+    history_dir: Path,
+    *,
+    image_filename: str,
+    image_bytes: bytes,
+) -> tuple[str, Path]:
+    raw_filename = str(image_filename or '').strip()
+    if not raw_filename:
+        raise ValueError('pending history image filename must not be empty')
+
+    resolved_history_dir = history_dir.resolve(strict=False)
+    resolved_image_path = (history_dir / raw_filename).resolve(strict=False)
+    if not _is_relative_to(resolved_image_path, resolved_history_dir):
+        raise ValueError(
+            f"refusing to write history image outside history directory: {resolved_image_path}"
+        )
+
+    image_temp_path = resolved_image_path.with_suffix(f'{resolved_image_path.suffix}.tmp')
+    resolved_image_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        image_temp_path.write_bytes(image_bytes)
+        image_temp_path.replace(resolved_image_path)
+    except Exception:
+        try:
+            image_temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+    return to_history_image_storage_path(resolved_image_path, history_dir), resolved_image_path
+
+
 def _write_history_entries_unlocked(history_file: Path, entries: list[dict[str, Any]]) -> None:
     temp_file = history_file.with_suffix('.json.tmp')
-    with temp_file.open('w', encoding='utf-8') as file:
-        json.dump(entries, file, indent=2, ensure_ascii=False)
+    serialized_entries = _serialize_history_entries(entries).encode('utf-8')
+    with temp_file.open('wb') as file:
+        file.write(serialized_entries)
     temp_file.replace(history_file)
 
 

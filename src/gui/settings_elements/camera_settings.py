@@ -4,6 +4,7 @@ import asyncio
 
 from src.cam.camera import Camera
 from src.gui.util import schedule_bg, cancel_task_safely
+from src.gui.uvc_helpers import auto_exposure_value_is_auto, set_nested_config_value
 from src.config import get_logger, get_global_config, save_global_config
 from src.gui.bindings import bind_number_slider
 from src.gui.settings_elements.ui_helpers import create_action_button, create_heading_row
@@ -63,11 +64,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                     if config:
                         # Support nested dataclasses for exposure/white_balance
                         # e.g. uvc_controls.white_balance.value / .auto
-                        obj = config
-                        fields = config_field.split('.')
-                        for field in fields[:-1]:
-                            obj = getattr(obj, field)
-                        setattr(obj, fields[-1], value)
+                        set_nested_config_value(config, config_field, value)
 
                         save_global_config()
                         logger.info(f'Saved {config_field}: {value}')
@@ -149,18 +146,6 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
 
             knob_refs[name] = {'slider': slider_ctrl, 'number': number_ctrl}
 
-    def _to_bool_auto_exposure(val: Any) -> bool:
-        """Interpret OpenCV auto-exposure flag across platforms.
-        Windows typically reports 0.75 (auto) / 0.25 (manual);
-        Linux often 3 (auto) / 1 (manual); sometimes 0/1.
-        """
-        try:
-            f = float(val)
-        except (ValueError, TypeError):
-            return bool(val)
-        # Treat > 0.5 as auto, and explicit 3.0 as auto
-        return f > 0.5 or abs(f - 3.0) < 1e-6
-    
     def make_instant_handler(camera_setter: Callable, config_field: str, default_value: Any) -> Callable:
         """Für Checkboxes - sofortige Speicherung ohne Debounce"""
         def handler(event: Any) -> None:
@@ -182,11 +167,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
             try:
                 config = get_global_config()
                 if config:
-                    obj = config
-                    fields = config_field.split('.')
-                    for field in fields[:-1]:
-                        obj = getattr(obj, field)
-                    setattr(obj, fields[-1], value)
+                    set_nested_config_value(config, config_field, value)
 
                     save_global_config()
                     
@@ -425,7 +406,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                         row_classes='items-center gap-2',
                         icon_classes='text-primary text-lg shrink-0',
                     )
-                    exp_auto_value = _to_bool_auto_exposure(current.get('auto_exposure', 1))
+                    exp_auto_value = auto_exposure_value_is_auto(current.get('auto_exposure', 1))
                     exp_auto = ui.checkbox('Auto exposure', value=exp_auto_value).tooltip('Enable automatic exposure adjustment')
 
                     exp_manual_range = ranges.get('exposure', {'min': -13, 'max': -1, 'default': -6})

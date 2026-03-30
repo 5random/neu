@@ -30,7 +30,6 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
 from email.utils import formatdate
-from pathlib import Path
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Callable
 
 from .config import EmailConfig, MeasurementConfig, AppConfig, get_logger
@@ -458,19 +457,12 @@ class EMailSystem:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             img_buffer: Optional[np.ndarray] = None
             filename: Optional[str] = None
-            saved_frame_path: Optional[Path] = None
             ok = False
             include_snapshot = bool(self.measurement_config.alert_include_snapshot)
-            should_process_frame = (
-                camera_frame is not None
-                and (include_snapshot or self.measurement_config.save_alert_images)
-            )
+            should_process_frame = camera_frame is not None and include_snapshot
 
             if should_process_frame:
                 ok, img_buffer, filename = self._encode_frame(camera_frame, ts=timestamp)
-
-                if ok and img_buffer is not None and filename is not None and self.measurement_config.save_alert_images:
-                    saved_frame_path = self._save_alert_image(img_buffer, filename)
 
             abort_check()
             has_snapshot_attachment = bool(include_snapshot and img_buffer is not None and filename is not None)
@@ -533,16 +525,7 @@ class EMailSystem:
                 self.logger.info(
                     f"Alert #{temp_count} sent ({success_count}/{len(recipients)} successful)"
                 )
-                if saved_frame_path:
-                    try:
-                        saved_frame_path.unlink()
-                        self.logger.info(f"Alert image file {saved_frame_path} deleted")
-                    except Exception as e:
-                        self.logger.error(f"Error deleting alert image file {saved_frame_path}: {e}")
                 return True
-
-            if saved_frame_path:
-                self.logger.warning(f"Alert image file {saved_frame_path} not sent, keeping it")
 
             with self._state_lock:
                 if self._matches_alert_session_unsafe(session_id):
@@ -990,77 +973,6 @@ class EMailSystem:
         self.logger.debug(
             "Image attachment added: %s (%d bytes)", encoded_filename, encoded_buffer.size
         )
-
-    def _save_alert_image(self, image_buffer: np.ndarray, filename: str) -> Optional[Path]:
-        """
-        Saves alert image locally.
-
-        Args:
-            image_buffer: Image data
-            filename: Filename
-        """
-        try:
-            if self.measurement_config:
-                save_path = Path(self.measurement_config.image_save_path)
-                save_path.mkdir(parents=True, exist_ok=True)
-                
-                file_path = save_path / filename
-                if image_buffer is None or image_buffer.size == 0:
-                    self.logger.warning(f'No valid image buffer to save, skipping save: {filename}')
-                    return None
-                
-                with open(file_path, 'wb') as f:
-                    f.write(image_buffer.tobytes())
-                
-                self._cleanup_image(save_path)
-                self.logger.info(f"Alert image saved: {file_path}")
-                return file_path
-        except Exception as exc:
-            self.logger.error(f"Error saving alert image: {exc}")
-            
-        return None
-
-    @staticmethod
-    def _cleanup_image(
-        save_path: Path,
-        max_files: int = 100,
-        logger: Optional[logging.Logger] = None,
-        prefix: str = "alert_",
-    ) -> None:
-        """Remove older alert image files in a directory, keeping only the newest max_files.
-
-        Only files starting with the given prefix (default: 'alert_') and with common image
-        extensions (.jpg, .jpeg, .png) are considered for deletion.
-        """
-        try:
-            folder = Path(save_path)
-            if not folder.exists() or not folder.is_dir():
-                return
-
-            image_exts = {'.jpg', '.jpeg', '.png'}
-            # Only consider alert images with the configured prefix
-            files = [
-                p for p in folder.iterdir()
-                if p.is_file()
-                and p.suffix.lower() in image_exts
-                and p.name.startswith(prefix)
-            ]
-            if len(files) <= max_files:
-                return
-
-            files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            to_delete = files[max_files:]
-            for f in to_delete:
-                try:
-                    f.unlink(missing_ok=True)
-                except Exception as e:
-                    if logger:
-                        logger.warning(f'Failed to remove file {f}: {e}')
-
-            if logger:
-                logger.info(f'Cleanup in {folder}: kept {max_files}, removed {len(to_delete)} (prefix="{prefix}")')
-        except Exception as e:
-            (logger or logging.getLogger('email')).error(f'Cleanup error in {save_path}: {e}')
 
     # === Status export for GUI ===
 

@@ -898,7 +898,7 @@ def create_measurement_settings_card(
             )
             ui.label(
             'Global notification preferences: overrides individual group settings.'
-        ).classes('text-body2 text-grey-7')
+            ).classes('text-body2 text-grey-7')
             with ui.row().classes('items-center gap-4 flex-wrap'):
                 start_toggle = ui.checkbox(
                     'Send email on measurement start',

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+
+from src.cam import camera as camera_module
 from src.cam.camera import Camera
 from src.config import _create_default_config
 
@@ -29,9 +32,17 @@ def _build_camera() -> tuple[Camera, object]:
     camera.uvc_config = cfg.uvc_controls
     camera.logger = _LoggerStub()
     camera._config_dirty = False
+    camera._config_dirty_generation = 0
     camera._config_save_timer = None
+    camera._timer_lock = threading.Lock()
     camera._invalidate_uvc_cache = lambda: None
-    camera._schedule_uvc_config_save = lambda: setattr(camera, "_config_dirty", True)
+
+    def _mark_dirty() -> None:
+        with camera._timer_lock:
+            camera._config_dirty = True
+            camera._config_dirty_generation += 1
+
+    camera._schedule_uvc_config_save = _mark_dirty
     return camera, cfg
 
 
@@ -150,3 +161,29 @@ def test_reset_uvc_to_defaults_applies_manual_values_when_defaults_disable_auto(
     assert cfg.uvc_controls.white_balance.value == 5100
     assert cfg.uvc_controls.exposure.auto is False
     assert cfg.uvc_controls.exposure.value == -9
+
+
+def test_save_uvc_config_clears_dirty_flag_after_success(monkeypatch):
+    camera, _ = _build_camera()
+    camera._config_dirty = True
+    camera._config_dirty_generation = 1
+
+    monkeypatch.setattr(camera_module, "save_config", lambda *_args, **_kwargs: None)
+
+    assert camera.save_uvc_config(path="dummy.yaml") is True
+    assert camera._config_dirty is False
+
+
+def test_save_uvc_config_preserves_dirty_flag_when_new_change_arrives_during_save(monkeypatch):
+    camera, _ = _build_camera()
+    camera._config_dirty = True
+    camera._config_dirty_generation = 1
+
+    def _save_with_interleaved_change(*_args, **_kwargs):
+        camera._schedule_uvc_config_save()
+
+    monkeypatch.setattr(camera_module, "save_config", _save_with_interleaved_change)
+
+    assert camera.save_uvc_config(path="dummy.yaml") is True
+    assert camera._config_dirty is True
+    assert camera._config_dirty_generation == 2

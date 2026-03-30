@@ -80,23 +80,24 @@ def create_metadata_settings() -> None:
             try:
                 preview_lbl.text = new_preview
                 preview_lbl.update()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug('Failed to update preview label: %s', exc)
             try:
                 if apply_btn is not None:
                     if _is_dirty():
                         apply_btn.enable()
                     else:
                         apply_btn.disable()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug('Failed to update apply button: %s', exc)
 
         with ui.row().classes('gap-2'):
             def _apply() -> None:
                 try:
                     try:
                         cfg.metadata.cvd_id = int(cvd_id_inp.value or 0)
-                    except Exception:
+                    except Exception as exc:
+                        logger.debug('Failed to update CVD ID: %s', exc)
                         ui.notify('CVD ID must be a number', type='warning', position='bottom-right')
                         return
                     cfg.metadata.cvd_name = str(cvd_name_inp.value or '').strip()
@@ -133,7 +134,11 @@ def create_metadata_settings() -> None:
         try:
             cvd_id_inp.on_value_change(lambda e: _update_ui_from_inputs())
             cvd_name_inp.on_value_change(lambda e: _update_ui_from_inputs())
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                'Input components do not support on_value_change, falling back to on_input: %s',
+                exc,
+            )
             try:
                 cvd_id_inp.on('input', lambda e=None: _update_ui_from_inputs())
                 cvd_name_inp.on('input', lambda e=None: _update_ui_from_inputs())

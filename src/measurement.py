@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from .cam.camera import Camera
     from .cam.motion import MotionResult
 
-from .alert_history import append_history_entry, get_history_dir, to_history_image_storage_path
+from .alert_history import append_history_entry, get_history_file
 from .config import get_logger
 
 
@@ -43,6 +43,31 @@ def _sanitize_alert_filename_component(
 
     truncated = component[:max_length].rstrip("_")
     return truncated or fallback
+
+
+def _encode_history_alert_frame(
+    frame: Optional[np.ndarray],
+    *,
+    image_format: str,
+    image_quality: int,
+) -> tuple[bool, bytes | None, str | None]:
+    """Encode an alert frame for history storage using the configured image format."""
+    if frame is None or frame.size == 0:
+        return False, None, None
+
+    img_fmt = str(image_format or "jpg").strip().lower()
+    is_jpeg = img_fmt in ("jpg", "jpeg")
+    params = (
+        [cv2.IMWRITE_JPEG_QUALITY, int(image_quality)]
+        if is_jpeg else
+        [cv2.IMWRITE_PNG_COMPRESSION, 3]
+    )
+
+    ok, buf = cv2.imencode(f".{img_fmt}", frame, params)
+    if not ok:
+        return False, None, None
+
+    return True, buf.tobytes(), img_fmt
 
 
 class MeasurementController:
@@ -545,55 +570,41 @@ class MeasurementController:
     ) -> None:
         """Saves the alert event to a JSON history file and saves the image."""
         config = self._get_config_snapshot()
-        history_dir = get_history_dir(config)
-        history_dir.mkdir(parents=True, exist_ok=True)
-        resolved_history_dir = history_dir.resolve(strict=False)
+        history_file = get_history_file(config)
         
         timestamp = datetime.now()
         ts_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
         filename_ts = timestamp.strftime("%Y%m%d_%H%M%S")
-        
-        image_path = ""
+
+        pending_image_filename: str | None = None
+        pending_image_bytes: bytes | None = None
         if frame is not None:
             safe_session_id = _sanitize_alert_filename_component(session_id)
-            image_filename = f"alert_{filename_ts}_{safe_session_id}.jpg"
-            image_full_path = history_dir / image_filename
-            resolved_image_path = image_full_path.resolve(strict=False)
-            try:
-                resolved_image_path.relative_to(resolved_history_dir)
-            except ValueError:
-                self.logger.error(
-                    "Refusing to save alert image outside history directory: session_id=%r path=%s",
-                    session_id,
-                    resolved_image_path,
-                )
+            ok, encoded_bytes, image_extension = _encode_history_alert_frame(
+                frame,
+                image_format=getattr(config, "image_format", "jpg"),
+                image_quality=getattr(config, "image_quality", 85),
+            )
+            if not ok or encoded_bytes is None or image_extension is None:
+                self.logger.error("Error encoding alert history image for session %s", session_id)
             else:
-                try:
-                    # Convert RGB to BGR if needed? Camera usually returns BGR for OpenCV
-                    # Assuming frame is BGR from cv2.VideoCapture
-                    if cv2.imwrite(str(resolved_image_path), frame):
-                        image_path = to_history_image_storage_path(resolved_image_path, history_dir)
-                    else:
-                        self.logger.error(
-                            f"Error saving alert image: cv2.imwrite returned False for {resolved_image_path}. "
-                            "Possible causes include disk full, invalid path, insufficient permissions, or invalid image data."
-                        )
-                except Exception as e:
-                    self.logger.error(f"Error saving alert image: {e}")
+                pending_image_filename = f"alert_{filename_ts}_{safe_session_id}.{image_extension}"
+                pending_image_bytes = encoded_bytes
 
         event_data = {
             "timestamp": ts_str,
             "session_id": session_id,
             "type": "alert",
-            "image_path": image_path,
+            "image_path": "",
             "details": "No motion detected",
             "email_sent": bool(email_sent),
         }
 
         append_history_entry(
             event_data,
-            history_file=history_dir / 'history.json',
-            max_entries=100,
+            history_file=history_file,
+            pending_image_filename=pending_image_filename,
+            pending_image_bytes=pending_image_bytes,
         )
 
     def check_session_timeout(self) -> None:

@@ -1,3 +1,6 @@
+import json
+import shutil
+import uuid
 from pathlib import Path
 
 from src import alert_history
@@ -72,3 +75,23 @@ def test_history_listener_is_called_once_and_can_be_unregistered(monkeypatch) ->
     append_history_entry(_alert_entry('2026-03-27 12:01:00', 'session-b'), history_file=history_file)
 
     assert revisions == [1]
+
+
+def test_append_history_entry_persists_pending_image_with_entry() -> None:
+    temp_dir = Path(f'codex_test_alert_history_revision_{uuid.uuid4().hex}')
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        history_file = temp_dir / 'history.json'
+        append_history_entry(
+            _alert_entry('2026-03-27 12:00:00', 'session-image'),
+            history_file=history_file,
+            pending_image_filename='alert_test.jpg',
+            pending_image_bytes=b'img-bytes',
+        )
+
+        stored_entries = json.loads(history_file.read_text(encoding='utf-8'))
+        assert len(stored_entries) == 1
+        assert stored_entries[0]['image_path'] == 'alert_test.jpg'
+        assert (temp_dir / 'alert_test.jpg').read_bytes() == b'img-bytes'
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)

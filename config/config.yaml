@@ -67,10 +67,10 @@ uvc_controls:
 motion_detection:
   region_of_interest:
     enabled: true
-    x: 502
-    y: 244
-    width: 1004
-    height: 591
+    x: 891
+    y: 527
+    width: 93
+    height: 93
   sensitivity: 0.1
   background_learning_rate: 0.005
   min_contour_area: 252
@@ -89,7 +89,7 @@ measurement:
   session_timeout_seconds: 0
   max_alerts_per_session: 5
   alert_check_interval: 5.0
-  alert_cooldown_seconds: 300
+  alert_cooldown_seconds: 30
   alert_include_snapshot: true
   inactivity_timeout_minutes: 120
   motion_summary_interval_seconds: 900
@@ -205,7 +205,9 @@ email:
       - haha@tuhh.de
     TEST3:
       - lols@tuhh.de
-  active_groups: []
+  active_groups:
+    - TEST3
+    - TEST
   static_recipients:
     - haha@tuhh.de
   explicit_targeting: true
@@ -223,8 +225,8 @@ email:
       on_end: true
       on_stop: true
     TEST3:
-      on_start: false
-      on_end: false
+      on_start: true
+      on_end: true
       on_stop: true
   recipient_prefs:
     haha@tuhh.de:

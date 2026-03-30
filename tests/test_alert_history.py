@@ -148,6 +148,28 @@ def test_measurement_history_uses_fallback_when_session_id_sanitizes_to_empty(tm
     controller.cleanup()
 
 
+def test_measurement_history_uses_configured_png_format(tmp_path):
+    cfg = _create_default_config()
+    cfg.measurement.history_path = str(tmp_path)
+    cfg.measurement.image_format = 'png'
+
+    controller = MeasurementController(cfg.measurement, email_system=None, camera=None)
+    frame = np.zeros((8, 8, 3), dtype=np.uint8)
+
+    controller._save_alert_to_history('session-png', frame, email_sent=False)
+
+    entries = json.loads((tmp_path / 'history.json').read_text(encoding='utf-8'))
+    assert len(entries) == 1
+
+    entry = entries[0]
+    assert entry['image_path'].endswith('.png')
+    saved_file = tmp_path / entry['image_path']
+    assert saved_file.exists()
+    assert saved_file.read_bytes().startswith(b'\x89PNG\r\n\x1a\n')
+
+    controller.cleanup()
+
+
 def test_trigger_alert_sync_writes_history_without_email_system(tmp_path):
     cfg = _create_default_config()
     cfg.measurement.history_path = str(tmp_path)

@@ -33,7 +33,6 @@ def test_send_motion_alert_includes_image(monkeypatch):
         return len(messages)
 
     monkeypatch.setattr(EMailSystem, "_send_emails_batch", fake_send_emails_batch)
-    monkeypatch.setattr(EMailSystem, "_save_alert_image", lambda self, buf, name: None)
     monkeypatch.setattr(EMailSystem, "_should_send_alert_unsafe", lambda self: True)
 
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
@@ -101,6 +100,36 @@ def test_send_motion_alert_respects_snapshot_flag(monkeypatch):
     plain_text_parts = _get_plain_text_parts(sent_messages[0][1])
     assert len(plain_text_parts) == 1
     assert "Attached is the current webcam image." not in plain_text_parts[0]
+
+
+def test_send_motion_alert_does_not_encode_frame_when_snapshot_is_disabled(monkeypatch):
+    cfg = _create_default_config()
+    cfg.measurement.alert_include_snapshot = False
+    cfg.measurement.save_alert_images = True
+    cfg.email.recipients = ["recipient@example.com"]
+    cfg.email.sender_email = "sender@example.com"
+    cfg.email.smtp_server = "localhost"
+    cfg.email.smtp_port = 25
+
+    email_system = EMailSystem(cfg.email, cfg.measurement, cfg)
+    email_system.reset_alert_state(session_id="session")
+    sent_messages = []
+
+    def fake_send_emails_batch(self, messages, max_retries=3, abort_check=None):
+        sent_messages.extend(messages)
+        return len(messages)
+
+    def fail_encode(self, frame, ts=None):
+        raise AssertionError("_encode_frame should not be called when snapshot attachments are disabled")
+
+    monkeypatch.setattr(EMailSystem, "_send_emails_batch", fake_send_emails_batch)
+    monkeypatch.setattr(EMailSystem, "_should_send_alert_unsafe", lambda self: True)
+    monkeypatch.setattr(EMailSystem, "_encode_frame", fail_encode)
+
+    assert email_system.send_motion_alert(datetime.now(), "session", np.zeros((10, 10, 3), dtype=np.uint8))
+    assert len(sent_messages) == 1
+    images = [p for p in sent_messages[0][1].walk() if p.get_content_maintype() == "image"]
+    assert images == []
 
 
 def test_send_motion_alert_fallback_body_omits_snapshot_notice_without_attachment(monkeypatch):
@@ -248,8 +277,6 @@ def test_send_motion_alert_aborts_before_send_when_session_is_invalidated(monkey
 
 
 def test_send_motion_alert_aborted_after_partial_delivery_is_not_success(monkeypatch):
-    from pathlib import Path
-
     cfg = _create_default_config()
     cfg.email.recipients = ["first@example.com", "second@example.com"]
     cfg.email.static_recipients = []
@@ -261,8 +288,6 @@ def test_send_motion_alert_aborted_after_partial_delivery_is_not_success(monkeyp
     email_system = EMailSystem(cfg.email, cfg.measurement, cfg)
     email_system.reset_alert_state(session_id="session-1")
     send_calls = []
-    saved_image = Path("test_output_partial_alert.jpg")
-    saved_image.write_bytes(b"alert-image")
 
     class _AbortAfterFirstRecipientSMTP:
         def __init__(self, *args, **kwargs):
@@ -281,21 +306,15 @@ def test_send_motion_alert_aborted_after_partial_delivery_is_not_success(monkeyp
             return {}
 
     monkeypatch.setattr("src.notify.smtplib.SMTP", _AbortAfterFirstRecipientSMTP)
-    monkeypatch.setattr(EMailSystem, "_save_alert_image", lambda self, buf, name: saved_image)
+    result = email_system.send_motion_alert(
+        datetime.now(),
+        "session-1",
+        np.zeros((4, 4, 3), dtype=np.uint8),
+    )
 
-    try:
-        result = email_system.send_motion_alert(
-            datetime.now(),
-            "session-1",
-            np.zeros((4, 4, 3), dtype=np.uint8),
-        )
-
-        assert result is False
-        assert send_calls == [("sender@example.com", ("first@example.com",))]
-        assert saved_image.exists()
-        assert email_system.alerts_sent_count == 0
-    finally:
-        saved_image.unlink(missing_ok=True)
+    assert result is False
+    assert send_calls == [("sender@example.com", ("first@example.com",))]
+    assert email_system.alerts_sent_count == 0
 
 
 def test_send_motion_alert_normalizes_legacy_subject_newlines(monkeypatch):

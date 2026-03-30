@@ -71,7 +71,8 @@ class Camera:
         # Measurement config for alerts
         self.measurement_config = self.app_config.measurement
 
-        # Ensure image save path exists if alert images should be saved
+        # Ensure the active alert persistence path exists.
+        # Alert images are stored under measurement.history_path; image_save_path is legacy fallback only.
         if getattr(self.measurement_config, 'save_alert_images', False):
             self.measurement_config.ensure_save_path()
 
@@ -122,7 +123,10 @@ class Camera:
         self.placeholder = SimpleNamespace(body=base64.b64decode(black_1px))
 
         self._jpeg_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        self._config_dirty = False
+        self._config_dirty_generation = 0
         self._config_save_timer: Optional[threading.Timer] = None
+        self._timer_lock = threading.Lock()
 
         # -- Backend je nach Plattform explizit wählen --
         system = platform.system()
@@ -324,17 +328,19 @@ class Camera:
             return False
     
     def _schedule_uvc_config_save(self) -> None:
-        self._config_dirty = True
+        with self._timer_lock:
+            self._config_dirty = True
+            self._config_dirty_generation = getattr(self, '_config_dirty_generation', 0) + 1
 
-        existing_timer = getattr(self, "_config_save_timer", None)
-        if existing_timer is not None:
-            try:
-                existing_timer.cancel()
-            except Exception:
-                pass
+            existing_timer = self._config_save_timer
+            if existing_timer is not None:
+                try:
+                    existing_timer.cancel()
+                except Exception:
+                    pass
 
-        self._config_save_timer = threading.Timer(5.0, self._auto_save_config)
-        self._config_save_timer.start()
+            self._config_save_timer = threading.Timer(5.0, self._auto_save_config)
+            self._config_save_timer.start()
 
     def get_uvc_defaults(self) -> dict:
         defaults = self.UVC_DEFAULTS
@@ -389,27 +395,33 @@ class Camera:
         self.uvc_config.exposure.value = int(defaults["exposure"]["value"])
 
     def save_uvc_config(self, path: Optional[str] = None) -> bool:
-            """Speichert die aktuellen UVC-Einstellungen zurück in die Config-Datei."""
+        """Saves the current UVC settings back to the config file."""
 
+        with self._timer_lock:
             if not getattr(self, '_config_dirty', True):
                 self.logger.debug("UVC configuration not changed, skipping save")
                 return True
+            dirty_generation = getattr(self, '_config_dirty_generation', 0)
 
-            try:
-                global_cfg = get_global_config()
-                if path is not None:
-                    save_config(self.app_config, path)
-                elif global_cfg is self.app_config:
-                    if not save_global_config():
-                        return False
-                else:
-                    save_config(self.app_config)
-                self._config_dirty = False
-                self.logger.info(f"UVC-Configuration saved!")
-                return True
-            except Exception as exc:
-                self.logger.error(f"Error saving UVC configuration: {exc}")
-                return False
+        try:
+            global_cfg = get_global_config()
+            if path is not None:
+                save_config(self.app_config, path)
+            elif global_cfg is self.app_config:
+                if not save_global_config():
+                    return False
+            else:
+                save_config(self.app_config)
+
+            with self._timer_lock:
+                if getattr(self, '_config_dirty_generation', dirty_generation) == dirty_generation:
+                    self._config_dirty = False
+
+            self.logger.info("UVC-Configuration saved!")
+            return True
+        except Exception as exc:
+            self.logger.error(f"Error saving UVC configuration: {exc}")
+            return False
 
     def _apply_uvc_controls(self) -> None:
         # Called inside init (with lock or local object) or needs lock
@@ -580,8 +592,13 @@ class Camera:
     
     def _auto_save_config(self) -> None:
         """Automatisches Speichern von Config nach Timeout"""
-        if getattr(self, '_config_dirty', False):
-            self.save_uvc_config()
+        with self._timer_lock:
+            is_dirty = getattr(self, '_config_dirty', False)
+
+        if not is_dirty:
+            return
+
+        if self.save_uvc_config():
             self.logger.debug('Config auto-saved after parameter changes')
 
     # ------------------ Laufende Bilderfassung ------------------------ #
@@ -667,12 +684,12 @@ class Camera:
             return
 
         if self.motion_detector and self.motion_enabled:
-                try:
-                    motion_result = self.motion_detector.detect_motion(original_frame)
-                    self.last_motion_result = motion_result
-                    self._dispatch_motion_callbacks(frame_copy, motion_result)
-                except Exception as exc:
-                    self.logger.error(f"Motion-Detection-Error: {exc}")
+            try:
+                motion_result = self.motion_detector.detect_motion(original_frame)
+                self.last_motion_result = motion_result
+                self._dispatch_motion_callbacks(frame_copy, motion_result)
+            except Exception as exc:
+                self.logger.error(f"Motion-Detection-Error: {exc}")
 
         elif self._has_motion_callbacks():
             # Fallback: Alten Callback-Stil unterstützen für Rückwärtskompatibilität
@@ -1011,7 +1028,7 @@ class Camera:
             return False
 
     def reset_uvc_to_defaults(self) -> bool:
-        """Setzt alle UVC-Parameter auf Default-Werte zurÃƒÂ¼ck."""
+        """Setzt alle UVC-Parameter auf Default-Werte zurück."""
         try:
             defaults = self.get_uvc_defaults()
             failed_params: list[str] = []
@@ -1143,12 +1160,13 @@ class Camera:
         self.is_running = False
         
         # Cancel config save timer if running
-        if self._config_save_timer is not None:
-            try:
-                self._config_save_timer.cancel()
-            except Exception:
-                pass
-            self._config_save_timer = None
+        with self._timer_lock:
+            if self._config_save_timer is not None:
+                try:
+                    self._config_save_timer.cancel()
+                except Exception:
+                    pass
+                self._config_save_timer = None
         
         # Stop init thread if running
         if self._init_thread and self._init_thread.is_alive():
