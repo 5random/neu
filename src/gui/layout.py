@@ -111,6 +111,16 @@ def sync_runtime_website_url(*, client: object | None = None, persist: bool = Tr
     if email_cfg is None:
         return resolved_url
 
+    website_url_source = str(
+        getattr(email_cfg, 'website_url_source', getattr(email_cfg, 'WEBSITE_URL_SOURCE_RUNTIME_PERSIST', 'runtime_persist'))
+        or getattr(email_cfg, 'WEBSITE_URL_SOURCE_RUNTIME_PERSIST', 'runtime_persist')
+    ).strip().lower()
+    expected_source = str(
+        getattr(email_cfg, 'WEBSITE_URL_SOURCE_RUNTIME_PERSIST', 'runtime_persist')
+    ).strip().lower()
+    if website_url_source != expected_source:
+        return resolved_url
+
     current_configured = str(getattr(email_cfg, 'website_url', '') or '').strip()
     if current_configured == resolved_url:
         return resolved_url

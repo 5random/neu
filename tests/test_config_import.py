@@ -1,3 +1,4 @@
+from dataclasses import asdict
 from pathlib import Path
 
 import yaml
@@ -47,6 +48,44 @@ unknown_section:
     assert _entry(preview, "email.smtp_server").status == "missing"
     assert _entry(preview, "email.extra_key").status == "unknown"
     assert _entry(preview, "unknown_section").status == "unknown"
+
+
+def test_analyze_imported_config_accepts_https_reverse_proxy_fields() -> None:
+    preview = analyze_imported_config_text(
+        """
+email:
+  website_url_source: config
+gui:
+  reverse_proxy_enabled: true
+  forwarded_allow_ips: 127.0.0.1,10.0.0.2
+  root_path: /cvd/
+  session_cookie_https_only: true
+""",
+        current_config=_create_default_config(),
+    )
+
+    assert preview.ready_updates["email.website_url_source"] == "config"
+    assert preview.ready_updates["gui.reverse_proxy_enabled"] is True
+    assert preview.ready_updates["gui.forwarded_allow_ips"] == "127.0.0.1,10.0.0.2"
+    assert preview.ready_updates["gui.root_path"] == "/cvd"
+    assert preview.ready_updates["gui.session_cookie_https_only"] is True
+
+
+def test_analyze_imported_config_rejects_non_string_host_and_website_url() -> None:
+    preview = analyze_imported_config_text(
+        """
+email:
+  website_url: false
+gui:
+  host: 123
+""",
+        current_config=_create_default_config(),
+    )
+
+    assert _entry(preview, "email.website_url").status == "invalid"
+    assert _entry(preview, "gui.host").status == "invalid"
+    assert "email.website_url" not in preview.ready_updates
+    assert "gui.host" not in preview.ready_updates
 
 
 def test_analyze_imported_config_rejects_roi_that_exceeds_imported_resolution() -> None:
@@ -348,6 +387,278 @@ def test_load_config_uses_default_fallback_for_unknown_email_event_key() -> None
             temp_path.rmdir()
         except OSError:
             pass
+
+
+def test_load_config_applies_https_defaults_to_legacy_yaml() -> None:
+    raw = asdict(_create_default_config())
+    raw["email"].pop("website_url_source", None)
+    raw["gui"].pop("reverse_proxy_enabled", None)
+    raw["gui"].pop("forwarded_allow_ips", None)
+    raw["gui"].pop("root_path", None)
+    raw["gui"].pop("session_cookie_https_only", None)
+    temp_path = Path(".pytest_local_runtime_https_defaults")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "legacy_config.yaml"
+    log_path = temp_path / "legacy.log"
+    raw["logging"]["file"] = str(log_path)
+
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+        loaded = load_config(str(config_path))
+
+        assert loaded.email.website_url_source == "runtime_persist"
+        assert loaded.gui.reverse_proxy_enabled is False
+        assert loaded.gui.forwarded_allow_ips == "127.0.0.1"
+        assert loaded.gui.root_path == ""
+        assert loaded.gui.session_cookie_https_only is False
+    finally:
+        for path in (config_path, log_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        try:
+            temp_path.rmdir()
+        except OSError:
+            pass
+
+
+def test_load_config_replaces_invalid_email_section_with_defaults() -> None:
+    raw = asdict(_create_default_config())
+    raw["email"] = []
+    temp_path = Path(".pytest_local_runtime_https_invalid_email_section")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "invalid_email_section.yaml"
+    log_path = temp_path / "invalid_email_section.log"
+    raw["logging"]["file"] = str(log_path)
+
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+        loaded = load_config(str(config_path))
+
+        assert loaded.email.website_url == "http://localhost:8080/"
+        assert loaded.email.website_url_source == "runtime_persist"
+    finally:
+        for path in (config_path, log_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        try:
+            temp_path.rmdir()
+        except OSError:
+            pass
+
+
+def test_load_config_replaces_invalid_gui_section_with_defaults() -> None:
+    raw = asdict(_create_default_config())
+    raw["gui"] = []
+    temp_path = Path(".pytest_local_runtime_https_invalid_gui_section")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "invalid_gui_section.yaml"
+    log_path = temp_path / "invalid_gui_section.log"
+    raw["logging"]["file"] = str(log_path)
+
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+        loaded = load_config(str(config_path))
+
+        assert loaded.gui.host == "localhost"
+        assert loaded.gui.forwarded_allow_ips == "127.0.0.1"
+        assert loaded.gui.root_path == ""
+    finally:
+        for path in (config_path, log_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        try:
+            temp_path.rmdir()
+        except OSError:
+            pass
+
+
+def test_load_config_normalizes_invalid_gui_proxy_values() -> None:
+    raw = asdict(_create_default_config())
+    raw["gui"]["reverse_proxy_enabled"] = "false"
+    raw["gui"]["forwarded_allow_ips"] = ["127.0.0.1"]
+    raw["gui"]["root_path"] = "cvd"
+    raw["gui"]["session_cookie_https_only"] = "false"
+    raw["gui"]["auto_open_browser"] = "false"
+
+    temp_path = Path(".pytest_local_runtime_https_invalid_gui")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "invalid_gui_proxy_config.yaml"
+    log_path = temp_path / "invalid_gui_proxy.log"
+    raw["logging"]["file"] = str(log_path)
+
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+        loaded = load_config(str(config_path))
+
+        assert loaded.gui.reverse_proxy_enabled is False
+        assert loaded.gui.forwarded_allow_ips == "127.0.0.1"
+        assert loaded.gui.root_path == ""
+        assert loaded.gui.session_cookie_https_only is False
+        assert loaded.gui.auto_open_browser is False
+        assert loaded.gui.validate() == []
+    finally:
+        for path in (config_path, log_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        try:
+            temp_path.rmdir()
+        except OSError:
+            pass
+
+
+def test_load_config_normalizes_numeric_gui_host() -> None:
+    raw = asdict(_create_default_config())
+    raw["gui"]["host"] = 123
+    temp_path = Path(".pytest_local_runtime_https_invalid_gui_host")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "invalid_gui_host.yaml"
+    log_path = temp_path / "invalid_gui_host.log"
+    raw["logging"]["file"] = str(log_path)
+
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+        loaded = load_config(str(config_path))
+
+        assert loaded.gui.host == "localhost"
+        assert loaded.gui.validate() == []
+    finally:
+        for path in (config_path, log_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        try:
+            temp_path.rmdir()
+        except OSError:
+            pass
+
+
+def test_load_config_normalizes_invalid_email_website_url_source() -> None:
+    raw = asdict(_create_default_config())
+    raw["email"]["website_url_source"] = False
+    temp_path = Path(".pytest_local_runtime_https_invalid_email")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "invalid_email_proxy_config.yaml"
+    log_path = temp_path / "invalid_email_proxy.log"
+    raw["logging"]["file"] = str(log_path)
+
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+        loaded = load_config(str(config_path))
+
+        assert loaded.email.website_url_source == "runtime_persist"
+        assert loaded.validate_all().get("email", []) == []
+    finally:
+        for path in (config_path, log_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        try:
+            temp_path.rmdir()
+        except OSError:
+            pass
+
+
+def test_load_config_normalizes_invalid_email_website_url() -> None:
+    raw = asdict(_create_default_config())
+    raw["email"]["website_url"] = False
+    raw["email"]["website_url_source"] = "config"
+    temp_path = Path(".pytest_local_runtime_https_invalid_email_url")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "invalid_email_website_url.yaml"
+    log_path = temp_path / "invalid_email_website_url.log"
+    raw["logging"]["file"] = str(log_path)
+
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+        loaded = load_config(str(config_path))
+
+        assert loaded.email.website_url == "http://localhost:8080/"
+        assert loaded.validate_all().get("email", []) == []
+    finally:
+        for path in (config_path, log_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        try:
+            temp_path.rmdir()
+        except OSError:
+            pass
+
+
+def test_load_config_normalizes_numeric_forwarded_allow_ips() -> None:
+    raw = asdict(_create_default_config())
+    raw["gui"]["reverse_proxy_enabled"] = True
+    raw["gui"]["forwarded_allow_ips"] = 123
+    temp_path = Path(".pytest_local_runtime_https_numeric_ips")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "numeric_forwarded_allow_ips.yaml"
+    log_path = temp_path / "numeric_forwarded_allow_ips.log"
+    raw["logging"]["file"] = str(log_path)
+
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+        loaded = load_config(str(config_path))
+
+        assert loaded.gui.forwarded_allow_ips == "127.0.0.1"
+        assert loaded.gui.validate() == []
+    finally:
+        for path in (config_path, log_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        try:
+            temp_path.rmdir()
+        except OSError:
+            pass
+
+
+def test_gui_validate_rejects_non_string_forwarded_allow_ips() -> None:
+    cfg = _create_default_config()
+    cfg.gui.reverse_proxy_enabled = True
+    cfg.gui.forwarded_allow_ips = ["127.0.0.1"]  # type: ignore[assignment]
+
+    errors = cfg.gui.validate()
+
+    assert "forwarded_allow_ips must be a string" in errors
+
+
+def test_gui_validate_rejects_numeric_host() -> None:
+    cfg = _create_default_config()
+    cfg.gui.host = 123  # type: ignore[assignment]
+
+    errors = cfg.gui.validate()
+
+    assert "host must be a string" in errors
+
+
+def test_gui_validate_rejects_numeric_forwarded_allow_ips() -> None:
+    cfg = _create_default_config()
+    cfg.gui.reverse_proxy_enabled = True
+    cfg.gui.forwarded_allow_ips = 123  # type: ignore[assignment]
+
+    errors = cfg.gui.validate()
+
+    assert "forwarded_allow_ips must be a string" in errors
 
 
 def test_apply_imported_config_preview_applies_only_selected_paths() -> None:

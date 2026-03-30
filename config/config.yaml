@@ -101,6 +101,7 @@ measurement:
 # ---------------------------------------------------------------------------
 email:
   website_url: http://localhost:8080/
+  website_url_source: runtime_persist
   recipients:
     - haha@tuhh.de
     - hoho@tuhh.de
@@ -242,6 +243,10 @@ gui:
   title: CVD-Tracker-{cvd_id}-{cvd_name}
   host: localhost
   port: 8080
+  reverse_proxy_enabled: false
+  forwarded_allow_ips: 127.0.0.1
+  root_path: ''
+  session_cookie_https_only: false
   auto_open_browser: false
   update_interval_ms: 100
 

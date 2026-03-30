@@ -3,13 +3,14 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, asdict, field, fields, is_dataclass
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Callable, cast
 import re
 import yaml
 import logging
 import logging.handlers
 import threading
 from collections import OrderedDict
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 logger.propagate = False  # Verhindert, dass Logs an die Root-Logger propagiert werden
@@ -18,6 +19,17 @@ from enum import Enum
 
 _configured_loggers: set[str] = set()
 _configured_loggers_lock = threading.Lock()
+
+
+def _is_absolute_http_url(value: object | None) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        parts = urlsplit(text)
+    except Exception:
+        return False
+    return parts.scheme in {"http", "https"} and bool(parts.netloc)
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +283,7 @@ class EmailConfig:
     sender_email: str
     templates: Dict[str, Dict[str, str]]
     send_as_html: bool = False
+    website_url_source: str = "runtime_persist"
     # Recipient groups and active group selection
     groups: Dict[str, List[str]] = field(default_factory=dict)
     active_groups: List[str] = field(default_factory=list)
@@ -290,6 +303,14 @@ class EmailConfig:
     EMAIL_RE = re.compile(r"^[\w\.-]+@[\w\.-]+\.[a-zA-Z]{2,}$")
     EVENT_PREF_KEYS = ("on_start", "on_end", "on_stop")
     SYSTEM_STATIC_GROUP = "__static__"
+    WEBSITE_URL_SOURCE_CONFIG = "config"
+    WEBSITE_URL_SOURCE_RUNTIME = "runtime"
+    WEBSITE_URL_SOURCE_RUNTIME_PERSIST = "runtime_persist"
+    WEBSITE_URL_SOURCES = (
+        WEBSITE_URL_SOURCE_CONFIG,
+        WEBSITE_URL_SOURCE_RUNTIME,
+        WEBSITE_URL_SOURCE_RUNTIME_PERSIST,
+    )
 
     def __post_init__(self) -> None:
         """Runtime type validation for new fields.
@@ -337,6 +358,14 @@ class EmailConfig:
         if not isinstance(self.send_as_html, bool):
             raise TypeError(
                 f"EmailConfig.send_as_html must be bool, got {type(self.send_as_html).__name__}: {self.send_as_html!r}"
+            )
+        if not isinstance(self.website_url, str):
+            raise TypeError(
+                f"EmailConfig.website_url must be str, got {type(self.website_url).__name__}: {self.website_url!r}"
+            )
+        if not isinstance(self.website_url_source, str):
+            raise TypeError(
+                f"EmailConfig.website_url_source must be str, got {type(self.website_url_source).__name__}: {self.website_url_source!r}"
             )
 
         # notifications
@@ -414,6 +443,22 @@ class EmailConfig:
             errors.append(f"explicit_targeting must be bool, got {type(self.explicit_targeting).__name__}")
         if not isinstance(self.send_as_html, bool):
             errors.append(f"send_as_html must be bool, got {type(self.send_as_html).__name__}")
+        normalized_website_url_source = str(self.website_url_source or "").strip().lower()
+        if normalized_website_url_source not in self.WEBSITE_URL_SOURCES:
+            errors.append(
+                f"website_url_source must be one of {list(self.WEBSITE_URL_SOURCES)}, got {self.website_url_source!r}"
+            )
+        website_url_required = normalized_website_url_source != self.WEBSITE_URL_SOURCE_RUNTIME
+        if not isinstance(self.website_url, str):
+            errors.append(f"website_url must be str, got {type(self.website_url).__name__}")
+            website_url = ""
+        else:
+            website_url = self.website_url.strip()
+            if not website_url:
+                if website_url_required:
+                    errors.append("website_url must not be empty")
+            elif not _is_absolute_http_url(website_url):
+                errors.append("website_url must be an absolute http(s) URL")
         # Notifications flags (optional)
         if self.notifications is not None and isinstance(self.notifications, dict):
             for k, v in self.notifications.items():
@@ -787,8 +832,56 @@ class GUIConfig:
     title: str
     host: str
     port: int
-    auto_open_browser: bool
-    update_interval_ms: int
+    auto_open_browser: bool = False
+    update_interval_ms: int = 100
+    reverse_proxy_enabled: bool = False
+    forwarded_allow_ips: str = "127.0.0.1"
+    root_path: str = ""
+    session_cookie_https_only: bool = False
+
+    def validate(self) -> List[str]:
+        errors: List[str] = []
+        try:
+            host = _coerce_strict_string(self.host, allow_empty=False).strip()
+        except ValueError as exc:
+            errors.append(f"host {exc}")
+        else:
+            if not host:
+                errors.append("host must not be empty")
+        try:
+            normalized_port = int(self.port)
+        except (TypeError, ValueError):
+            errors.append("port must be an integer")
+        else:
+            if not 1 <= normalized_port <= 65535:
+                errors.append("port must be between [1, 65535]")
+        try:
+            normalized_interval = int(self.update_interval_ms)
+        except (TypeError, ValueError):
+            errors.append("update_interval_ms must be an integer")
+        else:
+            if normalized_interval < 1:
+                errors.append("update_interval_ms must be >= 1")
+        if not isinstance(self.auto_open_browser, bool):
+            errors.append("auto_open_browser must be a bool")
+        if not isinstance(self.reverse_proxy_enabled, bool):
+            errors.append("reverse_proxy_enabled must be a bool")
+        if not isinstance(self.session_cookie_https_only, bool):
+            errors.append("session_cookie_https_only must be a bool")
+
+        try:
+            forwarded_allow_ips = _coerce_strict_string(self.forwarded_allow_ips, allow_empty=False).strip()
+        except ValueError as exc:
+            errors.append(f"forwarded_allow_ips {exc}")
+            forwarded_allow_ips = ""
+        if self.reverse_proxy_enabled and not forwarded_allow_ips:
+            errors.append("forwarded_allow_ips must not be empty when reverse_proxy_enabled is true")
+
+        try:
+            _normalize_root_path(self.root_path)
+        except ValueError as exc:
+            errors.append(str(exc))
+        return errors
 
 @dataclass
 class LoggingConfig:
@@ -909,6 +1002,8 @@ class AppConfig:
             res["measurement"] = e
         if (e := self.email.validate()):
             res["email"] = e
+        if (e := self.gui.validate()):
+            res["gui"] = e
         if (e := self.logging.validate()):
             res["logging"] = e
         return res
@@ -1021,6 +1116,7 @@ _CONFIG_IMPORT_PATHS: Dict[str, List[str]] = {
     ],
     "email": [
         "email.website_url",
+        "email.website_url_source",
         "email.recipients",
         "email.smtp_server",
         "email.smtp_port",
@@ -1048,6 +1144,10 @@ _CONFIG_IMPORT_PATHS: Dict[str, List[str]] = {
         "gui.title",
         "gui.host",
         "gui.port",
+        "gui.reverse_proxy_enabled",
+        "gui.forwarded_allow_ips",
+        "gui.root_path",
+        "gui.session_cookie_https_only",
         "gui.auto_open_browser",
         "gui.update_interval_ms",
     ],
@@ -1163,6 +1263,28 @@ def _coerce_string(value: Any, *, allow_empty: bool = True) -> str:
     return text
 
 
+def _coerce_strict_string(value: Any, *, allow_empty: bool = True) -> str:
+    if not isinstance(value, str):
+        raise ValueError("must be a string")
+    if not allow_empty and not value.strip():
+        raise ValueError("must not be empty")
+    return value
+
+
+def _normalize_website_url_source(value: Any) -> str:
+    normalized = _coerce_strict_string(value, allow_empty=False).strip().lower()
+    if normalized not in EmailConfig.WEBSITE_URL_SOURCES:
+        raise ValueError(f"website_url_source must be one of {list(EmailConfig.WEBSITE_URL_SOURCES)}")
+    return normalized
+
+
+def _normalize_absolute_http_url_string(value: Any) -> str:
+    normalized = _coerce_strict_string(value, allow_empty=False).strip()
+    if not _is_absolute_http_url(normalized):
+        raise ValueError("must be an absolute http(s) URL")
+    return normalized
+
+
 def _coerce_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -1223,6 +1345,164 @@ def _validate_range(value: float, minimum: float, maximum: float, *, label: str)
     if value < minimum or value > maximum:
         return f"{label} must be within [{minimum}, {maximum}]"
     return None
+
+
+def _validate_absolute_http_url(value: str, *, label: str) -> Optional[str]:
+    if not value:
+        return None
+    if not _is_absolute_http_url(value):
+        return f"{label} must be an absolute http(s) URL"
+    return None
+
+
+def _normalize_root_path(value: Any) -> str:
+    text = _coerce_string(value).strip()
+    if not text or text == "/":
+        return ""
+    if not text.startswith("/"):
+        raise ValueError("root_path must start with '/' or be empty")
+    normalized = text.rstrip("/")
+    if not normalized:
+        return ""
+    return normalized
+
+
+def _normalize_loaded_scalar(
+    value: Any,
+    *,
+    label: str,
+    default: Any,
+    converter: Callable[[Any], Any],
+    logger: logging.Logger,
+    validator: Optional[Callable[[Any], Optional[str]]] = None,
+) -> Any:
+    try:
+        normalized = converter(value)
+    except ValueError as exc:
+        logger.warning("Invalid %s value %r, using default %r (%s)", label, value, default, exc)
+        return default
+    if validator is not None:
+        validation_error = validator(normalized)
+        if validation_error:
+            logger.warning("Invalid %s value %r, using default %r (%s)", label, value, default, validation_error)
+            return default
+    return normalized
+
+
+def _normalize_loaded_gui_data(gui_data: Any, logger: logging.Logger) -> Dict[str, Any]:
+    if not isinstance(gui_data, dict):
+        logger.warning("Invalid gui section %r, using GUI defaults", gui_data)
+        gui_data = {}
+    return {
+        "title": _normalize_loaded_scalar(
+            gui_data.get("title", "CVD-Tracker"),
+            label="gui.title",
+            default="CVD-Tracker",
+            converter=_coerce_string,
+            logger=logger,
+        ),
+        "host": _normalize_loaded_scalar(
+            gui_data.get("host", "localhost"),
+            label="gui.host",
+            default="localhost",
+            converter=lambda value: _coerce_strict_string(value, allow_empty=False).strip(),
+            logger=logger,
+        ),
+        "port": _normalize_loaded_scalar(
+            gui_data.get("port", 8080),
+            label="gui.port",
+            default=8080,
+            converter=_coerce_int,
+            logger=logger,
+            validator=lambda value: _validate_range(value, 1, 65535, label="port"),
+        ),
+        "auto_open_browser": _normalize_loaded_scalar(
+            gui_data.get("auto_open_browser", False),
+            label="gui.auto_open_browser",
+            default=False,
+            converter=_coerce_bool,
+            logger=logger,
+        ),
+        "update_interval_ms": _normalize_loaded_scalar(
+            gui_data.get("update_interval_ms", 100),
+            label="gui.update_interval_ms",
+            default=100,
+            converter=_coerce_int,
+            logger=logger,
+            validator=lambda value: _validate_min(value, 1, label="update_interval_ms"),
+        ),
+        "reverse_proxy_enabled": _normalize_loaded_scalar(
+            gui_data.get("reverse_proxy_enabled", False),
+            label="gui.reverse_proxy_enabled",
+            default=False,
+            converter=_coerce_bool,
+            logger=logger,
+        ),
+        "forwarded_allow_ips": _normalize_loaded_scalar(
+            gui_data.get("forwarded_allow_ips", "127.0.0.1"),
+            label="gui.forwarded_allow_ips",
+            default="127.0.0.1",
+            converter=lambda value: _coerce_strict_string(value, allow_empty=False).strip(),
+            logger=logger,
+        ),
+        "root_path": _normalize_loaded_scalar(
+            gui_data.get("root_path", ""),
+            label="gui.root_path",
+            default="",
+            converter=_normalize_root_path,
+            logger=logger,
+        ),
+        "session_cookie_https_only": _normalize_loaded_scalar(
+            gui_data.get("session_cookie_https_only", False),
+            label="gui.session_cookie_https_only",
+            default=False,
+            converter=_coerce_bool,
+            logger=logger,
+        ),
+    }
+
+
+def _normalize_loaded_email_data(
+    email_data: Any,
+    logger: logging.Logger,
+    *,
+    default_email_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if default_email_data is None:
+        resolved_default_email_data = cast(
+            Dict[str, Any],
+            asdict(_create_default_config(log_creation=False))["email"],
+        )
+    else:
+        resolved_default_email_data = default_email_data
+    if isinstance(email_data, dict):
+        normalized_source_email_data = email_data
+    else:
+        logger.warning("Invalid email section %r, using email defaults", email_data)
+        normalized_source_email_data = deepcopy(resolved_default_email_data)
+    normalized_email_data = deepcopy(resolved_default_email_data)
+    normalized_email_data.update(normalized_source_email_data)
+    normalized_email_data["website_url"] = _normalize_loaded_scalar(
+        normalized_source_email_data.get(
+            "website_url",
+            resolved_default_email_data.get("website_url", "http://localhost:8080/"),
+        ),
+        label="email.website_url",
+        default=resolved_default_email_data.get("website_url", "http://localhost:8080/"),
+        converter=_normalize_absolute_http_url_string,
+        logger=logger,
+    )
+    normalized_email_data["website_url_source"] = _normalize_loaded_scalar(
+        normalized_source_email_data.get(
+            "website_url_source",
+            resolved_default_email_data.get("website_url_source", EmailConfig.WEBSITE_URL_SOURCE_RUNTIME_PERSIST),
+        ),
+        label="email.website_url_source",
+        default=resolved_default_email_data.get("website_url_source", EmailConfig.WEBSITE_URL_SOURCE_RUNTIME_PERSIST),
+        converter=_normalize_website_url_source,
+        logger=logger,
+    )
+    return normalized_email_data
 
 
 def _normalize_resolution_dict(value: Any, *, label: str) -> Dict[str, int]:
@@ -1926,6 +2206,7 @@ def _analyze_email_section(imported_data: Dict[str, Any], collector: _ConfigImpo
     seen_paths: set[str] = set()
     allowed_keys = {
         "website_url",
+        "website_url_source",
         "recipients",
         "smtp_server",
         "smtp_port",
@@ -1944,7 +2225,22 @@ def _analyze_email_section(imported_data: Dict[str, Any], collector: _ConfigImpo
         if key not in allowed_keys:
             collector.add_unknown(f"email.{key}", value)
 
-    _process_scalar_field(collector, section_data, key="website_url", path="email.website_url", seen_paths=seen_paths, converter=_coerce_string)
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="website_url",
+        path="email.website_url",
+        seen_paths=seen_paths,
+        converter=_normalize_absolute_http_url_string,
+    )
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="website_url_source",
+        path="email.website_url_source",
+        seen_paths=seen_paths,
+        converter=_normalize_website_url_source,
+    )
     if "recipients" in section_data:
         path = "email.recipients"
         seen_paths.add(path)
@@ -2148,7 +2444,17 @@ def _analyze_gui_section(imported_data: Dict[str, Any], collector: _ConfigImport
         return
     seen_paths: set[str] = set()
     for key, value in section_data.items():
-        if key not in {"title", "host", "port", "auto_open_browser", "update_interval_ms"}:
+        if key not in {
+            "title",
+            "host",
+            "port",
+            "reverse_proxy_enabled",
+            "forwarded_allow_ips",
+            "root_path",
+            "session_cookie_https_only",
+            "auto_open_browser",
+            "update_interval_ms",
+        }:
             collector.add_unknown(f"gui.{key}", value)
     _process_scalar_field(collector, section_data, key="title", path="gui.title", seen_paths=seen_paths, converter=_coerce_string)
     _process_scalar_field(
@@ -2157,7 +2463,7 @@ def _analyze_gui_section(imported_data: Dict[str, Any], collector: _ConfigImport
         key="host",
         path="gui.host",
         seen_paths=seen_paths,
-        converter=lambda value: _coerce_string(value, allow_empty=False),
+        converter=lambda value: _coerce_strict_string(value, allow_empty=False),
     )
     _process_scalar_field(
         collector,
@@ -2167,6 +2473,38 @@ def _analyze_gui_section(imported_data: Dict[str, Any], collector: _ConfigImport
         seen_paths=seen_paths,
         converter=_coerce_int,
         validator=lambda value: _validate_range(value, 1, 65535, label="port"),
+    )
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="reverse_proxy_enabled",
+        path="gui.reverse_proxy_enabled",
+        seen_paths=seen_paths,
+        converter=_coerce_bool,
+    )
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="forwarded_allow_ips",
+        path="gui.forwarded_allow_ips",
+        seen_paths=seen_paths,
+        converter=lambda value: _coerce_strict_string(value, allow_empty=False).strip(),
+    )
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="root_path",
+        path="gui.root_path",
+        seen_paths=seen_paths,
+        converter=_normalize_root_path,
+    )
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="session_cookie_https_only",
+        path="gui.session_cookie_https_only",
+        seen_paths=seen_paths,
+        converter=_coerce_bool,
     )
     _process_scalar_field(collector, section_data, key="auto_open_browser", path="gui.auto_open_browser", seen_paths=seen_paths, converter=_coerce_bool)
     _process_scalar_field(
@@ -2434,6 +2772,7 @@ def apply_imported_config_preview(
 def load_config(path: str = "config/config.yaml") -> AppConfig:
     """Konfiguration mit RotatingFileHandler-Support laden"""
     global logger
+    defaulting_warnings: List[str] = []
     try:
         # Absoluten Pfad konstruieren falls nötig
         if not Path(path).is_absolute():
@@ -2461,7 +2800,7 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
         return _create_default_config()
     
     # Defaults für Logging anwenden
-    data = _apply_defaults(data)
+    data = _apply_defaults(data, warnings=defaulting_warnings)
 
     # LoggingConfig mit erweiterten Parametern
     logging_data = data.get("logging", {})
@@ -2477,6 +2816,10 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
     app_logger = logging_config.setup_logger("cvd_tracker")
     logger = app_logger.getChild("config")
     logger.info("✅ Config loaded: %s", config_path)
+    for warning in defaulting_warnings:
+        logger.warning(warning)
+    data["email"] = _normalize_loaded_email_data(data.get("email", {}), logger)
+    data["gui"] = _normalize_loaded_gui_data(data.get("gui", {}), logger)
     cfg = AppConfig(
         metadata=Metadata(**data.get("metadata", {
             "version": 1.0,
@@ -2521,31 +2864,44 @@ def load_config(path: str = "config/config.yaml") -> AppConfig:
     cfg.measurement.ensure_save_path()
     return cfg
 
-def _apply_defaults(data: Dict[str, Any]) -> Dict[str, Any]:
+def _apply_defaults(data: Any, warnings: Optional[List[str]] = None) -> Dict[str, Any]:
     """Smart Defaults für fehlende Config-Abschnitte"""
+    if warnings is None:
+        warnings = []
+    default_cfg = asdict(_create_default_config(log_creation=False))
     defaults = {
-        "logging": {
-            "level": "INFO",
-            "file": "logs/cvd_tracker.log",
-            "max_file_size_mb": 10,
-            "backup_count": 5,
-            "console_output": True
-        }
+        "email": deepcopy(default_cfg["email"]),
+        "gui": deepcopy(default_cfg["gui"]),
+        "logging": deepcopy(default_cfg["logging"]),
     }
-    
+
+    if not isinstance(data, dict):
+        warnings.append(
+            f"Top-level config document must be a mapping, got {type(data).__name__}; using default configuration."
+        )
+        return default_cfg
+
     for section, default_values in defaults.items():
-        if section not in data:
-            data[section] = default_values
-        else:
-            for key, value in default_values.items():
-                if key not in data[section]:
-                    data[section][key] = value
-    
+        current_section = data.get(section)
+        if current_section is None:
+            data[section] = deepcopy(default_values)
+            continue
+        if not isinstance(current_section, dict):
+            warnings.append(
+                f"Config section '{section}' must be a mapping, got {type(current_section).__name__}; using section defaults."
+            )
+            data[section] = deepcopy(default_values)
+            continue
+        for key, value in default_values.items():
+            if key not in current_section:
+                current_section[key] = deepcopy(value)
+
     return data
 
-def _create_default_config() -> AppConfig:
+def _create_default_config(*, log_creation: bool = True) -> AppConfig:
     """Fallback-Konfiguration für Notfälle"""
-    logger.info("creating default config")
+    if log_creation:
+        logger.info("creating default config")
     return AppConfig(
         metadata=Metadata(
             version="1.0",
@@ -2592,12 +2948,13 @@ def _create_default_config() -> AppConfig:
             enable_motion_summary_logs=True
         ),
         email=EmailConfig(
-            website_url="http://134.28.91.48:8080",
+            website_url="http://localhost:8080/",
             recipients=["user@example.com"],
             smtp_server="smtp.example.com",
             smtp_port=25,
             sender_email="sender@example.com",
             send_as_html=False,
+            website_url_source=EmailConfig.WEBSITE_URL_SOURCE_RUNTIME_PERSIST,
             templates={
                 "alert": {
                     "subject": "CVD-TRACKER{cvd_id}-{cvd_name}-Alert: no motion detected - {timestamp}",
@@ -2666,7 +3023,12 @@ def _create_default_config() -> AppConfig:
         ),
         gui=GUIConfig(
             title="CVD-Tracker", host="localhost", port=8080,
-            auto_open_browser=False, update_interval_ms=100
+            auto_open_browser=False,
+            update_interval_ms=100,
+            reverse_proxy_enabled=False,
+            forwarded_allow_ips="127.0.0.1",
+            root_path="",
+            session_cookie_https_only=False,
         ),
         logging=LoggingConfig(
             level="INFO", file="logs/cvd_tracker.log",
@@ -2786,6 +3148,26 @@ def _prepare_for_yaml(cfg_dict: dict) -> dict:
 
     # email.templates.alert: subject vor body
     try:
+        data["email"] = _order_map(
+            data["email"],
+            [
+                "website_url",
+                "website_url_source",
+                "recipients",
+                "smtp_server",
+                "smtp_port",
+                "sender_email",
+                "send_as_html",
+                "templates",
+                "groups",
+                "active_groups",
+                "static_recipients",
+                "explicit_targeting",
+                "notifications",
+                "group_prefs",
+                "recipient_prefs",
+            ],
+        )
         alert = data["email"]["templates"]["alert"]
         if isinstance(alert, dict):
             data["email"]["templates"]["alert"] = _order_map(alert, ["subject", "body"])
@@ -2801,6 +3183,22 @@ def _prepare_for_yaml(cfg_dict: dict) -> dict:
                 tpls[key] = _order_map(tpl, ["subject", "body"])
     except Exception:
         pass
+
+    if "gui" in data and isinstance(data["gui"], dict):
+        data["gui"] = _order_map(
+            data["gui"],
+            [
+                "title",
+                "host",
+                "port",
+                "reverse_proxy_enabled",
+                "forwarded_allow_ips",
+                "root_path",
+                "session_cookie_https_only",
+                "auto_open_browser",
+                "update_interval_ms",
+            ],
+        )
 
     return data
 

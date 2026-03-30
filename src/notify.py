@@ -248,11 +248,26 @@ class EMailSystem:
 
     def _resolve_website_url(self) -> str:
         """Resolve the best available app URL for email templates."""
-        configured_url = str(getattr(self._get_current_email_config(), 'website_url', '') or '').strip()
+        current_email_config = self._get_current_email_config()
+        configured_value = getattr(current_email_config, 'website_url', '')
+        configured_url = configured_value.strip() if isinstance(configured_value, str) else ''
+        website_url_source = str(
+            getattr(
+                current_email_config,
+                'website_url_source',
+                getattr(current_email_config, 'WEBSITE_URL_SOURCE_RUNTIME_PERSIST', 'runtime_persist'),
+            )
+            or getattr(current_email_config, 'WEBSITE_URL_SOURCE_RUNTIME_PERSIST', 'runtime_persist')
+        ).strip().lower()
+        expected_config_source = str(
+            getattr(current_email_config, 'WEBSITE_URL_SOURCE_CONFIG', 'config')
+        ).strip().lower()
         try:
             runtime_url = str(app.storage.general.get(_RUNTIME_WEBSITE_URL_KEY, '') or '').strip()
         except Exception:
             runtime_url = ''
+        if website_url_source == expected_config_source:
+            return configured_url or runtime_url
         return runtime_url or configured_url
 
     def _get_effective_recipients(self) -> List[str]:
@@ -857,6 +872,7 @@ class EMailSystem:
             snapshot_note = self._alert_snapshot_notice(inline_image=send_as_html) if has_snapshot_attachment else ""
             attachment_bytes = img_buffer.tobytes() if has_snapshot_attachment and img_buffer is not None else None
             attachment_name = filename if has_snapshot_attachment and filename is not None else None
+            template_params: Optional[Dict[str, Any]] = None
 
             try:
                 template = current_email_config.alert_template()

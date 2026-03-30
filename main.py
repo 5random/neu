@@ -173,6 +173,52 @@ def parse_optional_bool(value: str | None) -> bool | None:
     return None
 
 
+def resolve_config_bool(
+    value: Any,
+    logger: logging.Logger,
+    *,
+    field_name: str,
+    default: bool = False,
+) -> bool:
+    """Resolve a bool-like config value without treating non-empty strings as True."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        parsed = parse_optional_bool(value)
+        if parsed is not None:
+            return parsed
+    if value is None:
+        return default
+    logger.warning("Invalid %s value %r, falling back to %s", field_name, value, default)
+    return default
+
+
+def resolve_config_string(
+    value: Any,
+    logger: logging.Logger,
+    *,
+    field_name: str,
+    default: str,
+    allow_empty: bool = False,
+) -> str:
+    """Resolve a string config value without coercing non-string scalars."""
+    if isinstance(value, bool) or isinstance(value, (list, dict)):
+        logger.warning("Invalid %s value %r, falling back to %r", field_name, value, default)
+        return default
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        logger.warning("Invalid %s value %r, falling back to %r", field_name, value, default)
+        return default
+    normalized = value.strip()
+    if not allow_empty and not normalized:
+        logger.warning("Invalid %s value %r, falling back to %r", field_name, value, default)
+        return default
+    return normalized
+
+
 def resolve_port(value: Any, logger: logging.Logger, default: int = 8080) -> int:
     """Convert a port value to int and fall back safely on invalid input."""
     try:
@@ -186,6 +232,27 @@ def resolve_port(value: Any, logger: logging.Logger, default: int = 8080) -> int
     return default
 
 
+def normalize_root_path(value: Any) -> str:
+    """Normalize an optional ASGI root path for reverse-proxy deployments."""
+    if isinstance(value, bool) or isinstance(value, (list, dict)):
+        raise ValueError("root_path must be a string")
+    text = str(value or "").strip()
+    if not text or text == "/":
+        return ""
+    if not text.startswith("/"):
+        raise ValueError("root_path must start with '/' or be empty")
+    return text.rstrip("/")
+
+
+def resolve_root_path(value: Any, logger: logging.Logger, *, default: str = "") -> str:
+    """Resolve a root_path config value using the same semantics as config validation."""
+    try:
+        return normalize_root_path(value)
+    except ValueError as exc:
+        logger.warning("Invalid gui.root_path value %r, falling back to %r (%s)", value, default, exc)
+        return default
+
+
 def resolve_ui_run_settings(
     cfg: Any,
     args: argparse.Namespace,
@@ -195,15 +262,46 @@ def resolve_ui_run_settings(
     gui_cfg = getattr(cfg, "gui", None)
     headless_linux = is_headless_linux()
 
-    config_host = str(getattr(gui_cfg, "host", "") or "").strip()
+    config_host = resolve_config_string(
+        getattr(gui_cfg, "host", ""),
+        logger,
+        field_name="gui.host",
+        default="",
+        allow_empty=True,
+    )
     config_port = getattr(gui_cfg, "port", 8080)
-    config_open_browser = bool(getattr(gui_cfg, "auto_open_browser", False))
+    config_open_browser = resolve_config_bool(
+        getattr(gui_cfg, "auto_open_browser", False),
+        logger,
+        field_name="gui.auto_open_browser",
+        default=False,
+    )
+    reverse_proxy_enabled = resolve_config_bool(
+        getattr(gui_cfg, "reverse_proxy_enabled", False),
+        logger,
+        field_name="gui.reverse_proxy_enabled",
+        default=False,
+    )
+    forwarded_allow_ips = resolve_config_string(
+        getattr(gui_cfg, "forwarded_allow_ips", "127.0.0.1"),
+        logger,
+        field_name="gui.forwarded_allow_ips",
+        default="127.0.0.1",
+        allow_empty=False,
+    )
+    root_path = resolve_root_path(getattr(gui_cfg, "root_path", ""), logger, default="")
+    session_cookie_https_only = resolve_config_bool(
+        getattr(gui_cfg, "session_cookie_https_only", False),
+        logger,
+        field_name="gui.session_cookie_https_only",
+        default=False,
+    )
 
     env_host = str(os.environ.get("CVD_HOST", "") or "").strip()
     env_port = os.environ.get("CVD_PORT") or os.environ.get("PORT")
     env_open_browser = parse_optional_bool(os.environ.get("CVD_AUTO_OPEN_BROWSER"))
 
-    default_host = "0.0.0.0" if headless_linux else "127.0.0.1"
+    default_host = "127.0.0.1" if reverse_proxy_enabled else "0.0.0.0" if headless_linux else "127.0.0.1"
     host = str(args.host or env_host or config_host or default_host).strip()
     port_source = args.port if args.port is not None else env_port if env_port is not None else config_port
     port = resolve_port(port_source, logger)
@@ -216,7 +314,13 @@ def resolve_ui_run_settings(
         else config_open_browser
     )
 
-    if headless_linux and not args.host and not env_host and host in {"localhost", "127.0.0.1", "::1"}:
+    if (
+        headless_linux
+        and not reverse_proxy_enabled
+        and not args.host
+        and not env_host
+        and host in {"localhost", "127.0.0.1", "::1"}
+    ):
         logger.info("Headless Linux detected; overriding local-only host %s with 0.0.0.0", host)
         host = "0.0.0.0"
 
@@ -230,6 +334,10 @@ def resolve_ui_run_settings(
         "port": port,
         "show": show_browser,
         "headless_linux": headless_linux,
+        "reverse_proxy_enabled": reverse_proxy_enabled,
+        "forwarded_allow_ips": forwarded_allow_ips,
+        "root_path": root_path,
+        "session_middleware_kwargs": {"https_only": True} if session_cookie_https_only else None,
     }
 
 
@@ -362,12 +470,14 @@ def main() -> int:
         storage_secret = os.environ.get('CVD_STORAGE_SECRET') or secrets.token_urlsafe(32)
         ui_run_settings = resolve_ui_run_settings(cfg, args, logger)
         logger.info(
-            "Starting web UI on %s:%s (platform=%s, headless_linux=%s, auto_open_browser=%s)",
+            "Starting web UI on %s:%s (platform=%s, headless_linux=%s, auto_open_browser=%s, reverse_proxy_enabled=%s, root_path=%s)",
             ui_run_settings["host"],
             ui_run_settings["port"],
             sys.platform,
             ui_run_settings["headless_linux"],
             ui_run_settings["show"],
+            ui_run_settings["reverse_proxy_enabled"],
+            ui_run_settings["root_path"] or "/",
         )
 
         window_title = compute_gui_title(cfg)
@@ -387,6 +497,10 @@ def main() -> int:
             reload=False,
             reconnect_timeout=100.0,
             storage_secret=storage_secret,
+            session_middleware_kwargs=ui_run_settings["session_middleware_kwargs"],
+            proxy_headers=ui_run_settings["reverse_proxy_enabled"],
+            forwarded_allow_ips=ui_run_settings["forwarded_allow_ips"],
+            root_path=ui_run_settings["root_path"],
         )
 
     except ImportError as e:
