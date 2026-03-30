@@ -67,12 +67,24 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 UPDATE_LOG = LOG_DIR / 'update.log'
 logger = get_logger("update")
 
-def _run(cmd: list[str], cwd: Optional[Path] = None) -> Tuple[int, str, str]:
-    proc = subprocess.run(
-        cmd, cwd=str(cwd or ROOT),
-        capture_output=True, text=True, shell=False
-    )
-    return proc.returncode, (proc.stdout or ""), (proc.stderr or "")
+def _run(cmd: list[str], cwd: Optional[Path] = None, timeout: float = 120.0) -> Tuple[int, str, str]:
+    """Run a subprocess command with sane defaults and timeout.
+
+    Returns (returncode, stdout, stderr). On timeout, returns code 124 with message in stderr.
+    """
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd or ROOT),
+            capture_output=True,
+            text=True,
+            shell=False,
+            timeout=timeout,
+            check=False,
+        )
+        return proc.returncode, (proc.stdout or ""), (proc.stderr or "")
+    except subprocess.TimeoutExpired:
+        return 124, "", f"Command timed out after {timeout}s: {' '.join(cmd)}"
 
 def _log_to_file(msg: str) -> None:
     ts = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -89,28 +101,151 @@ def _emit(progress: Optional[Callable[[str], None]], msg: str) -> None:
             # Do not break update flow due to UI callback issues
             logger.error(f'Progress callback failed: {e}')
 
+
+def _read_text_file(path: Path) -> str:
+    with path.open('r', encoding='utf-8') as f:
+        return f.read()
+
+
+def _logical_requirements_lines(content: str) -> list[str]:
+    """Return logical requirements lines with line continuations joined."""
+    logical_lines: list[str] = []
+    current = ""
+
+    for raw_line in content.splitlines():
+        stripped = raw_line.strip()
+        if current:
+            current = f"{current} {stripped}".strip()
+        else:
+            current = stripped
+
+        if current.endswith("\\"):
+            current = current[:-1].rstrip()
+            continue
+
+        if current:
+            logical_lines.append(current)
+        current = ""
+
+    if current:
+        logical_lines.append(current)
+
+    return logical_lines
+
+
+def _verify_requirements_file(
+    req_path: Path,
+    progress: Optional[Callable[[str], None]],
+) -> Tuple[bool, bool]:
+    """Verify requirements integrity before dependency installation.
+
+    Returns ``(is_valid, use_hashes)``.
+    Accepted verification modes:
+    - Exact SHA-256 match via ``CVD_REQUIREMENTS_SHA256``
+    - Pip-compatible hash pinning on every installable requirement line
+    """
+    if not req_path.exists():
+        _emit(progress, f"Requirements file not found: {req_path}")
+        return False, False
+
+    try:
+        content = _read_text_file(req_path)
+    except Exception as e:
+        _emit(progress, f"Error reading requirements file: {e}")
+        return False, False
+
+    expected_sha256 = str(os.environ.get('CVD_REQUIREMENTS_SHA256', '') or '').strip().lower()
+    file_sha256 = hashlib.sha256(content.encode('utf-8')).hexdigest().lower()
+
+    if expected_sha256:
+        if file_sha256 != expected_sha256:
+            _emit(
+                progress,
+                'Requirements checksum verification failed: '
+                f'expected {expected_sha256}, got {file_sha256}.',
+            )
+            return False, False
+        _emit(progress, 'requirements.txt verified via trusted SHA-256 checksum.')
+        return True, False
+
+    requirement_lines: list[str] = []
+    missing_hashes: list[str] = []
+
+    for line in _logical_requirements_lines(content):
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith(('-r ', '--requirement ', '-c ', '--constraint ')):
+            _emit(progress, f'Unsupported nested requirements directive in {req_path.name}: {line}')
+            return False, False
+        if line.startswith(('-e ', '--editable ')):
+            _emit(progress, f'Editable installs not supported with hash verification in {req_path.name}: {line}')
+            return False, False
+        if line.startswith('-'):
+            # Global pip options are allowed but do not count as installable requirements.
+            continue
+
+        requirement_lines.append(line)
+        if '--hash=' not in line:
+            missing_hashes.append(line)
+
+    if not requirement_lines:
+        _emit(progress, f'No installable requirements found in {req_path.name}.')
+        return False, False
+
+    if missing_hashes:
+        _emit(
+            progress,
+            'Requirements verification failed: every dependency must be hash-pinned '
+            'or CVD_REQUIREMENTS_SHA256 must match the full file.',
+        )
+        return False, False
+
+    _emit(progress, 'requirements.txt verified via per-package hashes.')
+    return True, True
+
 def get_local_commit_short() -> str:
     code, out, _ = _run(['git', 'rev-parse', '--short', 'HEAD'])
     return out.strip() if code == 0 and out.strip() else 'unknown'
 
+def _ensure_git_available() -> None:
+    """Raise if git is not available in PATH."""
+    if shutil.which('git') is None:
+        raise RuntimeError('git executable not found in PATH.')
+
+def _get_upstream() -> Tuple[Optional[str], Optional[str]]:
+    """Return (upstream_ref, remote_name) for current HEAD, if any."""
+    u_code, u_out, _ = _run(['git', 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
+    if u_code != 0 or not u_out.strip():
+        return None, None
+    upstream_ref = u_out.strip()
+    remote_name = upstream_ref.split('/', 1)[0] if '/' in upstream_ref else 'origin'
+    return upstream_ref, remote_name
+
 def check_update() -> dict:
-    # Verify remote before any network operation
-    _verify_remote(progress=None, raise_on_fail=True)
+    # Ensure git exists and identify upstream/remote; verify that specific remote and fetch only it
+    _ensure_git_available()
+
+    upstream_ref, remote_name = _get_upstream()
+    if remote_name:
+        _verify_remote(progress=None, raise_on_fail=True, remote_name=remote_name)
+        remote_to_fetch = remote_name
+    else:
+        # Fall back to origin
+        _verify_remote(progress=None, raise_on_fail=True, remote_name='origin')
+        remote_to_fetch = 'origin'
 
     # Fetch and hard-fail on errors so callers can notify the user
-    code, out, err = _run(['git', 'fetch', '--all', '--prune'])
+    code, out, err = _run(['git', 'fetch', remote_to_fetch, '--prune'])
     if code != 0:
-        msg = f'git fetch failed: {err.strip() or out.strip() or "unknown error"}'
+        msg = f'git fetch {remote_to_fetch} failed: {err.strip() or out.strip() or "unknown error"}'
         logger.error(msg)
         raise RuntimeError(msg)
 
     ahead, behind = 0, 0
     remote_short = ''
 
-    # Detect upstream ref (handles detached HEAD or missing upstream)
-    u_code, u_out, _ = _run(['git', 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
-    if u_code == 0 and u_out.strip():
-        upstream_ref = u_out.strip()
+    # Use previously detected upstream ref (handles detached HEAD or missing upstream)
+    if upstream_ref:
         # ahead/behind relative to upstream
         c_code, c_out, _ = _run(['git', 'rev-list', '--left-right', '--count', f'HEAD...{upstream_ref}'])
         if c_code == 0 and c_out.strip():
@@ -154,17 +289,35 @@ def perform_update(progress: Optional[Callable[[str], None]] = None) -> bool:
         return False
 
     # Ensure remote is trusted before reaching out to network
-    if not _verify_remote(progress=progress, raise_on_fail=False):
-        _emit(progress, 'Aborting update due to unverified or missing git remote.')
+    try:
+        # Verify the actual upstream remote if available; fall back to origin
+        upstream_ref, remote_name = _get_upstream()
+        target_remote = remote_name or 'origin'
+        if not _verify_remote(progress=progress, raise_on_fail=True, remote_name=target_remote):
+            _emit(progress, 'Aborting update due to unverified or missing git remote.')
+            return False
+    except Exception as e:
+        _emit(progress, f'Aborting update: remote verification failed: {e}')
         return False
 
     _emit(progress, 'Fetching latest changes...')
-    status = check_update()
+    try:
+        status = check_update()
+    except Exception as e:
+        _emit(progress, f'Failed to check for updates: {e}')
+        logger.error(f'check_update failed: {e}')
+        return False
     _emit(progress, f"Local {status.get('local')} | Remote {status.get('remote') or 'n/a'} | behind={status.get('behind', 0)}")
 
     if status.get('behind', 0) <= 0:
         _emit(progress, 'Already up to date.')
         return True
+
+    # Prevent pull on dirty worktree to avoid failures or unintended merges
+    st_code, st_out, st_err = _run(['git', 'status', '--porcelain'])
+    if st_code == 0 and st_out.strip():
+        _emit(progress, 'Uncommitted local changes detected; aborting pull. Commit or stash them and retry.')
+        return False
 
     _emit(progress, 'Backing up config/config.yaml ...')
     bkp = _backup_config()
@@ -252,7 +405,7 @@ def _get_remote_url(name: str = 'origin') -> Tuple[bool, str]:
         return True, out.strip()
     return False, (err.strip() or 'unknown remote')
 
-def _verify_remote(progress: Optional[Callable[[str], None]] = None, raise_on_fail: bool = False) -> bool:
+def _verify_remote(progress: Optional[Callable[[str], None]] = None, raise_on_fail: bool = False, remote_name: str = 'origin') -> bool:
     """
     Verify that the configured git remote URL is trusted before network operations.
 
@@ -262,9 +415,9 @@ def _verify_remote(progress: Optional[Callable[[str], None]] = None, raise_on_fa
       Defaults to allow only the known repository 'github.com[:/]5random/neu(.git)?'.
     On failure: log and emit an explicit error. If raise_on_fail is True, raise RuntimeError.
     """
-    ok, url = _get_remote_url('origin')
+    ok, url = _get_remote_url(remote_name)
     if not ok:
-        msg = f'Failed to read git remote URL for origin: {url}'
+        msg = f'Failed to read git remote URL for {remote_name}: {url}'
         logger.error(msg)
         _emit(progress, msg)
         if raise_on_fail:
@@ -283,7 +436,7 @@ def _verify_remote(progress: Optional[Callable[[str], None]] = None, raise_on_fa
             if raise_on_fail:
                 raise RuntimeError(msg)
             return False
-        _emit(progress, f'Git remote verified: {url}')
+        _emit(progress, f'Git remote verified ({remote_name}): {url}')
         return True
 
     # Otherwise fall back to allowlist patterns
@@ -312,129 +465,7 @@ def _verify_remote(progress: Optional[Callable[[str], None]] = None, raise_on_fa
         if raise_on_fail:
             raise RuntimeError(msg)
         return False
-
-    _emit(progress, f'Git remote verified: {url}')
     return True
-
-def _verify_requirements_file(req_path: Path, progress: Optional[Callable[[str], None]] = None,
-                              _visited: Optional[set[Path]] = None) -> Tuple[bool, bool]:
-    """
-    Verify requirements before installing to reduce supply-chain risk.
-
-    Returns (ok, use_hashes):
-    - ok: verification succeeded
-    - use_hashes: if True, call pip with --require-hashes
-
-    Strategy:
-    1) If all actionable requirement lines contain --hash=… (including nested -r files), return (True, True).
-    2) Else, if a trusted checksum file exists and matches (requirements.txt.sha256 or requirements.sha256), return (True, False).
-    3) Otherwise, emit a security warning and return (False, False).
-    """
-    try:
-        req_path = req_path.resolve()
-    except Exception:
-        pass
-
-    if _visited is None:
-        _visited = set()
-    if req_path in _visited:
-        _emit(progress, f'SECURITY WARNING: detected cyclic requirements include at {req_path}')
-        logger.error(f'Cyclic requirements include detected: {req_path}')
-        return False, False
-    _visited.add(req_path)
-
-    try:
-        raw_text = req_path.read_text(encoding='utf-8')
-    except Exception as e:
-        logger.error(f'Failed to read {req_path}: {e}')
-        _emit(progress, f'Failed to read {req_path}: {e}')
-        return False, False
-
-    # Join lines with trailing backslashes to handle pip-tools style multi-line hashes
-    logical_lines: list[str] = []
-    acc = ''
-    for raw in raw_text.splitlines():
-        line = raw.rstrip()
-        if not line.strip() and not acc:
-            continue
-        if line.endswith('\\'):
-            seg = line[:-1].rstrip()
-            acc = (acc + ' ' + seg).strip() if acc else seg
-            continue
-        else:
-            seg = line.strip()
-            full = (acc + ' ' + seg).strip() if acc else seg
-            logical_lines.append(full)
-            acc = ''
-    if acc:
-        logical_lines.append(acc.strip())
-
-    includes: list[Path] = []
-    actionable: list[str] = []
-
-    for line in logical_lines:
-        if not line or line.startswith('#'):
-            continue
-        if line.startswith('-r ') or line.startswith('--requirement '):
-            try:
-                inc = line.split(None, 1)[1].strip()
-                includes.append((req_path.parent / inc).resolve())
-            except Exception:
-                pass
-            continue
-        if line.startswith(('--index-url', '--extra-index-url', '-i ', '-f ', '--find-links', '-c ', '--constraint')):
-            continue
-        actionable.append(line)
-
-    included_hash_mode: list[bool] = []
-    for inc_path in includes:
-        if not inc_path.exists():
-            _emit(progress, f'SECURITY WARNING: included requirements file not found: {inc_path}')
-            logger.error(f'Included requirements file not found: {inc_path}')
-            return False, False
-        ok, child_use_hashes = _verify_requirements_file(inc_path, progress, _visited)
-        if not ok:
-            return False, False
-        included_hash_mode.append(child_use_hashes)
-
-    has_actionable = len(actionable) > 0
-    all_hashed = has_actionable and all('--hash=' in l for l in actionable)
-    if all_hashed and (not included_hash_mode or all(included_hash_mode)):
-        _emit(progress, 'requirements.txt is hash-locked; enforcing --require-hashes')
-        return True, True
-
-    candidates = [req_path.with_suffix(req_path.suffix + '.sha256'), req_path.parent / 'requirements.sha256']
-    for cand in candidates:
-        if cand.exists():
-            try:
-                contents = cand.read_text(encoding='utf-8')
-                m = re.search(r'([A-Fa-f0-9]{64})', contents)
-                if not m:
-                    continue
-                expected = m.group(1)
-                digest = _sha256_file(req_path)
-                if digest.lower() == expected.lower():
-                    _emit(progress, f'Checksum verified for {req_path.name} ({cand.name}).')
-                    return True, False
-                else:
-                    _emit(progress, f'SECURITY WARNING: checksum mismatch for {req_path.name}: expected {expected}, got {digest}')
-                    logger.error(f'Checksum mismatch for {req_path}: expected {expected}, got {digest}')
-                    return False, False
-            except Exception as e:
-                logger.error(f'Failed to verify checksum file {cand}: {e}')
-                _emit(progress, f'Failed to verify checksum file {cand}: {e}')
-                return False, False
-
-    _emit(progress, 'SECURITY WARNING: requirements are neither hash-locked nor protected by a trusted checksum; refusing automatic dependency installation.')
-    logger.warning('Requirements verification failed: neither --hash entries nor checksum file present.')
-    return False, False
-
-def _sha256_file(p: Path) -> str:
-    h = hashlib.sha256()
-    with open(p, 'rb') as f:
-        for chunk in iter(lambda: f.read(8192), b''):
-            h.update(chunk)
-    return h.hexdigest()
 
 def _cleanup_before_exec() -> None:
     """Best-effort cleanup before replacing the process image.

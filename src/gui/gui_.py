@@ -1,421 +1,269 @@
-from pathlib import Path
+from typing import Any
+import json
+
+_settings_page: Any = None
+try:
+    from src.gui.settings_page import settings_page as _settings_page  # noqa: F401
+except Exception:
+    pass
+
 from nicegui import ui, app
-import signal
-import asyncio
-import threading
-import queue
-from typing import Optional
 import sys
 
-from src import cam
-from src.gui.elements import (
-    create_camfeed_content,
-    create_emailcard,
-    create_measurement_card,
-    create_motion_status_element,
-    create_uvc_content,
-    create_motiondetection_card,
-)
+from src.config import load_config, set_global_config, get_logger
+from src.gui import init, cleanup
 
-from src.cam.camera import Camera
-from src.measurement import create_measurement_controller_from_config, MeasurementController
-from src.alert import create_alert_system_from_config, AlertSystem
-from src.config import load_config, set_global_config, get_global_config, save_global_config, AppConfig, get_logger
-from src.update import check_update, perform_update, get_local_commit_short, restart_self
+from src.alert_history import HISTORY_STATIC_ROUTE, get_history_dir
 
-
-# Globales Kamerahandle, wird erst in ``main`` erzeugt
-global_camera: Camera | None = None
-global_measurement_controller: MeasurementController | None = None
-global_alert_system: AlertSystem | None = None
-global_config: AppConfig | None = None
-
-# Shutdown-Flag für thread-sichere Cleanup-Koordination
-_shutdown_requested = threading.Event()
-_cleanup_completed = threading.Event()
-
-dark = ui.dark_mode(value=False)
+# Register help and default page routes via import side effect
+from .help.help import help_page  # noqa: F401
+from src.gui.default_page import index_page as default_page  # noqa: F401
+from .power_actions import get_power_action_spec
 
 logger = get_logger("gui")
 
-def init_camera(config: AppConfig) -> Camera | None:
-    """Initialisiere Kamera und starte die Bilderfassung.
+from .layout import build_header, build_footer, compute_gui_title, install_overlay_styles
+from .util import set_tab
 
-    Args:
-        config_path: Pfad zur zu ladenden Konfiguration
-    """
+_title_sync_registered = False
 
-    logger.info("Starting camera initialization")
+# Register signal handlers for graceful shutdown
+cleanup.register_signal_handlers()
+
+
+def refresh_connected_clients(*, client: Any = None, broadcast: bool = False, delay_ms: int = 150) -> None:
+    """Trigger a one-time page reload for the given or all connected clients."""
+    reload_delay = max(0, int(delay_ms))
+    reload_code = f'window.setTimeout(() => window.location.reload(), {reload_delay});'
 
     try:
-        cam = Camera(config, logger=get_logger('camera'))
-        cam.initialize_routes()
-        cam.start_frame_capture()
-        logger.info("Camera initialized successfully")
-        return cam
-    except Exception as e:
-        logger.error(f"ERROR: {e}")
-        return None
+        if client is not None:
+            if hasattr(client, 'run_javascript'):
+                client.run_javascript(reload_code)
+        elif broadcast:
+            clients_dict = getattr(app, 'clients', {})
+            try:
+                clients = list(getattr(clients_dict, 'values', lambda: [])())
+            except Exception:
+                clients = []
+            for connected_client in clients:
+                refresh_connected_clients(client=connected_client, delay_ms=reload_delay)
+    except Exception:
+        logger.debug('Failed to refresh client(s)', exc_info=True)
 
+
+def sync_runtime_gui_title(*, title: str | None = None, client: Any = None, broadcast: bool = False) -> str:
+    """Sync the current metadata-based GUI title into NiceGUI runtime state and clients."""
+    resolved_title = str(title or compute_gui_title())
+
+    try:
+        app.config.title = resolved_title
+    except Exception:
+        pass
+
+    try:
+        app.storage.general['cvd.runtime_title'] = resolved_title
+    except Exception:
+        pass
+
+    label_sync_code = f"""
+    const title = {json.dumps(resolved_title)};
+    for (const id of ['cvd-header-title', 'cvd-footer-title']) {{
+        const element = document.getElementById(id);
+        if (element) {{
+            element.textContent = title;
+        }}
+    }}
+    """
+
+    try:
+        if client is not None:
+            if hasattr(client, 'title'):
+                client.title = resolved_title
+            set_tab(title=resolved_title, client=client)
+            if hasattr(client, 'run_javascript'):
+                client.run_javascript(label_sync_code)
+        elif broadcast:
+            clients_dict = getattr(app, 'clients', {})
+            try:
+                clients = list(getattr(clients_dict, 'values', lambda: [])())
+            except Exception:
+                clients = []
+            for connected_client in clients:
+                sync_runtime_gui_title(title=resolved_title, client=connected_client)
+    except Exception:
+        logger.debug('Failed to sync GUI title to client(s)', exc_info=True)
+
+    return resolved_title
+
+
+def _sync_title_on_connect(client: Any = None) -> None:
+    sync_runtime_gui_title(client=client)
+
+
+def _ensure_title_sync_registered() -> None:
+    global _title_sync_registered
+    if _title_sync_registered:
+        return
+    app.on_connect(_sync_title_on_connect)
+    _title_sync_registered = True
+
+
+def build_post_restart_redirect_script(
+    *,
+    marker_key: str,
+    target_route: str = '/',
+) -> str:
+    """Return browser-side logic that redirects to the dashboard after a restart rebuild."""
+    return f"""
+    (function() {{
+        const markerKey = {json.dumps(marker_key)};
+        const targetRoute = {json.dumps(target_route)};
+        try {{
+            const isPending = window.sessionStorage.getItem(markerKey) === 'pending';
+            if (isPending) {{
+                window.sessionStorage.removeItem(markerKey);
+                window.location.replace(targetRoute);
+                return;
+            }}
+            window.sessionStorage.setItem(markerKey, 'pending');
+        }} catch (error) {{
+            console.warn('CVD restart redirect setup failed', error);
+        }}
+    }})();
+    """
+
+
+def install_post_restart_redirect(
+    *,
+    marker_key: str,
+    target_route: str = '/',
+) -> None:
+    """Install a one-time redirect that returns the browser to the dashboard after restart."""
+    ui.run_javascript(
+        build_post_restart_redirect_script(
+            marker_key=marker_key,
+            target_route=target_route,
+        )
+    )
 
 def create_gui(config_path: str = "config/config.yaml") -> None:
-    """Starte die GUI und initialisiere bei Bedarf die Kamera.
+    """Initialisierung vor ui.run(): Konfiguration laden und App initialisieren.
 
-    Args:
-        config_path: Pfad zur zu ladenden Konfigurationsdatei
+    Die eigentlichen Seiten sind per @ui.page deklariert.
     """
-
-    global global_camera, global_measurement_controller, global_alert_system, global_config
     try:
-        global_config = load_config(config_path)
-        set_global_config(global_config, config_path)
-        if global_config:
-            logger.info('Configuration loaded successfully')
-    except Exception as e:
-        logger.error(f"Failed to load config: {e}")
-        ui.notify("Failed to load configuration.", type='negative')
-        return
-    
-    if global_camera is None:
-        logger.info('Initializing Camera...')
-        global_camera = init_camera(global_config)
-        if global_camera is None:
-            logger.error('Failed to initialize camera')
-            ui.notify('Camera initialization failed, starting GUI without camera', close_button=True, type='warning', position='bottom-right')
-
-    if global_alert_system is None:
+        # Centralized initialization
+        init.init_application(config_path)
+        _ensure_title_sync_registered()
+        sync_runtime_gui_title()
+        
+        # Optional: statische Pfade einmalig mounten
         try:
-            logger.info('Initializing alert system...')
-            global_alert_system = create_alert_system_from_config(global_config, logger=logger)
-            logger.info('Alert system initialized successfully')
-        except Exception as exc:
-            logger.error(f"AlertSystem-Init failed: {exc}")
-            ui.notify('Alert system initialization failed', type='warning', position='bottom-right')
-            global_alert_system = None
-
-    if global_measurement_controller is None:
+            history_dir = get_history_dir()
+            history_dir.mkdir(parents=True, exist_ok=True)
+            app.add_static_files(HISTORY_STATIC_ROUTE, str(history_dir))
+        except Exception:
+            pass
         try:
-            global_measurement_controller = create_measurement_controller_from_config(
-                config=global_config,
-                alert_system=global_alert_system,
-                camera=global_camera,
-                logger=logger,
-            )
-        except Exception as exc:
-            logger.error(f"MeasurementController-Init failed: {exc}")
-            global_measurement_controller = None
-
-    if global_measurement_controller and global_camera:
-        try:
-            logger.info("Initializing measurement controller...")
-            controller = global_measurement_controller
-            global_camera.enable_motion_detection(
-                lambda frame, motion_result: controller.on_motion_detected(motion_result)
-            )
-            logger.info("Measurement controller initialized successfully")            
-        except Exception as e:
-            logger.error(f'Failed to enable motion detection: {e}')
-            ui.notify('Measurement controller initialization failed', type='warning', position='bottom-right')
-            global_measurement_controller = None
-    else:
-        logger.warning("Motion detection not available - missing camera or measurement controller")
-
-    logger.info('creating GUI')
-
-    @ui.page('/shutdown')
-    def shutdown_page() -> None:
-        with ui.column().classes('absolute-center items-center gap-6'):
-            ui.icon('power_settings_new').classes('text-6xl text-negative')
-            ui.label('Server shutdown').classes('text-h4 font-medium')
-            ui.label('You can close this window now.')
-    
-    @ui.page('/updating')
-    def updating_page() -> None:
-        logger.info('Opening updating page...')
-        with ui.column().classes('absolute-center items-center gap-4'):
-            ui.icon('system_update').classes('text-6xl text-primary')
-            ui.label('Update wird installiert...').classes('text-h5 font-medium')
-            status = ui.label('').classes('text-body2')
-            log = ui.log(max_lines=500).classes('w-[800px] h-[360px] bg-black text-green-400 rounded')
-
-            # Thread-safe progress queue for background thread messages
-            q: queue.Queue[str] = queue.Queue()
-
-            def drain_progress():
-                try:
-                    while True:
-                        msg = q.get_nowait()
-                        log.push(msg)
-                        logger.info(msg)
-                except queue.Empty:
-                    pass
-
-            async def run_update():
-                try:
-                    # 1) Status prüfen
-                    logger.info('Checking update status...')
-                    stat = await asyncio.to_thread(check_update)
-                    status.text = f"Lokaler Commit {stat.get('local')} → Remote {stat.get('remote') or ''} (behind={stat.get('behind', 0)})"
-                    logger.info(f"Update status: behind={stat.get('behind', 0)}, local={stat.get('local')}, remote={stat.get('remote')}")
-
-                    # 2) Update im Hintergrund durchführen
-                    logger.info('Starting update...')
-                    ok = await asyncio.to_thread(perform_update, q.put)
-
-                    if ok:
-                        logger.info('Update completed successfully; restarting...')
-                        ui.notify('Update abgeschlossen. Neustart...', type='positive', position='bottom-right')
-                        # 3) Sauberes Cleanup + Self-Restart (cleanup on event loop thread)
-                        cleanup_application()
-                        await asyncio.sleep(0.3)
-                        await asyncio.to_thread(restart_self)
-                    else:
-                        logger.warning('Update failed or not available.')
-                        ui.notify('Update fehlgeschlagen oder nicht verfügbar.', type='warning', position='bottom-right')
-                        ui.button('Zurück', on_click=lambda: ui.navigate.to('/')).props('flat').classes('q-mt-md')
-                except Exception as e:
-                    logger.exception('Update process failed')
-                    ui.notify(f'Update failed: {e}', type='negative', position='bottom-right')
-                    ui.button('Zurück', on_click=lambda: ui.navigate.to('/')).props('flat').classes('q-mt-md')
-
-            # Drain progress queue on UI thread
-            ui.timer(0.1, drain_progress)
-            ui.timer(0.05, run_update, once=True)
-
-    with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
-        # --- Linke Seite -------------------------------------------
-        with ui.row().classes('items-center gap-3'):
-            # Favicon per URL
-            shutdown_dialog = ui.dialog().classes('items-center justify-center')
-
-            with shutdown_dialog:
-                with ui.card().classes('items-center justify-center'):
-                    ui.label('Shutdown the server?').classes('text-h6')
-                    
-                    async def do_shutdown() -> None:
-                        ui.navigate.to('/shutdown', new_tab=False)
-                        await asyncio.sleep(2)
-                        app.shutdown()
-
-                    with ui.row().classes('gap-2 items-center justify-center'):
-                        ui.button('Yes', on_click=do_shutdown).props('color=negative').tooltip('Shutdown the server and close the application')
-                        ui.button('No', on_click=shutdown_dialog.close).props('color=positive').tooltip('Cancel shutdown')
-
-            def show_shutdown_dialog() -> None:
-                shutdown_dialog.open()
-
             app.add_static_files('/pics', 'pics')
-
-            ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_shutdown_dialog).props('flat').style('max-height:72px; width:auto').tooltip('Shutdown the server and close the application')
-
-            ui.label('CVD-TRACKER').classes(
-                'text-xl font-semibold tracking-wider text-gray-100')
-
-        # --- Rechte Seite ------------------------------------------
-        def toggle_dark():
-                dark.toggle()
-                new_icon = 'light_mode' if dark.value else 'dark_mode'
-                btn.props(f'icon={new_icon}')
-
-        with ui.row().classes('items-center gap-4'):
-            btn= (ui.button(
-                icon='light_mode' if dark.value else 'dark_mode',
-                on_click=toggle_dark,
-            ).props('flat round dense').classes('text-xl')).tooltip('Toggle dark mode')
-
+        except Exception:
+            pass
+        try:
             app.add_static_files('/logs', 'logs')
-
-            def download_logs_as_zip():
-                """Erstellt ZIP-Archiv aller Log-Dateien und lädt es herunter."""
-                import zipfile
-                import tempfile
-                from pathlib import Path
-                import os
-                
-                logs_dir = Path('logs')
-                if not logs_dir.exists():
-                    ui.notify('No log directory found', type='warning', position='bottom-right')
-                    return
-                
-                # Temporäre ZIP-Datei erstellen
-                with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_file:
-                    zip_path = tmp_file.name
-                
-                try:
-                    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                        log_files_found = 0
-                        
-                        # Alle Log-Dateien hinzufügen
-                        for log_file in logs_dir.glob('cvd_tracker.log*'):
-                            if log_file.is_file():
-                                zipf.write(log_file, log_file.name)
-                                log_files_found += 1
-                                logger.debug(f'Added {log_file.name} to ZIP archive')
-                    
-                    if log_files_found > 0:
-                        # ZIP-Datei über temporären statischen Pfad verfügbar machen
-                        import shutil
-                        final_zip_path = logs_dir / 'cvd_tracker_logs.zip'
-                        shutil.move(zip_path, final_zip_path)
-                        
-                        ui.download.from_url('/logs/cvd_tracker_logs.zip')
-                        ui.notify(f'{log_files_found} log files packaged and downloaded', type='positive', position='bottom-right')
-                        logger.info(f'Created ZIP archive with {log_files_found} log files')
-                    else:
-                        ui.notify('No log files found', type='warning', position='bottom-right')
-                        
-                except Exception as e:
-                    logger.error(f'Error creating log ZIP archive: {e}')
-                    ui.notify('Error creating log archive', type='negative', position='bottom-right')
-                finally:
-                    # Temporäre Datei bereinigen falls noch vorhanden
-                    if os.path.exists(zip_path):
-                        os.unlink(zip_path)
-
-            ui.button(icon='download', on_click=lambda: download_logs_as_zip()).props('flat round dense').classes('text-xl').tooltip('Download log file')
-
-            async def on_update_click():
-                try:
-                    stat = await asyncio.to_thread(check_update)
-                except Exception as e:
-                    # Log error with stack trace and notify user; skip navigation on failure
-                    logger.exception("Update check failed")
-                    ui.notify(f'Update check failed: {e}', type='negative', position='bottom-right')
-                    return
-                if stat.get('behind', 0) <= 0:
-                    logger.info('Already up to date.')
-                    ui.notify('Bereits auf dem neuesten Stand.', type='positive', position='bottom-right')
-                    return
-                logger.info('Updates available; navigating to /updating')
-                ui.navigate.to('/updating', new_tab=False)
-
-            ui.button(icon='system_update', on_click=on_update_click)\
-              .props('flat round dense').classes('text-xl').tooltip('Update prüfen und installieren')
-
-    with ui.grid(columns="2fr 1fr").classes("w-full gap-4 p-4"):
-        with ui.column().classes("gap-4"):
-            create_camfeed_content()
-            with ui.grid(columns="1fr 2fr").classes("gap-4 w-full").style("grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); align-items: stretch;"):
-                with ui.column().classes("h-full"):
-                    create_motion_status_element(global_camera, global_measurement_controller)
-                with ui.column().classes("h-full"):
-                    create_measurement_card(global_measurement_controller, global_camera, alert_system=global_alert_system)
-
-        with ui.column().classes("gap-4"):
-            create_uvc_content(camera=global_camera)
-            create_motiondetection_card(camera=global_camera)
-            create_emailcard(alert_system=global_alert_system)
-    
-    with ui.footer(fixed=False).classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
-        with ui.row().classes('items-center justify-between px-4 py-2'):
-            ui.label('CVD-TRACKER').classes('text-white text-sm')
-            ui.label('© 2025 TUHH KVWEB').classes('text-white text-sm')
-
-async def cleanup_camera_async():
-    """Asynchrone Kamera-Cleanup-Routine."""
-    global global_camera
-    try:
-        if global_camera:
-            await global_camera.cleanup()
-            global_camera = None
-            logger.info("Camera cleanup completed")
+        except Exception:
+            pass
+            
+        logger.info('GUI initialized; config loaded')
     except Exception as e:
-        logger.error(f"Error during camera cleanup: {e}")
+        logger.error(f"Failed to initialize GUI: {e}")
+        # Nicht crashen, ui.run darf weiterlaufen
 
-def cleanup_application_sync():
-    """Thread-sichere synchrone Cleanup-Funktion."""
-    global global_measurement_controller, global_alert_system
-    
-    logger.info("Starting synchronous application cleanup...")
-    
-    try:
-        # Synchrone Komponenten sofort bereinigen
-        if global_measurement_controller:
-            global_measurement_controller.cleanup()
-            global_measurement_controller = None
-            logger.info("Measurement controller cleanup completed")
-            
-        if global_alert_system:
-            global_alert_system.cleanup()
-            global_alert_system = None
-            logger.info("Alert system cleanup completed")
-            
-        logger.info("Synchronous cleanup completed")
-        
-    except Exception as e:
-        logger.error(f"Error during synchronous cleanup: {e}")
+def _build_power_action_status_page(action_key: str) -> None:
+    spec = get_power_action_spec(action_key)
+    install_overlay_styles()
+    with ui.column().classes('absolute-center items-center gap-6'):
+        ui.icon(spec.status_icon).classes(spec.status_icon_classes)
+        ui.label(spec.status_title).classes('text-h4 font-medium text-center')
+        ui.label(spec.status_message).classes('text-body1 text-center max-w-[32rem]')
 
-def schedule_async_cleanup():
-    """Plant asynchrone Cleanup-Routine thread-sicher ein."""
-    try:
-        # Versuche den aktuellen Event Loop zu finden
-        loop = asyncio.get_running_loop()
-        
-        # Erstelle eine threadsafe Callback-Funktion
-        def cleanup_and_signal():
-            async def full_cleanup():
-                try:
-                    await cleanup_camera_async()
-                finally:
-                    _cleanup_completed.set()
-            
-            # Erstelle Task für asynchrone Cleanup
-            loop.create_task(full_cleanup())
-        
-        # Plane die Cleanup-Funktion thread-sicher ein
-        loop.call_soon_threadsafe(cleanup_and_signal)
-        
-    except RuntimeError:
-        # Kein aktiver Event Loop - Fallback auf synchrone Cleanup
-        logger.warning("No running event loop found, skipping async camera cleanup")
-        _cleanup_completed.set()
 
-def cleanup_application():
-    """Haupt-Cleanup-Funktion mit thread-sicherer Koordination."""
-    if _shutdown_requested.is_set():
-        return  # Cleanup bereits initiiert
-    
-    _shutdown_requested.set()
-    logger.info("Starting application cleanup...")
-    
-    try:
-        # 1. Synchrone Komponenten sofort bereinigen
-        cleanup_application_sync()
-        
-        # 2. Asynchrone Kamera-Cleanup thread-sicher einplanen
-        schedule_async_cleanup()
-        
-        # 3. Kurz warten auf asynchrone Cleanup (mit Timeout)
-        if _cleanup_completed.wait(timeout=2.0):
-            logger.info("Application cleanup completed successfully")
-        else:
-            logger.warning("Async cleanup timeout - proceeding with shutdown")
-            
-    except Exception as e:
-        logger.error(f"Error during cleanup: {e}")
-    finally:
-        _cleanup_completed.set()
+@ui.page('/shutdown')
+def shutdown_page() -> None:
+    _build_power_action_status_page('app_shutdown')
 
-def signal_handler(signum, frame):
-    """Thread-sicherer Signal-Handler für sauberes Shutdown."""
-    logger.info(f"Received signal {signum}, initiating shutdown...")
-    
-    # Cleanup in separatem Thread ausführen um Signal-Handler nicht zu blockieren
-    cleanup_thread = threading.Thread(target=cleanup_application, daemon=True)
-    cleanup_thread.start()
-    
-    # Kurz warten auf Cleanup-Completion
-    if _cleanup_completed.wait(timeout=3.0):
-        logger.info("Cleanup completed, exiting...")
-    else:
-        logger.warning("Cleanup timeout, forcing exit...")
-    
-    try:
-        app.shutdown()  # NiceGUI sauber beenden
-    except:
-        sys.exit(0)
 
-# Signal-Handler registrieren
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler) 
+@ui.page('/restart')
+def restart_page() -> None:
+    _build_power_action_status_page('app_restart')
+    install_post_restart_redirect(marker_key='cvd.app_restart.pending_redirect')
+
+
+@ui.page('/pi-restart')
+def pi_restart_page() -> None:
+    _build_power_action_status_page('pi_restart')
+    install_post_restart_redirect(marker_key='cvd.pi_restart.pending_redirect')
+
+
+@ui.page('/pi-shutdown')
+def pi_shutdown_page() -> None:
+    _build_power_action_status_page('pi_shutdown')
+
+@ui.page('/updating')
+def updating_page() -> None:
+    from src.update import check_update, perform_update, restart_self
+    import queue
+    import asyncio
     
+    logger.info('Opening updating page...')
+    install_overlay_styles()
+    with ui.column().classes('absolute-center items-center gap-4'):
+        ui.icon('system_update').classes('text-6xl text-primary')
+        ui.label('Update wird installiert...').classes('text-h5 font-medium')
+        status = ui.label('').classes('text-body2')
+        log = ui.log(max_lines=500).classes('w-[800px] h-[360px] bg-black text-green-400 rounded')
+
+        # Thread-safe progress queue for background thread messages
+        q: queue.Queue[str] = queue.Queue()
+
+        def drain_progress() -> None:
+            try:
+                while True:
+                    msg = q.get_nowait()
+                    log.push(msg)
+                    logger.info(msg)
+            except queue.Empty:
+                pass
+
+        async def run_update() -> None:
+            try:
+                # 1) Status prüfen
+                logger.info('Checking update status...')
+                stat = await asyncio.to_thread(check_update)
+                status.text = f"Lokaler Commit {stat.get('local')} → Remote {stat.get('remote') or ''} (behind={stat.get('behind', 0)})"
+                logger.info(f"Update status: behind={stat.get('behind', 0)}, local={stat.get('local')}, remote={stat.get('remote')}")
+
+                # 2) Update im Hintergrund durchführen
+                logger.info('Starting update...')
+                ok = await asyncio.to_thread(perform_update, q.put)
+
+                if ok:
+                    logger.info('Update completed successfully; restarting...')
+                    ui.notify('Update abgeschlossen. Neustart...', type='positive', position='bottom-right')
+                    # 3) Sauberes Cleanup + Self-Restart (cleanup on event loop thread)
+                    cleanup.cleanup_application()
+                    await asyncio.sleep(0.3)
+                    await asyncio.to_thread(restart_self)
+                else:
+                    logger.warning('Update failed or not available.')
+                    ui.notify('Update fehlgeschlagen oder nicht verfügbar.', type='warning', position='bottom-right')
+                    ui.button('Zurück', on_click=lambda: ui.navigate.to('/')).props('flat').classes('q-mt-md')
+            except Exception as e:
+                logger.exception('Update process failed')
+                ui.notify(f'Update failed: {e}', type='negative', position='bottom-right')
+                ui.button('Zurück', on_click=lambda: ui.navigate.to('/')).props('flat').classes('q-mt-md')
+
+        # Drain progress queue on UI thread
+        ui.timer(0.1, drain_progress)
+        ui.timer(0.05, run_update, once=True)
+

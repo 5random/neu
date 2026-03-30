@@ -1,0 +1,292 @@
+help:
+  title: "Application Help"
+  sections:
+    - title: "Getting Started"
+      link: "/"
+      content: |
+        Welcome to the CVD-Tracker application. This page explains where the main workflows live in the current UI.
+
+        ## Main Areas
+        - **Dashboard**: Start and stop measurements, monitor live status, adjust the session alert counter, review alert history, and quickly change the active email groups for the current run.
+        - **Settings**: Configure camera behavior, motion sensitivity, measurement timing, email recipients, appearance, metadata, configuration import, updates, and logs.
+
+        ## What to do first:
+        1. Open **Settings > Camera** and verify the live feed and set ROI, change the camera settings so you can see the monitored area clearly.
+        2. Open **Settings > E-Mail Notifications** and configure SMTP settings (e.g., server, port, credentials; defaults should be fine), add Recipients to the Address Book, configure static recipients and groups.
+        3. Open **Settings > Measurement** and choose which groups are active for the current run and which notification events should send notification emails.
+        4. Return to the **Dashboard**, set a duration if needed, and start the measurement.
+
+    - title: "Camera Settings"
+      link: "/settings#camera"
+      content: |
+        The Camera section combines live camera preview, ROI editing, motion status, and UVC camera controls.
+
+        ## What You Can Do Here
+        - Verify the live image from the configured camera.
+        - Define or reset the **ROI (Region of Interest)** directly on the live feed.
+        - Enable or disable ROI and edit ROI values numerically.
+        - Adjust camera controls such as exposure, white balance, brightness, gain, and related UVC options.
+
+        ## Camera Control Guidance
+        - **Backlight Compensation**: Find a balance that enhances visibility without overexposing the image. Default settings usually work well.
+        - **White Balance**: Use 'Auto' for general use. For specific lighting conditions, manually adjust the white balance to achieve accurate colors.
+        - **Exposure**: Set to 'Auto' for most scenarios. For low-light conditions, manually increase exposure slightly to brighten the image without introducing too much noise.
+        - **Brightness and Contrast**: Adjust these settings to improve image clarity. Start with default values and tweak as necessary based on your environment.
+        - **Gain**: Control gain settings to manage low-light performance. Higher gain can introduce noise, so use it judiciously.
+        - **Gamma**: Modify gamma settings to adjust the midtones of the image.
+        - **Sharpness**: Adjust sharpness to enhance details. Be careful not to overdo it, as this can introduce artifacts.
+        - **Saturation**: Increase saturation for more vibrant colors or decrease it for a more muted look. This has usually no effect on motion detection performance.
+        - **Hue**: Adjust hue to correct color tones. This is particularly useful in environments with unusual lighting. This has usually no effect on motion detection performance.
+        - After making adjustments, click 'Save' to apply the new settings.
+        - Settings are saved automatically or via the 'Save' button depending on the control.
+        - To revert to default settings, click the 'Reset to Default' button.
+
+        ## How to edit ROI
+        1. Open **Settings > Camera**.
+        2. Use the live camera feed area to inspect the current ROI overlay.
+        3. Adjust ROI values by either clicking in the live feed or setting them numerically. You want to include the relevant area where motion should be detected and exclude irrelevant areas that may cause false positives.
+        4. Toggle ROI on/off, depending on whether you want to use it for motion detection.
+        5. Click **Save ROI** to persist the current ROI.
+
+        ## How to adjust camera controls
+        1. Open **Settings > Camera**.
+        2. Scroll to the **Camera Controls** section.
+        3. Adjust the available controls to improve the image quality for motion detection. You want to find a good balance where the monitored area is clearly visible and well lit, but the image is not too noisy or overexposed.
+        4. Click **Save** to apply the new settings.
+
+        ## Tips
+        - Use ROI to ignore irrelevant motion sources outside the monitored area.
+        - Iterate through settings adjustments and test the camera output to achieve the desired quality.
+        - If motion detection feels unstable, verify both ROI placement and camera exposure settings.
+
+        ## Troubleshooting
+        - If the live feed is not visible, check the physical camera connection and verify that the USB is properly inserted. You may want to restart the application/PI after connecting the camera to ensure it is detected properly.
+        - If the image is too dark or too bright, adjust the exposure and gain settings.
+        - If the image is too noisy, consider adjusting the gain or use some lighting.
+        - If the image turns pinky or has generally weird colors, it may be, that the IR mode is active. This mode automatically activates in low-light conditions.
+        
+        ## Notes
+        - Note that the used camera has support for night vision via IR LEDs, so the Image can look very different in day and night conditions. Adjusting the exposure and gain can help to get a clear image in both cases.
+
+
+    - title: "Motion Detection"
+      link: "/settings#camera"
+      content: |
+        Motion sensitivity is controlled from the Camera area. ROI editing is also part of the Camera workflow.
+
+        ## Motion Sensitivity
+        - The **Motion Status** area includes a **Sensitivity** control.
+        - Higher sensitivity reacts to smaller movement.
+        - Lower sensitivity reduces false positives from shadows, noise, or lighting changes.
+        - Adjusting sensitivity can both be done from the dashboard and the camera settings.
+
+        ## Practical Guidance
+        - Start with a moderate sensitivity and test with real movement.
+        - If you get too many alerts, reduce sensitivity first, then tighten the ROI if necessary.
+          - If you miss alerts, increase sensitivity and consider expanding the ROI to include more of the monitored area.
+  
+        ## Troubleshooting
+        - If you get too many false positives, try reducing sensitivity and adjusting the ROI to exclude irrelevant areas.
+        - If you miss real motion events, try increasing sensitivity and expanding the ROI to include more of the monitored area.
+
+        ## Notes
+        - Note that the sensitivity setting is a trade-off and may require some experimentation to find the right balance for your specific environment and use case.
+        - Note that changes to the motion status are a bit laggy. This is wanted behavior to avoid rapid fluctuations and false positives.
+
+    - title: "Measurement & Sessions"
+      link: "/settings#measurement"
+      content: |
+        The Measurement section controls runtime alert behavior and the lifecycle email routing for the current run.
+
+        ## Session Controls
+        - **Duration** defines how long a measurement may run before it stops automatically.
+        - **Alert Delay** defines how long no motion may be detected before an alert can be triggered.
+        - **Cooldown** prevents repeated alerts from firing too quickly.
+        - **Snapshot** controls whether alert emails include an image.
+        - Time-based controls support multiple units so you can switch between seconds, minutes, or hours where it fits the setting.
+        - The Dashboard includes an alert counter block so a false alarm can be decremented or reset during an active session without clearing cooldown.
+
+        ## Global Notification Settings
+        - Global switches define whether **start**, **end**, and **stop** emails are enabled. These settings apply to all groups and static recipients and override any per-group preferences.
+        - **start** emails are sent when a measurement starts.
+        - **end** emails are sent when a measurement ends due to the duration expiring or the user stopping it, when no duration is set.
+        - **stop** emails are sent when a measurement is stopped by the user before the duration expires.
+
+        ## Recipient Structure and Event Permissions
+        - **Groups** are collections of recipients that can be activated for the current run. They are managed in the E-Mail section and can be selected both in the Measurement settings and on the Dashboard.
+        - **Static recipients** behave like an always-active hidden system group and are managed in the E-Mail section. They will receive all notification emails regardless of the active groups for the current run.
+        - Per-group and per-static-recipient event permissions define which notifications each source may receive. Alerts are allways sent to all active groups and static recipients.
+        - Group notification permissions can be edited both here and in the E-Mail group stepper.
+
+        ## Alert History
+        - The Alert History table on the Dashboard shows recent alerts with timestamps, associated images (if enabled).
+        - Clicking on an alert entry opens the associated image, if snapshot emails are enabled. This allows you to review the captured motion event directly from the history.
+        - Deleting the alert history deletes it for all users and cannot be undone, so use it with caution.
+        - This can help you verify that the motion detection is working as expected and that the relevant events are being captured and sent via email.
+        - The alert history plot shows the number of alerts per hour for the last 24 hours.
+
+        ## How to start a measurement:
+        1. Open **Dashboard > Measurement** .
+        2. Set a duration if you want the measurement to stop automatically after a certain time.
+        3. Select the active groups for the current run. You can also change the active groups during an active session from the Dashboard.
+        4. Click **Start Measurement**.
+
+        ## How to stop a measurement:
+        1. Open **Dashboard > Measurement**.
+        2. Click **Stop Measurement**. Confirm that you want to stop the measurement in the confirmation dialog.
+        3. If you have enabled end emails, the configured recipients will receive a notification about the measurement ending.
+
+        ## How to select active groups for the current run:
+        1. Open **Dashboard > Measurement**.
+        2. Use the group selector to choose which groups should be active for the current run. You can also change the active groups during an active session from the Dashboard.
+        3. The selected groups will receive notifications according to their configured event permissions for the current run.
+
+        ## How to change active groups from the Dashboard:
+        1. Open the **Dashboard**.
+        2. click on the 'x' icon in the **Active Groups** block to dismiss the group from the active selection.
+        3. Click on the group name in the **Available Groups** block to add another group to the active selection for the current run.
+
+        ## Troubleshooting
+        - If you don't receive start/end emails, verify that the intended recipients are either static or part of an active group for the current run and that the global notification settings allow the relevant event type.
+        - If you don't receive alert emails, check the same conditions for static and active group membership and verify that the alert email setting is enabled for those recipients. Additionally, check the Alert-History or logs for any errors related to email sending.
+
+    - title: "E-Mail Notifications"
+      link: "/settings#email"
+      content: |
+        The E-Mail section manages the delivery infrastructure and recipient structure used by measurement and alert emails.
+
+        ## SMTP
+        - Enter the sender address, SMTP server, and SMTP port.
+        - If you want your E-Mails to be pretty, use HTML-Mode.
+        - Use **Send test email** to verify that the current setup can reach the effective recipient set.
+
+        ## Address Book
+        - Add every known email address to the shared address book.
+        - Rename or delete addresses directly in the table.
+        - The address book is the shared source for static recipients and group membership.
+
+        ## Static Recipients
+        - Use the **Static** column in the address-book table to mark recipients that should always receive emails.
+        - Static recipients are always included in addition to any currently active groups.
+        - Internally they behave like an always-active system group, but that group stays hidden from the normal group selectors.
+
+        ## Groups
+        - Use the guided group editor to create, edit, review, save, or delete recipient groups.
+        - Selecting an existing group loads it immediately into the stepper so you can continue editing without an extra load button.
+        - Groups are used to organize non-static recipients and to select the audience for the current run.
+        - Lifecycle permissions for each group can be edited here and in **Settings > Measurement**.
+
+        ## How to Configure E-Mail Notifications
+        - **SMTP Server**: Enter the address of your SMTP server (for TUHH it's SMTP Server: mail.tuhh.de).
+        - **Port**: Specify the port number used by your SMTP server (for TUHH it's Port 25).
+        - **Username and Password**: Username and Password are not required for sending emails via TUHH's SMTP server as long as the sender is using the TUHHs intranet.
+        - **Recipient Email**: Enter the email address in the address book by entering it in the 'Email' field and clicking 'Add'.
+        - **Static Recipients**: Mark recipients as static to ensure they receive all notifications regardless of group selection.
+        - **Recipient Groups**: create a new recipient group in the according section with the 'Add Group' button to send notifications to a subset of recipients. You can create custom groups as needed or edit them.
+        - **Test Configuration**: Use the 'Send test email' button to verify that your settings are correct and that you (and your recipients) can receive emails. In HTML mode the image is embedded directly in the message; otherwise it is sent as an attachment. This will send a test email to all addresses in the address book, so make sure to only include addresses you have access to when testing.
+
+        ## How to create a recipient group:
+        1. Open **Settings > E-Mail Notifications**.
+        2. Scroll to the **Groups** section.
+        3. Click **Add Group** to create a new group.
+        4. Enter a name for the group and select the desired recipients from the address book to include in the group.
+        5. Set the lifecycle event permissions for the group (start, end, stop).
+        6. Click **Save Group** to persist the new group.
+
+        ## How to edit or delete a recipient group:
+        1. Open **Settings > E-Mail Notifications**.
+        2. Scroll to the **Groups** section.
+        3. Switch to the **Edit** section.
+        4. Select the group you want to edit.
+        5. Delete the group by clicking the **Delete** button.
+        4. Make the desired changes to the recipient selection.
+        5. Set the lifecycle event permissions for the group (start, end, stop).
+        6. Click **Save Group** to persist the changes.
+
+        ## Troubleshooting
+        - If you don't receive test emails, verify that your SMTP settings are correct and that the intended recipients are included in the address book.
+        - If you receive test emails but not measurement notifications, check that the recipients are either static or part of an active group for the current run and that the relevant lifecycle events are enabled for those recipients. Aditionally, check the Alert-History or logs for any errors related to email sending.
+
+    - title: "Appearance"
+      link: "/settings#appearance"
+      content: |
+        The Appearance section stores browser-local UI preferences.
+
+        ## Available Option
+        - **Dark mode** toggles the light and dark theme for the current browser session and future visits from the same browser profile.
+
+        ## Notes
+        - This preference affects only the browser UI.
+
+    - title: "Metadata"
+      link: "/settings#metadata"
+      content: |
+        Metadata identifies this tracker instance across the interface and outgoing emails.
+
+        ## Available Fields
+        - **CVD ID**: Numeric identifier of the tracker instance.
+        - **CVD Name**: Human-readable name shown in the header, footer, and outgoing email content.
+
+        ## Applying Changes
+        - Click **Apply** to save metadata changes.
+        - The preview title updates immediately so you can verify the naming before saving.
+        - After saving, the browser tab title and shared header/footer title update immediately as well.
+
+    - title: "Configuration"
+      link: "/settings#config"
+      content: |
+        The Configuration section supports both exporting the current config and importing settings from another config file through a guided flow.
+
+        ## Download
+        - Download the current `config.yaml` as a backup before major changes.
+
+        ## Guided Import
+        1. Upload a YAML config file.
+        2. Review invalid, missing, or unchanged entries.
+        3. Apply either all transferable settings or only selected ready entries.
+
+        ## Import Notes
+        - This Feature is designed to help you transfer settings from one instance to another or restore a previous configuration from a backup file. Use with caution!
+        - Invalid values are blocked and shown explicitly.
+        - Unknown settings are not imported.
+        - The guided import updates only the settings you choose to apply.
+
+        ## HTTPS / Reverse Proxy
+        - `gui.reverse_proxy_enabled: true` enables trusted reverse-proxy handling for deployments behind NGINX.
+        - `gui.forwarded_allow_ips` should contain the proxy IPs that are allowed to forward `X-Forwarded-*` headers (e.g., `["127.0.0.1", "::1"]` or `"*"` for all IPs). For security, restrict this to trusted proxy IPs only.
+        - `gui.root_path` is only needed when the application is published below a subpath such as `/cvd`.
+        - `gui.session_cookie_https_only: true` is recommended when the public site is HTTPS-only.
+        - `email.website_url_source` controls how links in outgoing emails are resolved: `runtime_persist` keeps the previous adaptive behavior, `runtime` uses the runtime URL without writing it back, and `config` always prefers the configured `email.website_url`.
+
+    - title: "Software Update"
+      link: "/settings#update"
+      content: |
+        The Software Update section checks whether the local installation is behind the configured source revision.
+
+        ## Update Flow
+        - Click **Check & Update**.
+        - If the installation is already current, the page reports that no update is required.
+        - If updates are available, the application forwards you into the updater flow.
+
+    - title: "Logs"
+      link: "/settings#logs"
+      content: |
+        The Logs section helps with troubleshooting and export.
+
+        ## Available Tools
+        - **Download Logs (ZIP)** exports recent log files.
+        - **Live Log** shows current application output in the browser.
+        - **Level Filter** limits the visible entries to a selected severity.
+        - **Pause** and **Clear** help isolate a specific issue while reproducing it.
+
+    - title: "Troubleshooting"
+      link: "/settings#logs"
+      content: |
+        ## Common Issues
+        - **Camera not working**: Check the physical connection, selected device index, and camera section status.
+        - **No emails arrive**: Verify SMTP settings, sender address, and whether the intended recipients are static or part of an active group for the current run.
+        - **Too many alerts**: Reduce motion sensitivity, review ROI placement, and confirm alert delay and cooldown values.
+        - **Wrong people receive lifecycle emails**: Check static recipients in the E-Mail section and active groups plus event permissions in the Measurement section.
+
+        ## Next Step
+        If the issue persists, open **Settings > Logs** and export the recent logs for inspection.

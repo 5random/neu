@@ -4,13 +4,23 @@
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# Metadata
+# ---------------------------------------------------------------------------
+metadata:
+  version: '1.0'
+  description: CVD-Tracker
+  cvd_id: 1
+  cvd_name: Instanz
+  released_at: '2023-01-01'
+
+# ---------------------------------------------------------------------------
 # Webcam
 # ---------------------------------------------------------------------------
 webcam:
-  camera_index: 0
+  camera_index: 1
   default_resolution:
-    width: 640
-    height: 480
+    width: 1920
+    height: 1080
   fps: 30
   resolution:
     - width: 320
@@ -44,7 +54,7 @@ uvc_controls:
   gamma: 164
   white_balance:
     auto: true
-    value: 4660
+    value: 4600
   gain: 10
   backlight_compensation: 42
   exposure:
@@ -57,11 +67,11 @@ uvc_controls:
 motion_detection:
   region_of_interest:
     enabled: true
-    x: 117
-    y: 125
-    width: 382
-    height: 269
-  sensitivity: 0.2
+    x: 891
+    y: 527
+    width: 93
+    height: 93
+  sensitivity: 0.1
   background_learning_rate: 0.005
   min_contour_area: 252
 
@@ -70,47 +80,173 @@ motion_detection:
 # ---------------------------------------------------------------------------
 measurement:
   auto_start: false
-  session_timeout_minutes: 60
+  session_timeout_minutes: 0
   save_alert_images: true
   image_save_path: ./alerts/
   image_format: jpg
   image_quality: 85
-  alert_delay_seconds: 300
+  alert_delay_seconds: 30
+  session_timeout_seconds: 0
+  max_alerts_per_session: 5
+  alert_check_interval: 5.0
+  alert_cooldown_seconds: 30
+  alert_include_snapshot: true
+  inactivity_timeout_minutes: 120
+  motion_summary_interval_seconds: 900
+  enable_motion_summary_logs: true
+  history_path: data/history
 
 # ---------------------------------------------------------------------------
 # E‑Mail
 # ---------------------------------------------------------------------------
 email:
-  website_url: http://134.28.91.48:8080
+  website_url: http://localhost:8080/
+  website_url_source: runtime_persist
   recipients:
-    - CHANGE_ME@example.com
-  smtp_server: mail.tuhh.de
+    - haha@tuhh.de
+    - hoho@tuhh.de
+    - wild@tuhh.de
+    - lols@tuhh.de
+  smtp_server: smtp.freesmtpservers.com
   smtp_port: 25
   sender_email: CHANGE_ME@tuhh.de
   templates:
     alert:
-      subject: 'CVD-TRACKER-Alert: no motion detected - {timestamp}'
-      body: '
+      subject: 'CVD-TRACKER{cvd_id}-{cvd_name}-Alert: no motion detected - {timestamp}'
+      body: |-
         Movement has not been detected since {timestamp}!
         Please check the issue via the web application at: {website_url}.
 
         Details:
+        CVD-ID: {cvd_id}
+        CVD-Name: {cvd_name}
         Session-ID: {session_id}
-        Last motion at: {last_motion_time}
+        Last motion registered at: {last_motion_time}
         Camera: Index {camera_index}
         Sensitivity: {sensitivity}
         ROI enabled: {roi_enabled}
 
-        Attached is the current webcam image.
-        '
+        {snapshot_note}
+    measurement_start:
+      subject: 'CVD-TRACKER{cvd_id}-{cvd_name}: Measurement started - {timestamp}'
+      body: |+
+        CVD-Tracker{cvd_id}-{cvd_name} Measurement Started
+        A new measurement session has started at {timestamp}.
+
+        You can monitor the session via the web application at: {website_url}.
+
+        Details:
+           CVD-ID:         {cvd_id}
+           CVD-Name:       {cvd_name}
+           Website URL:    {website_url}
+
+           Session-ID:     {session_id}
+           Last motion registered at: {last_motion_time}
+           Start:          {start_time}
+           End:            {end_time}
+           Duration:       {duration}
+           Reason:         {reason}
+
+           Camera: Index   {camera_index}
+           Sensitivity:    {sensitivity}
+           ROI enabled:    {roi_enabled}
+
+    measurement_end:
+      subject: 'CVD-TRACKER{cvd_id}-{cvd_name}: Measurement ended - {timestamp}'
+      body: |
+        CVD-Tracker{cvd_id}-{cvd_name} Measurement Ended
+        The measurement session has ended at {timestamp}.
+
+        You can monitor the session via the web application at: {website_url}.
+
+        Details:
+           CVD-ID:         {cvd_id}
+           CVD-Name:       {cvd_name}
+           Website URL:    {website_url}
+
+           Session-ID:     {session_id}
+           Last motion registered at: {last_motion_time}
+           Start:          {start_time}
+           End:            {end_time}
+           Duration:       {duration}
+           Reason:         {reason}
+
+           Camera: Index   {camera_index}
+           Sensitivity:    {sensitivity}
+           ROI enabled:    {roi_enabled}
+    measurement_stop:
+      subject: 'CVD-TRACKER{cvd_id}-{cvd_name}: Measurement stopped - {timestamp}'
+      body: |
+        CVD-Tracker{cvd_id}-{cvd_name} Measurement Stopped
+        The measurement session was stopped at {timestamp}.
+
+        You can access the web application at: {website_url}.
+
+        Details:
+           CVD-ID:         {cvd_id}
+           CVD-Name:       {cvd_name}
+           Website URL:    {website_url}
+
+           Session-ID:     {session_id}
+           Start:          {start_time}
+           End:            {end_time}
+           Duration:       {duration}
+           Reason:         {reason}
+
+           Camera: Index   {camera_index}
+           Sensitivity:    {sensitivity}
+           ROI enabled:    {roi_enabled}
+  send_as_html: true
+  groups:
+    TEST:
+      - haha@tuhh.de
+      - hoho@tuhh.de
+      - wild@tuhh.de
+    TEST2:
+      - wild@tuhh.de
+      - haha@tuhh.de
+    TEST3:
+      - lols@tuhh.de
+  active_groups:
+    - TEST3
+    - TEST
+  static_recipients:
+    - haha@tuhh.de
+  explicit_targeting: true
+  notifications:
+    on_start: true
+    on_end: true
+    on_stop: true
+  group_prefs:
+    TEST:
+      on_start: true
+      on_end: true
+      on_stop: false
+    TEST2:
+      on_start: true
+      on_end: true
+      on_stop: true
+    TEST3:
+      on_start: true
+      on_end: true
+      on_stop: true
+  recipient_prefs:
+    haha@tuhh.de:
+      on_start: true
+      on_end: true
+      on_stop: true
 
 # ---------------------------------------------------------------------------
 # GUI
 # ---------------------------------------------------------------------------
 gui:
-  title: CVD-Tracker
+  title: CVD-Tracker-{cvd_id}-{cvd_name}
   host: localhost
   port: 8080
+  reverse_proxy_enabled: false
+  forwarded_allow_ips: 127.0.0.1
+  root_path: ''
+  session_cookie_https_only: false
   auto_open_browser: false
   update_interval_ms: 100
 
@@ -123,3 +259,4 @@ logging:
   max_file_size_mb: 10
   backup_count: 5
   console_output: true
+
