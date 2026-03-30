@@ -101,6 +101,108 @@ def _emit(progress: Optional[Callable[[str], None]], msg: str) -> None:
             # Do not break update flow due to UI callback issues
             logger.error(f'Progress callback failed: {e}')
 
+
+def _read_text_file(path: Path) -> str:
+    with path.open('r', encoding='utf-8') as f:
+        return f.read()
+
+
+def _logical_requirements_lines(content: str) -> list[str]:
+    """Return logical requirements lines with line continuations joined."""
+    logical_lines: list[str] = []
+    current = ""
+
+    for raw_line in content.splitlines():
+        stripped = raw_line.strip()
+        if current:
+            current = f"{current} {stripped}".strip()
+        else:
+            current = stripped
+
+        if current.endswith("\\"):
+            current = current[:-1].rstrip()
+            continue
+
+        if current:
+            logical_lines.append(current)
+        current = ""
+
+    if current:
+        logical_lines.append(current)
+
+    return logical_lines
+
+
+def _verify_requirements_file(
+    req_path: Path,
+    progress: Optional[Callable[[str], None]],
+) -> Tuple[bool, bool]:
+    """Verify requirements integrity before dependency installation.
+
+    Returns ``(is_valid, use_hashes)``.
+    Accepted verification modes:
+    - Exact SHA-256 match via ``CVD_REQUIREMENTS_SHA256``
+    - Pip-compatible hash pinning on every installable requirement line
+    """
+    if not req_path.exists():
+        _emit(progress, f"Requirements file not found: {req_path}")
+        return False, False
+
+    try:
+        content = _read_text_file(req_path)
+    except Exception as e:
+        _emit(progress, f"Error reading requirements file: {e}")
+        return False, False
+
+    expected_sha256 = str(os.environ.get('CVD_REQUIREMENTS_SHA256', '') or '').strip().lower()
+    file_sha256 = hashlib.sha256(content.encode('utf-8')).hexdigest().lower()
+
+    if expected_sha256:
+        if file_sha256 != expected_sha256:
+            _emit(
+                progress,
+                'Requirements checksum verification failed: '
+                f'expected {expected_sha256}, got {file_sha256}.',
+            )
+            return False, False
+        _emit(progress, 'requirements.txt verified via trusted SHA-256 checksum.')
+        return True, False
+
+    requirement_lines: list[str] = []
+    missing_hashes: list[str] = []
+
+    for line in _logical_requirements_lines(content):
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith(('-r ', '--requirement ', '-c ', '--constraint ')):
+            _emit(progress, f'Unsupported nested requirements directive in {req_path.name}: {line}')
+            return False, False
+        if line.startswith(('-e ', '--editable ')):
+            _emit(progress, f'Editable installs not supported with hash verification in {req_path.name}: {line}')
+            return False, False
+        if line.startswith('-'):
+            # Global pip options are allowed but do not count as installable requirements.
+            continue
+
+        requirement_lines.append(line)
+        if '--hash=' not in line:
+            missing_hashes.append(line)
+
+    if not requirement_lines:
+        _emit(progress, f'No installable requirements found in {req_path.name}.')
+        return False, False
+
+    if missing_hashes:
+        _emit(
+            progress,
+            'Requirements verification failed: every dependency must be hash-pinned '
+            'or CVD_REQUIREMENTS_SHA256 must match the full file.',
+        )
+        return False, False
+
+    _emit(progress, 'requirements.txt verified via per-package hashes.')
+    return True, True
+
 def get_local_commit_short() -> str:
     code, out, _ = _run(['git', 'rev-parse', '--short', 'HEAD'])
     return out.strip() if code == 0 and out.strip() else 'unknown'
@@ -264,22 +366,6 @@ def perform_update(progress: Optional[Callable[[str], None]] = None) -> bool:
             # Warn that auto-updates are enabled
             logger.warning('Automatic dependency updates are enabled. Proceeding only after requirements verification.')
             _emit(progress, 'Verifying requirements.txt before installing dependencies...')
-
-            def _verify_requirements_file(req_path: Path, progress: Optional[Callable[[str], None]]) -> Tuple[bool, bool]:
-                """
-                Verify requirements file existence.
-                Returns (is_valid, use_hashes).
-                """
-                if not req_path.exists():
-                    return False, False
-                # Simple check: just verify it exists and is readable
-                try:
-                    with open(req_path, 'r') as f:
-                        content = f.read()
-                    return True, False # We don't enforce hashes strictly here for now
-                except Exception as e:
-                    _emit(progress, f"Error reading requirements file: {e}")
-                    return False, False
 
             ok, use_hashes = _verify_requirements_file(req, progress)
             if not ok:

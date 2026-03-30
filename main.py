@@ -341,6 +341,52 @@ def resolve_ui_run_settings(
     }
 
 
+def resolve_storage_secret(
+    logger: logging.Logger,
+    *,
+    secret_file: Path | None = None,
+) -> str:
+    """Resolve a stable storage secret for NiceGUI user storage sessions."""
+    env_secret = str(os.environ.get("CVD_STORAGE_SECRET", "") or "").strip()
+    if env_secret:
+        return env_secret
+
+    resolved_secret_file = secret_file or Path(__file__).with_suffix(".storage_secret")
+
+    try:
+        persisted_secret = resolved_secret_file.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        persisted_secret = ""
+    except Exception as exc:
+        logger.debug("Could not read storage secret file %s: %s", resolved_secret_file, exc)
+        persisted_secret = ""
+
+    if persisted_secret:
+        return persisted_secret
+
+    storage_secret = secrets.token_urlsafe(32)
+    try:
+        _write_storage_secret_file(resolved_secret_file, storage_secret)
+    except Exception as exc:
+        logger.debug("Could not persist storage secret to file %s: %s", resolved_secret_file, exc)
+    return storage_secret
+
+
+def _write_storage_secret_file(secret_file: Path, storage_secret: str) -> None:
+    """Persist a storage secret with owner-only permissions when supported."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(secret_file, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as secret_handle:
+            fd = -1
+            secret_handle.write(storage_secret)
+        if os.name == "posix":
+            os.chmod(secret_file, 0o600)
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
 def parse_args() -> argparse.Namespace:
     """Kommandozeilenargumente parsen."""
     parser = argparse.ArgumentParser(description="CVD-Tracker")
@@ -466,8 +512,8 @@ def main() -> int:
         create_gui(config_path=args.config)
         
         # NiceGUI starten
-        # Provide a storage_secret to enable app.storage.user access (used for sharing instances)
-        storage_secret = os.environ.get('CVD_STORAGE_SECRET') or secrets.token_urlsafe(32)
+        # Keep app.storage.user stable across restarts when no env secret is configured.
+        storage_secret = resolve_storage_secret(logger)
         ui_run_settings = resolve_ui_run_settings(cfg, args, logger)
         logger.info(
             "Starting web UI on %s:%s (platform=%s, headless_linux=%s, auto_open_browser=%s, reverse_proxy_enabled=%s, root_path=%s)",

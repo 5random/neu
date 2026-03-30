@@ -1,10 +1,6 @@
 from nicegui import ui
 import time
-import sys
-from pathlib import Path
 
-
-from src.cam.camera import Camera
 from src.config import get_logger
 from src.gui.ui_helpers import SECTION_ICONS, create_heading_row
 

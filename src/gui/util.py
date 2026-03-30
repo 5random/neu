@@ -3,6 +3,17 @@ from typing import Optional, Any, Literal
 from nicegui import ui, background_tasks, core, app, Client
 
 NotifyKind = Literal['positive', 'negative', 'warning', 'info', 'ongoing']
+NotifyPosition = Literal[
+    'top-left',
+    'top-right',
+    'bottom-left',
+    'bottom-right',
+    'top',
+    'bottom',
+    'left',
+    'right',
+    'center',
+]
 
 # --- Tab helpers: dynamic title & favicon per client/all clients ---
 def set_tab(title: str | None = None, icon_url: str | None = None, client: Optional[Client] = None) -> None:
@@ -97,20 +108,28 @@ def schedule_bg(coroutine: Any, name: Optional[str] = None) -> Optional[Any]:
     """Safely schedule a coroutine on NiceGUI's event loop.
 
     If the NiceGUI loop is not yet available (core.loop is None), defer scheduling
-    using ui.timer so it runs once the loop is ready. Returns the created task or None
-    when scheduling is deferred.
+    using ui.timer so it runs once the loop is ready. Returns the created background
+    task when scheduled immediately, or the timer handle when scheduling is deferred.
     """
     task_name = name or 'bg_task'
     try:
         if core.loop is None:
-            ui.timer(0.0, lambda: background_tasks.create_lazy(coroutine, name=task_name), once=True)
-            return None
-        background_tasks.create_lazy(coroutine, name=task_name)
-        return None
+            timer = ui.timer(
+                0.0,
+                lambda: background_tasks.create_lazy(coroutine, name=task_name),
+                once=True,
+            )
+            return timer
+        task = background_tasks.create_lazy(coroutine, name=task_name)
+        return task
     except AssertionError:
         # In case create/create_lazy asserts due to loop not being ready, defer via timer
-        ui.timer(0.0, lambda: background_tasks.create_lazy(coroutine, name=task_name), once=True)
-        return None
+        timer = ui.timer(
+            0.0,
+            lambda: background_tasks.create_lazy(coroutine, name=task_name),
+            once=True,
+        )
+        return timer
 
 
 def cancel_task_safely(task: Any) -> None:
@@ -135,7 +154,7 @@ def notify_user(
     message: str,
     *,
     kind: NotifyKind = 'info',
-    position: str = 'bottom-right',
+    position: NotifyPosition = 'bottom-right',
 ) -> None:
     """Show a user-facing toast with a consistent default placement."""
     ui.notify(message, type=kind, position=position)

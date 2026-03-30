@@ -11,6 +11,26 @@ from src.gui.settings_elements.ui_helpers import create_action_button, create_he
 
 logger = get_logger('gui.uvc_sliders')
 
+
+def _handle_config_save_error(config_field: str, error: Exception) -> None:
+    """Log config-save failures with a more specific message for invalid config paths."""
+    if isinstance(error, AttributeError):
+        logger.error(f'Invalid config path for {config_field}: {error}')
+        ui.notify(
+            f'Invalid config path for {config_field}: {error}',
+            type='warning',
+            position='bottom-right',
+        )
+        return
+
+    logger.error(f'Error saving config for {config_field}: {error}')
+    ui.notify(
+        f'Error saving {config_field}: {error}',
+        type='warning',
+        position='bottom-right',
+    )
+
+
 def create_uvc_content(camera: Optional[Camera] = None) -> None:
     if camera is None:
         logger.warning("Camera not available - UVC controls disabled")
@@ -74,9 +94,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                             camera.save_uvc_config()
                             
                 except Exception as e:
-                    logger.error(f'Error saving config for {config_field}: {e}')
-                    ui.notify(f'Error saving {config_field}: {e}', type='warning',
-                              position='bottom-right')
+                    _handle_config_save_error(config_field, e)
 
             # Vorherige Task für dieses Feld abbrechen
             if config_field in debounce_tasks:
@@ -177,9 +195,7 @@ def create_uvc_content(camera: Optional[Camera] = None) -> None:
                     logger.info(f'Saved {config_field}: {value}')
                     
             except Exception as e:
-                logger.error(f'Error saving config for {config_field}: {e}')
-                ui.notify(f'Error saving {config_field}: {e}', type='warning',
-                          position='bottom-right')
+                _handle_config_save_error(config_field, e)
         
         return handler
 
