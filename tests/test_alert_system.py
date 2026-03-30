@@ -1,4 +1,5 @@
 import numpy as np
+import cv2
 from datetime import datetime, timedelta
 
 from src.config import _create_default_config
@@ -12,6 +13,18 @@ def _get_plain_text_parts(msg):
         for part in msg.walk()
         if part.get_content_type() == "text/plain"
     ]
+
+
+def _get_html_parts(msg):
+    return [
+        part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8")
+        for part in msg.walk()
+        if part.get_content_type() == "text/html"
+    ]
+
+
+def _get_image_parts(msg):
+    return [part for part in msg.walk() if part.get_content_maintype() == "image"]
 
 
 def test_send_motion_alert_includes_image(monkeypatch):
@@ -44,6 +57,45 @@ def test_send_motion_alert_includes_image(monkeypatch):
     for _, msg in sent_messages:
         images = [p for p in msg.walk() if p.get_content_maintype() == "image"]
         assert len(images) == 1
+
+
+def test_send_motion_alert_html_embeds_image_inline(monkeypatch):
+    cfg = _create_default_config()
+    cfg.email.recipients = ["recipient@example.com"]
+    cfg.email.sender_email = "sender@example.com"
+    cfg.email.smtp_server = "localhost"
+    cfg.email.smtp_port = 25
+    cfg.email.send_as_html = True
+
+    email_system = EMailSystem(cfg.email, cfg.measurement, cfg)
+    email_system.reset_alert_state(session_id="session")
+    sent_messages = []
+
+    def fake_send_emails_batch(self, messages, max_retries=3, abort_check=None):
+        sent_messages.extend(messages)
+        return len(messages)
+
+    monkeypatch.setattr(EMailSystem, "_send_emails_batch", fake_send_emails_batch)
+    monkeypatch.setattr(EMailSystem, "_should_send_alert_unsafe", lambda self: True)
+
+    assert email_system.send_motion_alert(datetime.now(), "session", np.zeros((10, 10, 3), dtype=np.uint8))
+    assert len(sent_messages) == 1
+
+    msg = sent_messages[0][1]
+    plain_parts = _get_plain_text_parts(msg)
+    html_parts = _get_html_parts(msg)
+    image_parts = _get_image_parts(msg)
+
+    assert len(plain_parts) == 1
+    assert len(html_parts) == 1
+    assert "contains the current webcam image inline" in plain_parts[0]
+    assert "background:#f3f4f6" in html_parts[0]
+    assert "Open Web Application" in html_parts[0]
+    assert 'role="presentation"' in html_parts[0]
+    assert "cid:" in html_parts[0]
+    assert len(image_parts) == 1
+    assert image_parts[0].get("Content-ID")
+    assert image_parts[0].get("Content-Disposition", "").startswith("inline;")
 
 
 def test_send_motion_alert_uses_single_recipient_headers(monkeypatch):
@@ -100,6 +152,87 @@ def test_send_motion_alert_respects_snapshot_flag(monkeypatch):
     plain_text_parts = _get_plain_text_parts(sent_messages[0][1])
     assert len(plain_text_parts) == 1
     assert "Attached is the current webcam image." not in plain_text_parts[0]
+
+
+def test_send_measurement_event_html_adds_html_alternative_without_image(monkeypatch):
+    cfg = _create_default_config()
+    cfg.email.recipients = ["recipient@example.com"]
+    cfg.email.sender_email = "sender@example.com"
+    cfg.email.smtp_server = "localhost"
+    cfg.email.smtp_port = 25
+    cfg.email.send_as_html = True
+    cfg.email.notifications["on_start"] = True
+
+    email_system = EMailSystem(cfg.email, cfg.measurement, cfg)
+    sent_messages = []
+
+    def fake_send_emails_batch(self, messages, max_retries=3, abort_check=None):
+        sent_messages.extend(messages)
+        return len(messages)
+
+    monkeypatch.setattr(EMailSystem, "_send_emails_batch", fake_send_emails_batch)
+
+    assert email_system.send_measurement_event("start", session_id="session-1", start_time=datetime.now()) is True
+    assert len(sent_messages) == 1
+
+    msg = sent_messages[0][1]
+    assert len(_get_plain_text_parts(msg)) == 1
+    assert len(_get_html_parts(msg)) == 1
+    assert _get_image_parts(msg) == []
+
+
+def test_render_html_email_body_does_not_include_trailing_punctuation_in_links():
+    cfg = _create_default_config()
+    email_system = EMailSystem(cfg.email, cfg.measurement, cfg)
+
+    html_body = email_system._render_html_email_body(
+        "Please check the issue via the web application at: http://localhost:8080/."
+    )
+
+    assert 'href="http://localhost:8080/"' in html_body
+    assert 'href="http://localhost:8080/."' not in html_body
+    assert '>http://localhost:8080/</a>.' in html_body
+
+
+def test_send_motion_alert_html_removes_custom_attachment_hint_lines(monkeypatch):
+    cfg = _create_default_config()
+    cfg.email.recipients = ["recipient@example.com"]
+    cfg.email.sender_email = "sender@example.com"
+    cfg.email.smtp_server = "localhost"
+    cfg.email.smtp_port = 25
+    cfg.email.send_as_html = True
+    cfg.email.templates["alert"] = {
+        "subject": "Alert - {timestamp}",
+        "body": (
+            "Custom text\n"
+            "Image will be attached separately.\n"
+            "No motion since {last_motion_time}.\n"
+            "{snapshot_note}"
+        ),
+    }
+
+    email_system = EMailSystem(cfg.email, cfg.measurement, cfg)
+    email_system.reset_alert_state(session_id="session")
+    sent_messages = []
+
+    def fake_send_emails_batch(self, messages, max_retries=3, abort_check=None):
+        sent_messages.extend(messages)
+        return len(messages)
+
+    monkeypatch.setattr(EMailSystem, "_send_emails_batch", fake_send_emails_batch)
+    monkeypatch.setattr(EMailSystem, "_should_send_alert_unsafe", lambda self: True)
+
+    assert email_system.send_motion_alert(datetime.now(), "session", np.zeros((10, 10, 3), dtype=np.uint8))
+    assert len(sent_messages) == 1
+
+    msg = sent_messages[0][1]
+    plain_parts = _get_plain_text_parts(msg)
+    html_parts = _get_html_parts(msg)
+    assert len(plain_parts) == 1
+    assert len(html_parts) == 1
+    assert "attached separately" not in plain_parts[0].lower()
+    assert "attached separately" not in html_parts[0].lower()
+    assert "contains the current webcam image inline" in plain_parts[0]
 
 
 def test_send_motion_alert_does_not_encode_frame_when_snapshot_is_disabled(monkeypatch):
@@ -351,6 +484,46 @@ def test_send_motion_alert_normalizes_legacy_subject_newlines(monkeypatch):
     assert len(serialized_messages) == 1
     assert "Subject: Foo Bar" in serialized_messages[0]
     assert "Subject: Foo\nBar" not in serialized_messages[0]
+
+
+def test_send_test_email_html_embeds_test_image_inline(monkeypatch):
+    cfg = _create_default_config()
+    cfg.email.recipients = ["recipient@example.com"]
+    cfg.email.sender_email = "sender@example.com"
+    cfg.email.smtp_server = "localhost"
+    cfg.email.smtp_port = 25
+    cfg.email.send_as_html = True
+
+    email_system = EMailSystem(cfg.email, cfg.measurement, cfg)
+    sent_messages = []
+
+    def fake_send_emails_batch(self, messages, max_retries=3, abort_check=None):
+        sent_messages.extend(messages)
+        return len(messages)
+
+    class _Response:
+        def __init__(self, content):
+            self.content = content
+
+        def raise_for_status(self):
+            return None
+
+    ok, encoded = cv2.imencode(".jpg", np.zeros((8, 8, 3), dtype=np.uint8))
+    assert ok is True
+
+    monkeypatch.setattr(EMailSystem, "_send_emails_batch", fake_send_emails_batch)
+    monkeypatch.setattr("src.notify.requests.get", lambda *args, **kwargs: _Response(encoded.tobytes()))
+
+    assert email_system.send_test_email() is True
+    assert len(sent_messages) == 1
+
+    msg = sent_messages[0][1]
+    assert len(_get_plain_text_parts(msg)) == 1
+    assert len(_get_html_parts(msg)) == 1
+    image_parts = _get_image_parts(msg)
+    assert len(image_parts) == 1
+    assert image_parts[0].get("Content-ID")
+    assert image_parts[0].get("Content-Disposition", "").startswith("inline;")
 
 
 def test_get_alert_status_reflects_invalidated_session():

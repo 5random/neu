@@ -157,6 +157,7 @@ help:
 
         ## SMTP
         - Enter the sender address, SMTP server, and SMTP port.
+        - If you want your E-Mails to be pretty, use HTML-Mode.
         - Use **Send test email** to verify that the current setup can reach the effective recipient set.
 
         ## Address Book
@@ -182,7 +183,7 @@ help:
         - **Recipient Email**: Enter the email address in the address book by entering it in the 'Email' field and clicking 'Add'.
         - **Static Recipients**: Mark recipients as static to ensure they receive all notifications regardless of group selection.
         - **Recipient Groups**: create a new recipient group in the according section with the 'Add Group' button to send notifications to a subset of recipients. You can create custom groups as needed or edit them.
-        - **Test Configuration**: Use the 'Send Test Email' button to verify that your settings are correct and that you (and your recipients) can receive emails. Also check for an attached image in the test email. This will send a test email to all addresses in the address book, so make sure to only include addresses you have access to when testing.
+        - **Test Configuration**: Use the 'Send test email' button to verify that your settings are correct and that you (and your recipients) can receive emails. In HTML mode the image is embedded directly in the message; otherwise it is sent as an attachment. This will send a test email to all addresses in the address book, so make sure to only include addresses you have access to when testing.
 
         ## How to create a recipient group:
         1. Open **Settings > E-Mail Notifications**.

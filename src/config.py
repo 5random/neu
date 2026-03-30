@@ -270,6 +270,7 @@ class EmailConfig:
     smtp_port: int
     sender_email: str
     templates: Dict[str, Dict[str, str]]
+    send_as_html: bool = False
     # Recipient groups and active group selection
     groups: Dict[str, List[str]] = field(default_factory=dict)
     active_groups: List[str] = field(default_factory=list)
@@ -331,6 +332,11 @@ class EmailConfig:
         if not isinstance(self.explicit_targeting, bool):
             raise TypeError(
                 f"EmailConfig.explicit_targeting must be bool, got {type(self.explicit_targeting).__name__}: {self.explicit_targeting!r}"
+            )
+
+        if not isinstance(self.send_as_html, bool):
+            raise TypeError(
+                f"EmailConfig.send_as_html must be bool, got {type(self.send_as_html).__name__}: {self.send_as_html!r}"
             )
 
         # notifications
@@ -406,6 +412,8 @@ class EmailConfig:
                 errors.append(f"invalid static recipient email address: {mail}")
         if not isinstance(self.explicit_targeting, bool):
             errors.append(f"explicit_targeting must be bool, got {type(self.explicit_targeting).__name__}")
+        if not isinstance(self.send_as_html, bool):
+            errors.append(f"send_as_html must be bool, got {type(self.send_as_html).__name__}")
         # Notifications flags (optional)
         if self.notifications is not None and isinstance(self.notifications, dict):
             for k, v in self.notifications.items():
@@ -1017,6 +1025,7 @@ _CONFIG_IMPORT_PATHS: Dict[str, List[str]] = {
         "email.smtp_server",
         "email.smtp_port",
         "email.sender_email",
+        "email.send_as_html",
         "email.templates.alert.subject",
         "email.templates.alert.body",
         "email.templates.test.subject",
@@ -1921,6 +1930,7 @@ def _analyze_email_section(imported_data: Dict[str, Any], collector: _ConfigImpo
         "smtp_server",
         "smtp_port",
         "sender_email",
+        "send_as_html",
         "templates",
         "groups",
         "active_groups",
@@ -1970,6 +1980,14 @@ def _analyze_email_section(imported_data: Dict[str, Any], collector: _ConfigImpo
         seen_paths=seen_paths,
         converter=lambda value: _coerce_string(value, allow_empty=False).strip(),
         validator=lambda value: None if EmailConfig.EMAIL_RE.match(value) else "sender_email must be a valid email address",
+    )
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="send_as_html",
+        path="email.send_as_html",
+        seen_paths=seen_paths,
+        converter=_coerce_bool,
     )
 
     template_paths = [
@@ -2579,6 +2597,7 @@ def _create_default_config() -> AppConfig:
             smtp_server="smtp.example.com",
             smtp_port=25,
             sender_email="sender@example.com",
+            send_as_html=False,
             templates={
                 "alert": {
                     "subject": "CVD-TRACKER{cvd_id}-{cvd_name}-Alert: no motion detected - {timestamp}",

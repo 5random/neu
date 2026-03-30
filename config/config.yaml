@@ -195,6 +195,7 @@ email:
            Camera: Index   {camera_index}
            Sensitivity:    {sensitivity}
            ROI enabled:    {roi_enabled}
+  send_as_html: true
   groups:
     TEST:
       - haha@tuhh.de

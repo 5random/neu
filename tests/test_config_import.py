@@ -134,6 +134,34 @@ email:
     assert _entry(preview, "email.group_prefs").status == "ready"
 
 
+def test_analyze_imported_config_accepts_send_as_html() -> None:
+    preview = analyze_imported_config_text(
+        """
+email:
+  send_as_html: true
+""",
+        current_config=_create_default_config(),
+    )
+
+    entry = _entry(preview, "email.send_as_html")
+    assert entry.status == "ready"
+    assert preview.ready_updates["email.send_as_html"] is True
+
+
+def test_analyze_imported_config_rejects_invalid_send_as_html() -> None:
+    preview = analyze_imported_config_text(
+        """
+email:
+  send_as_html: maybe
+""",
+        current_config=_create_default_config(),
+    )
+
+    entry = _entry(preview, "email.send_as_html")
+    assert entry.status == "invalid"
+    assert "bool" in entry.reason.lower()
+
+
 def test_analyze_imported_config_rejects_invalid_explicit_targeting() -> None:
     preview = analyze_imported_config_text(
         """
@@ -282,6 +310,7 @@ def test_load_config_uses_default_fallback_for_unknown_email_event_key() -> None
             "smtp_port": default_cfg.email.smtp_port,
             "sender_email": default_cfg.email.sender_email,
             "templates": dict(default_cfg.email.templates),
+            "send_as_html": default_cfg.email.send_as_html,
             "groups": dict(default_cfg.email.groups),
             "active_groups": list(default_cfg.email.active_groups),
             "static_recipients": list(default_cfg.email.static_recipients),

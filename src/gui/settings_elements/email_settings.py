@@ -39,7 +39,7 @@ OVERVIEW_CARD_TOOLTIPS = {
 }
 EMAIL_TOOLTIP_TEXTS = {
     "routing_hint": "Routing logic is configured in Measurement settings. This page manages addresses, static recipients, groups, and SMTP.",
-    "test_email": "Send a test email to the currently effective recipient set.",
+    "test_email": "Send a test email to the currently effective recipient set. HTML mode embeds the image inline; plain mode attaches it.",
     "overview_table": "Preview of the recipients that are currently reachable through static delivery and active groups.",
     "delete_selected": "Remove the selected addresses from the address book, all groups, and the static recipient list.",
     "address_input": "Add an address to the shared address book. Static delivery can be toggled in the table below.",
@@ -67,6 +67,7 @@ EMAIL_TOOLTIP_TEXTS = {
     "smtp_sender": "Email address used as the sender of outgoing emails.",
     "smtp_server": "Hostname or IP address of the SMTP server.",
     "smtp_port": "SMTP port used for the outgoing connection.",
+    "smtp_html": "Send emails with an additional HTML version. Alert and test images are embedded inline instead of being attached.",
     "smtp_status": "Validation state of the current SMTP input values.",
     "smtp_save": "Persist the current SMTP settings to the configuration file.",
 }
@@ -303,6 +304,7 @@ def _build_email_preview_cfg(
         smtp_port=current_email_cfg.smtp_port,
         sender_email=current_email_cfg.sender_email,
         templates={name: dict(template_cfg) for name, template_cfg in current_email_cfg.templates.items()},
+        send_as_html=bool(getattr(current_email_cfg, "send_as_html", False)),
         groups={name: list(members) for name, members in groups.items()},
         active_groups=active_groups,
         static_recipients=list(static_recipients),
@@ -388,6 +390,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             "server": email_cfg.smtp_server,
             "port": email_cfg.smtp_port,
             "sender": email_cfg.sender_email,
+            "html": bool(getattr(email_cfg, "send_as_html", False)),
         },
         "groups": _visible_groups(email_cfg),
         "static_recipients": list(email_cfg.get_static_recipients_for_editor()),
@@ -469,6 +472,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             "server": email_cfg_obj.smtp_server,
             "port": email_cfg_obj.smtp_port,
             "sender": email_cfg_obj.sender_email,
+            "html": bool(getattr(email_cfg_obj, "send_as_html", False)),
         }
         state["groups"] = _visible_groups(email_cfg_obj)
         state["static_recipients"] = list(email_cfg_obj.get_static_recipients_for_editor())
@@ -1052,7 +1056,8 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                 f"active_groups={len(getattr(email_cfg_obj, 'active_groups', []) or [])}, "
                 f"static_recipients={len(getattr(email_cfg_obj, 'static_recipients', []) or [])}, "
                 f"smtp_server={getattr(email_cfg_obj, 'smtp_server', '<unknown>')}, "
-                f"sender={getattr(email_cfg_obj, 'sender_email', '<unknown>')}"
+                f"sender={getattr(email_cfg_obj, 'sender_email', '<unknown>')}, "
+                f"send_as_html={bool(getattr(email_cfg_obj, 'send_as_html', False))}"
             )
         except Exception:
             return "EmailConfig(summary): <error building summary>"
@@ -1072,6 +1077,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
             current_cfg.email.smtp_server = state["smtp"]["server"]
             current_cfg.email.smtp_port = int(state["smtp"]["port"])
             current_cfg.email.sender_email = state["smtp"]["sender"]
+            current_cfg.email.send_as_html = bool(state["smtp"].get("html", False))
             current_cfg.email.groups = {name: list(members) for name, members in state["groups"].items()}
             current_cfg.email.static_recipients = list(state["static_recipients"])
             current_cfg.email.group_prefs = {
@@ -1788,6 +1794,12 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                     .tooltip(EMAIL_TOOLTIP_TEXTS["smtp_port"])
                     .classes("w-28")
                 )
+                html_mode_cb = (
+                    ui.checkbox("Send as HTML email")
+                    .bind_value(state["smtp"], "html")
+                    .tooltip(EMAIL_TOOLTIP_TEXTS["smtp_html"])
+                    .classes("self-center")
+                )
                 with ui.row().classes("items-center gap-1"):
                     with ui.icon("check_circle").props("size=md") as status_icon:
                         status_tt = ui.tooltip("")
@@ -1818,7 +1830,7 @@ def create_emailcard(*, email_system: Optional[EMailSystem] = None) -> None:
                 return
             _notify_persist_failure(result)
 
-        for inp in (sender_inp, server_inp, port_inp):
+        for inp in (sender_inp, server_inp, port_inp, html_mode_cb):
             inp.on("update:model-value", lambda _: update_status_icon())
         update_status_icon()
 

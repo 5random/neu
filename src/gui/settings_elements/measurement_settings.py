@@ -483,6 +483,7 @@ def create_measurement_settings_card(
             smtp_port=current_email_cfg.smtp_port,
             sender_email=current_email_cfg.sender_email,
             templates={name: dict(template_cfg) for name, template_cfg in current_email_cfg.templates.items()},
+            send_as_html=bool(getattr(current_email_cfg, 'send_as_html', False)),
             groups={group: list(members) for group, members in notification_state['groups'].items()},
             active_groups=list(notification_state['active_groups']),
             static_recipients=list(notification_state['static_recipients']),

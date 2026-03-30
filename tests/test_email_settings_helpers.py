@@ -132,6 +132,7 @@ def test_snapshot_and_restore_email_config_state_rolls_back_mutations() -> None:
     email.static_recipients = ["base@example.com"]
     email.group_prefs = {"ops": {"on_start": False}}
     email.notifications = {"on_start": True}
+    email.send_as_html = True
 
     snapshot = email_settings._snapshot_email_config_state(email)
 
@@ -141,6 +142,7 @@ def test_snapshot_and_restore_email_config_state_rolls_back_mutations() -> None:
     email.static_recipients = []
     email.group_prefs["ops"]["on_start"] = True
     email.notifications["on_start"] = False
+    email.send_as_html = False
 
     email_settings._restore_email_config_state(email, snapshot)
 
@@ -150,6 +152,23 @@ def test_snapshot_and_restore_email_config_state_rolls_back_mutations() -> None:
     assert email.static_recipients == ["base@example.com"]
     assert email.group_prefs == {"ops": {"on_start": False}}
     assert email.notifications == {"on_start": True}
+    assert email.send_as_html is True
+
+
+def test_build_email_preview_cfg_preserves_html_mode() -> None:
+    cfg = _create_default_config()
+    cfg.email.send_as_html = True
+
+    preview = email_settings._build_email_preview_cfg(
+        cfg,
+        cfg.email,
+        recipients=["preview@example.com"],
+        groups={"ops": ["preview@example.com"]},
+        static_recipients=["preview@example.com"],
+        group_prefs={"ops": {"on_start": True, "on_end": False, "on_stop": True}},
+    )
+
+    assert preview.send_as_html is True
 
 
 def test_group_editor_snapshot_restore_restores_selected_and_draft_values() -> None:

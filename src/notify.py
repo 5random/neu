@@ -13,6 +13,7 @@ Fokus auf einfache, robuste Implementation.
 
 from __future__ import annotations
 from collections.abc import Iterable
+import html
 import smtplib
 import logging
 import time
@@ -29,12 +30,13 @@ import asyncio
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
-from email.utils import formatdate
+from email.utils import formatdate, make_msgid
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Callable
 
 from .config import EmailConfig, MeasurementConfig, AppConfig, get_logger
 
 _RUNTIME_WEBSITE_URL_KEY = 'cvd.runtime_website_url'
+_URL_PATTERN = re.compile(r"(https?://[^\s<>'\"]+)")
 
 
 def _iterable_str_list(value: object) -> List[str]:
@@ -348,7 +350,9 @@ class EMailSystem:
         }
 
     @staticmethod
-    def _alert_snapshot_notice() -> str:
+    def _alert_snapshot_notice(*, inline_image: bool) -> str:
+        if inline_image:
+            return "The HTML version of this email contains the current webcam image inline."
         return "Attached is the current webcam image."
 
     @staticmethod
@@ -371,9 +375,9 @@ class EMailSystem:
         )
         return any(marker in lowered for marker in attachment_markers)
 
-    def _finalize_alert_body(self, body: str, *, has_snapshot_attachment: bool) -> str:
+    def _finalize_alert_body(self, body: str, *, keep_attachment_hints: bool) -> str:
         text = body or ""
-        if has_snapshot_attachment:
+        if keep_attachment_hints:
             return text.rstrip()
 
         lines = [
@@ -384,6 +388,389 @@ class EMailSystem:
         text = "\n".join(lines)
         text = re.sub(r"(?:\r?\n){3,}", "\n\n", text)
         return text.rstrip()
+
+    @staticmethod
+    def _split_trailing_url_punctuation(url: str) -> tuple[str, str]:
+        trimmed_url = url or ""
+        trailing = ""
+
+        while trimmed_url and trimmed_url[-1] in ".,;:!?":
+            trailing = trimmed_url[-1] + trailing
+            trimmed_url = trimmed_url[:-1]
+
+        unmatched_closers = {
+            ")": "(",
+            "]": "[",
+            "}": "{",
+        }
+        while trimmed_url and trimmed_url[-1] in unmatched_closers:
+            closing = trimmed_url[-1]
+            opening = unmatched_closers[closing]
+            if trimmed_url.count(closing) <= trimmed_url.count(opening):
+                break
+            trailing = closing + trailing
+            trimmed_url = trimmed_url[:-1]
+
+        return trimmed_url, trailing
+
+    @staticmethod
+    def _linkify_plain_text(text: str) -> str:
+        if not text:
+            return ""
+
+        parts: list[str] = []
+        last_idx = 0
+        for match in _URL_PATTERN.finditer(text):
+            start, end = match.span()
+            if start > last_idx:
+                parts.append(html.escape(text[last_idx:start]))
+            url = match.group(0)
+            normalized_url, trailing = EMailSystem._split_trailing_url_punctuation(url)
+            safe_href = html.escape(normalized_url, quote=True)
+            safe_label = html.escape(normalized_url)
+            parts.append(f'<a href="{safe_href}">{safe_label}</a>')
+            if trailing:
+                parts.append(html.escape(trailing))
+            last_idx = end
+        if last_idx < len(text):
+            parts.append(html.escape(text[last_idx:]))
+        return "".join(parts)
+
+    @staticmethod
+    def _extract_first_url(text: str) -> Optional[str]:
+        if not text:
+            return None
+
+        match = _URL_PATTERN.search(text)
+        if match is None:
+            return None
+
+        normalized_url, _ = EMailSystem._split_trailing_url_punctuation(match.group(0))
+        return normalized_url or None
+
+    @staticmethod
+    def _format_html_fragment(text: str) -> str:
+        rendered = EMailSystem._linkify_plain_text(text or "")
+        return rendered.replace("\n", "<br>")
+
+    @staticmethod
+    def _split_text_paragraphs(text: str) -> list[str]:
+        if not text:
+            return []
+        return [chunk.strip() for chunk in re.split(r"(?:\r?\n){2,}", text) if chunk.strip()]
+
+    @staticmethod
+    def _normalized_text(text: str) -> str:
+        return re.sub(r"\s+", " ", (text or "").strip()).casefold()
+
+    @classmethod
+    def _strip_duplicate_intro_heading(cls, paragraphs: list[str], title: str) -> list[str]:
+        if not paragraphs:
+            return []
+
+        normalized_title = cls._normalized_text(title)
+        if not normalized_title:
+            return paragraphs
+
+        updated = list(paragraphs)
+        lines = updated[0].splitlines()
+        heading_removed = False
+
+        for line in lines:
+            if not heading_removed and line.strip():
+                if cls._normalized_text(line) == normalized_title:
+                    heading_removed = True
+                    continue
+                break
+
+        if not heading_removed:
+            return updated
+
+        remaining_lines = []
+        skipped_heading = False
+        for line in lines:
+            if not skipped_heading and line.strip() and cls._normalized_text(line) == normalized_title:
+                skipped_heading = True
+                continue
+            remaining_lines.append(line)
+
+        first_paragraph = "\n".join(remaining_lines).strip()
+        if first_paragraph:
+            updated[0] = first_paragraph
+            return updated
+        return updated[1:]
+
+    @classmethod
+    def _extract_structured_email_sections(
+        cls,
+        body: str,
+        *,
+        title: str,
+    ) -> tuple[list[str], list[tuple[str, str]], list[str]]:
+        paragraphs = cls._split_text_paragraphs(body or "")
+        if not paragraphs:
+            return [], [], []
+
+        details_index: Optional[int] = None
+        details_lines: list[str] = []
+
+        for index, paragraph in enumerate(paragraphs):
+            lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
+            if not lines:
+                continue
+            first_line = lines[0].rstrip(":").casefold()
+            if first_line == "details":
+                details_index = index
+                details_lines = lines[1:]
+                break
+
+        if details_index is None:
+            return cls._strip_duplicate_intro_heading(paragraphs, title), [], []
+
+        intro_paragraphs = cls._strip_duplicate_intro_heading(paragraphs[:details_index], title)
+        trailing_paragraphs = paragraphs[details_index + 1 :]
+
+        detail_source_parts: list[str] = []
+        if details_lines:
+            detail_source_parts.append("\n".join(details_lines))
+
+        footer_paragraphs: list[str] = []
+        if trailing_paragraphs:
+            detail_source_parts.append(trailing_paragraphs[0])
+            footer_paragraphs = trailing_paragraphs[1:]
+
+        detail_rows: list[tuple[str, str]] = []
+        detail_block = "\n".join(part for part in detail_source_parts if part.strip())
+        for line in detail_block.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if ":" in stripped:
+                label, value = stripped.split(":", 1)
+                detail_rows.append((label.strip(), value.strip()))
+            else:
+                detail_rows.append(("", stripped))
+
+        return intro_paragraphs, detail_rows, footer_paragraphs
+
+    @staticmethod
+    def _build_html_email_title(
+        body: str,
+        *,
+        template_name: Optional[str] = None,
+        subject: Optional[str] = None,
+        template_params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        params = template_params or {}
+        cvd_id = str(params.get("cvd_id", "") or "").strip()
+        cvd_name = str(params.get("cvd_name", "") or "").strip()
+        cvd_label = f"CVD-Tracker{cvd_id}-{cvd_name}" if cvd_id or cvd_name else "CVD-Tracker"
+
+        known_titles = {
+            "alert": f"{cvd_label} Alert",
+            "measurement_start": f"{cvd_label} Measurement Started",
+            "measurement_end": f"{cvd_label} Measurement Ended",
+            "measurement_stop": f"{cvd_label} Measurement Stopped",
+            "test": subject or f"{cvd_label} Test Email",
+        }
+        if template_name in known_titles:
+            return known_titles[template_name]
+
+        if subject:
+            return subject
+
+        for line in (body or "").splitlines():
+            stripped = line.strip()
+            if stripped:
+                return stripped
+        return "CVD-Tracker Notification"
+
+    @staticmethod
+    def _html_button(url: str, label: str) -> str:
+        safe_url = html.escape((url or "").strip(), quote=True)
+        if not safe_url:
+            return ""
+
+        safe_label = html.escape(label, quote=True)
+        return (
+            '<div style="margin:20px 0 24px 0; text-align:center;">'
+            f'<a href="{safe_url}" '
+            'style="display:inline-block; padding:14px 24px; background:#2563eb; color:#ffffff; '
+            'text-decoration:none; font-weight:700; font-size:15px; border-radius:10px; '
+            'border:1px solid #1d4ed8;">'
+            f"{safe_label}"
+            "</a>"
+            "</div>"
+        )
+
+    @staticmethod
+    def _html_image_block(cid: str, alt_text: str) -> str:
+        safe_cid = html.escape(cid, quote=True)
+        safe_alt = html.escape(alt_text, quote=True)
+        return (
+            '<div style="margin:0 0 24px 0; text-align:center;">'
+            f'<img src="cid:{safe_cid}" alt="{safe_alt}" '
+            'style="max-width:100%; height:auto; border:1px solid #e5e7eb; '
+            'border-radius:10px; display:block; margin:0 auto;">'
+            "</div>"
+        )
+
+    def _html_table(self, rows: list[tuple[str, str]]) -> str:
+        if not rows:
+            return ""
+
+        html_rows: list[str] = []
+        for label, value in rows:
+            rendered_value = self._format_html_fragment(value)
+            if label:
+                html_rows.append(
+                    "<tr>"
+                    f'<td style="padding:8px 12px; border-bottom:1px solid #e5e7eb; '
+                    'font-weight:600; width:220px; vertical-align:top;">'
+                    f"{html.escape(label)}</td>"
+                    f'<td style="padding:8px 12px; border-bottom:1px solid #e5e7eb; vertical-align:top;">'
+                    f"{rendered_value}</td>"
+                    "</tr>"
+                )
+            else:
+                html_rows.append(
+                    "<tr>"
+                    f'<td colspan="2" style="padding:8px 12px; border-bottom:1px solid #e5e7eb; vertical-align:top;">'
+                    f"{rendered_value}</td>"
+                    "</tr>"
+                )
+
+        return (
+            '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+            'style="width:100%; border-collapse:collapse; background:#ffffff; '
+            'border:1px solid #e5e7eb; border-radius:8px; overflow:hidden;">'
+            f"{''.join(html_rows)}"
+            "</table>"
+        )
+
+    def _html_note_block(self, paragraphs: list[str], *, heading: str) -> str:
+        if not paragraphs:
+            return ""
+
+        rendered_paragraphs = "".join(
+            f'<p style="margin:0 0 12px 0; line-height:1.6;">{self._format_html_fragment(paragraph)}</p>'
+            for paragraph in paragraphs
+        )
+        safe_heading = html.escape(heading, quote=True)
+        return (
+            '<div style="margin-top:20px; padding:16px; background:#fff7ed; '
+            'border:1px solid #fdba74; border-radius:8px;">'
+            f'<div style="font-weight:700; margin-bottom:8px;">{safe_heading}</div>'
+            f"{rendered_paragraphs}"
+            "</div>"
+        )
+
+    @staticmethod
+    def _html_wrapper(
+        title: str,
+        intro_html: str,
+        button_html: str,
+        details_html: str,
+        image_html: str = "",
+        footer_html: str = "",
+    ) -> str:
+        details_section = (
+            f'<div style="margin-bottom:20px;">{details_html}</div>'
+            if details_html
+            else ""
+        )
+
+        return (
+            "<!DOCTYPE html>"
+            '<html lang="en"><head><meta charset="UTF-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+            f"<title>{html.escape(title)}</title>"
+            "</head>"
+            '<body style="margin:0; padding:0; background:#f3f4f6; '
+            'font-family:Arial, Helvetica, sans-serif; color:#111827;">'
+            '<div style="max-width:760px; margin:0 auto; padding:24px;">'
+            '<div style="background:#ffffff; border:1px solid #e5e7eb; '
+            'border-radius:12px; overflow:hidden;">'
+            '<div style="padding:24px 24px 12px 24px; background:#111827; color:#ffffff;">'
+            f'<h1 style="margin:0; font-size:22px; line-height:1.3;">{html.escape(title)}</h1>'
+            "</div>"
+            '<div style="padding:24px;">'
+            f'<div style="font-size:15px; line-height:1.6; margin-bottom:8px;">{intro_html}</div>'
+            f"{button_html}"
+            f"{image_html}"
+            f"{details_section}"
+            f"{footer_html}"
+            "</div></div></div></body></html>"
+        )
+
+    def _render_html_email_body(
+        self,
+        body: str,
+        *,
+        subject: Optional[str] = None,
+        template_name: Optional[str] = None,
+        template_params: Optional[Dict[str, Any]] = None,
+        inline_image_cid: Optional[str] = None,
+        image_alt_text: str = "Embedded image",
+    ) -> str:
+        title = self._build_html_email_title(
+            body,
+            template_name=template_name,
+            subject=subject,
+            template_params=template_params,
+        )
+        intro_paragraphs, detail_rows, footer_paragraphs = self._extract_structured_email_sections(
+            body,
+            title=title,
+        )
+
+        if not intro_paragraphs and not detail_rows and not footer_paragraphs:
+            intro_paragraphs = [body or ""]
+
+        intro_html = "".join(
+            f'<p style="margin:0 0 12px 0;">{self._format_html_fragment(paragraph)}</p>'
+            for paragraph in intro_paragraphs
+        )
+        details_html = self._html_table(detail_rows)
+
+        website_url = ""
+        if template_params is not None:
+            website_url = str(template_params.get("website_url", "") or "").strip()
+        if not website_url:
+            extracted_url = self._extract_first_url(body)
+            website_url = extracted_url or ""
+        button_html = self._html_button(website_url, "Open Web Application")
+
+        image_block = (
+            self._html_image_block(inline_image_cid, image_alt_text)
+            if inline_image_cid
+            else ""
+        )
+        footer_heading = "Snapshot note" if template_name == "alert" else "Additional note"
+        footer_html = self._html_note_block(footer_paragraphs, heading=footer_heading)
+
+        return self._html_wrapper(
+            title,
+            intro_html,
+            button_html,
+            details_html,
+            image_html=image_block,
+            footer_html=footer_html,
+        )
+
+    @staticmethod
+    def _create_image_part(
+        image_bytes: bytes,
+        *,
+        filename: str,
+        disposition: str,
+        content_id: Optional[str] = None,
+    ) -> MIMEImage:
+        image_part = MIMEImage(image_bytes)
+        image_part.add_header("Content-Disposition", f'{disposition}; filename="{filename}"')
+        if content_id:
+            image_part.add_header("Content-ID", f"<{content_id}>")
+        return image_part
 
     def _raise_if_alert_send_cancelled(
         self,
@@ -459,6 +846,7 @@ class EMailSystem:
             filename: Optional[str] = None
             ok = False
             include_snapshot = bool(self.measurement_config.alert_include_snapshot)
+            send_as_html = bool(getattr(current_email_config, 'send_as_html', False))
             should_process_frame = camera_frame is not None and include_snapshot
 
             if should_process_frame:
@@ -466,7 +854,7 @@ class EMailSystem:
 
             abort_check()
             has_snapshot_attachment = bool(include_snapshot and img_buffer is not None and filename is not None)
-            snapshot_note = self._alert_snapshot_notice() if has_snapshot_attachment else ""
+            snapshot_note = self._alert_snapshot_notice(inline_image=send_as_html) if has_snapshot_attachment else ""
             attachment_bytes = img_buffer.tobytes() if has_snapshot_attachment and img_buffer is not None else None
             attachment_name = filename if has_snapshot_attachment and filename is not None else None
 
@@ -485,7 +873,7 @@ class EMailSystem:
                 subject = template.subject.format(**template_params)
                 body = self._finalize_alert_body(
                     template.body.format(**template_params),
-                    has_snapshot_attachment=has_snapshot_attachment,
+                    keep_attachment_hints=bool(has_snapshot_attachment and not send_as_html),
                 )
 
             except (KeyError, ValueError, AttributeError) as e:
@@ -509,12 +897,39 @@ class EMailSystem:
             abort_check()
             recipients = self._get_effective_recipients()
             messages: list[tuple[str, MIMEMultipart]] = []
+            shared_inline_cid = (
+                make_msgid(domain="cvd-tracker.local")[1:-1]
+                if send_as_html and attachment_bytes is not None and attachment_name is not None
+                else None
+            )
             for recipient in recipients:
-                msg = self._create_email_message(subject, body, recipient)
-                if attachment_bytes is not None and attachment_name is not None:
-                    img_attach = MIMEImage(attachment_bytes)
-                    img_attach.add_header('Content-Disposition', f'attachment; filename="{attachment_name}"')
-                    msg.attach(img_attach)
+                html_body = None
+                if send_as_html:
+                    html_body = self._render_html_email_body(
+                        body,
+                        subject=subject,
+                        template_name="alert",
+                        template_params=template_params,
+                        inline_image_cid=shared_inline_cid,
+                        image_alt_text="Current webcam image",
+                    )
+                msg = self._create_email_message(
+                    subject,
+                    body,
+                    recipient,
+                    html_body=html_body,
+                    inline_image_bytes=attachment_bytes if send_as_html else None,
+                    inline_image_filename=attachment_name if send_as_html else None,
+                    inline_image_content_id=shared_inline_cid,
+                )
+                if not send_as_html and attachment_bytes is not None and attachment_name is not None:
+                    msg.attach(
+                        self._create_image_part(
+                            attachment_bytes,
+                            filename=attachment_name,
+                            disposition="attachment",
+                        )
+                    )
                 messages.append((recipient, msg))
             success_count = self._send_emails_batch(messages, abort_check=abort_check)
 
@@ -640,10 +1055,20 @@ class EMailSystem:
             if not recipients:
                 self.logger.warning("No recipients configured; skipping measurement event email")
                 return False
-            messages = [
-                (recipient, self._create_email_message(subject, body, recipient))
-                for recipient in recipients
-            ]
+            send_as_html = bool(getattr(current_email_config, 'send_as_html', False))
+            messages: list[tuple[str, MIMEMultipart]] = []
+            for recipient in recipients:
+                html_body = (
+                    self._render_html_email_body(
+                        body,
+                        subject=subject,
+                        template_name=f"measurement_{event}",
+                        template_params=params,
+                    )
+                    if send_as_html
+                    else None
+                )
+                messages.append((recipient, self._create_email_message(subject, body, recipient, html_body=html_body)))
             success_count = self._send_emails_batch(messages)
             return success_count > 0
         except Exception as exc:
@@ -871,7 +1296,17 @@ class EMailSystem:
         with self._state_lock:
             return self._should_send_alert_unsafe()
 
-    def _create_email_message(self, subject: str, body: str, recipient: str) -> MIMEMultipart:
+    def _create_email_message(
+        self,
+        subject: str,
+        body: str,
+        recipient: str,
+        *,
+        html_body: Optional[str] = None,
+        inline_image_bytes: Optional[bytes] = None,
+        inline_image_filename: Optional[str] = None,
+        inline_image_content_id: Optional[str] = None,
+    ) -> MIMEMultipart:
         """
         Erstellt MIME-Multipart-E-Mail-Nachricht.
         
@@ -884,6 +1319,36 @@ class EMailSystem:
             MIME-Multipart-Nachricht
         """
         current_email_config = self._get_current_email_config()
+
+        if html_body is not None and inline_image_bytes is not None and inline_image_filename and inline_image_content_id:
+            msg = MIMEMultipart('related')
+            alternative_part = MIMEMultipart('alternative')
+            alternative_part.attach(MIMEText(body, 'plain', 'utf-8'))
+            alternative_part.attach(MIMEText(html_body, 'html', 'utf-8'))
+            msg.attach(alternative_part)
+            msg.attach(
+                self._create_image_part(
+                    inline_image_bytes,
+                    filename=inline_image_filename,
+                    disposition="inline",
+                    content_id=inline_image_content_id,
+                )
+            )
+            msg['From'] = current_email_config.sender_email
+            msg['To'] = recipient
+            msg['Subject'] = subject
+            msg['Date'] = formatdate(localtime=True)
+            return msg
+
+        if html_body is not None:
+            msg = MIMEMultipart('alternative')
+            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+            msg.attach(MIMEText(html_body, 'html', 'utf-8'))
+            msg['From'] = current_email_config.sender_email
+            msg['To'] = recipient
+            msg['Subject'] = subject
+            msg['Date'] = formatdate(localtime=True)
+            return msg
 
         msg = MIMEMultipart()
         msg['From'] = current_email_config.sender_email
@@ -963,12 +1428,13 @@ class EMailSystem:
         # --------------------------------------------------------------------
 
         # --- Attachment erzeugen & anhängen ---------------------------------
-        img_attach = MIMEImage(encoded_buffer.tobytes())           # buf ist ndarray mit Bytes
-        img_attach.add_header(
-            "Content-Disposition",
-            f'attachment; filename="{encoded_filename}"'
+        msg.attach(
+            self._create_image_part(
+                encoded_buffer.tobytes(),
+                filename=encoded_filename,
+                disposition="attachment",
+            )
         )
-        msg.attach(img_attach)
 
         self.logger.debug(
             "Image attachment added: %s (%d bytes)", encoded_filename, encoded_buffer.size
@@ -1080,7 +1546,8 @@ class EMailSystem:
             )
             subject = tpl.subject.format(**params)
             test_message = tpl.body.format(**params)
-            
+            send_as_html = bool(getattr(current_email_config, 'send_as_html', False))
+             
             IMG_SRC = 'https://picsum.photos/id/325/720/405'
             try:
                 response = requests.get(IMG_SRC, timeout=10)
@@ -1094,12 +1561,52 @@ class EMailSystem:
                 self.logger.warning(f"Error retrieving test image: {exc}")
                 frame = None
 
+            attachment_bytes: Optional[bytes] = None
+            attachment_name: Optional[str] = None
+            if frame is not None:
+                encoded_ok, encoded_buffer, encoded_filename = self._encode_frame(
+                    frame,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                if encoded_ok and encoded_buffer is not None and encoded_filename is not None:
+                    attachment_bytes = encoded_buffer.tobytes()
+                    attachment_name = encoded_filename
+
             recipients = self._get_effective_recipients()
             messages: list[tuple[str, MIMEMultipart]] = []
+            shared_inline_cid = (
+                make_msgid(domain="cvd-tracker.local")[1:-1]
+                if send_as_html and attachment_bytes is not None and attachment_name is not None
+                else None
+            )
             for recipient in recipients:
-                msg = self._create_email_message(subject, test_message, recipient)
-                if frame is not None:
-                    self._attach_camera_image(msg, frame, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                html_body = None
+                if send_as_html:
+                    html_body = self._render_html_email_body(
+                        test_message,
+                        subject=subject,
+                        template_name="test",
+                        template_params=params,
+                        inline_image_cid=shared_inline_cid,
+                        image_alt_text="Test image",
+                    )
+                msg = self._create_email_message(
+                    subject,
+                    test_message,
+                    recipient,
+                    html_body=html_body,
+                    inline_image_bytes=attachment_bytes if send_as_html else None,
+                    inline_image_filename=attachment_name if send_as_html else None,
+                    inline_image_content_id=shared_inline_cid,
+                )
+                if not send_as_html and attachment_bytes is not None and attachment_name is not None:
+                    msg.attach(
+                        self._create_image_part(
+                            attachment_bytes,
+                            filename=attachment_name,
+                            disposition="attachment",
+                        )
+                    )
                 messages.append((recipient, msg))
             success_count = self._send_emails_batch(messages)
             return success_count > 0
