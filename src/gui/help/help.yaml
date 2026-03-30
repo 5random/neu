@@ -253,7 +253,7 @@ help:
 
         ## HTTPS / Reverse Proxy
         - `gui.reverse_proxy_enabled: true` enables trusted reverse-proxy handling for deployments behind NGINX.
-        - `gui.forwarded_allow_ips` should contain the proxy IPs that are allowed to forward `X-Forwarded-*` headers.
+        - `gui.forwarded_allow_ips` should contain the proxy IPs that are allowed to forward `X-Forwarded-*` headers (e.g., `["127.0.0.1", "::1"]` or `"*"` for all IPs). For security, restrict this to trusted proxy IPs only.
         - `gui.root_path` is only needed when the application is published below a subpath such as `/cvd`.
         - `gui.session_cookie_https_only: true` is recommended when the public site is HTTPS-only.
         - `email.website_url_source` controls how links in outgoing emails are resolved: `runtime_persist` keeps the previous adaptive behavior, `runtime` uses the runtime URL without writing it back, and `config` always prefers the configured `email.website_url`.

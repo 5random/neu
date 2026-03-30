@@ -12,7 +12,7 @@ CONDA_CHANNEL="${CONDA_CHANNEL:-conda-forge}"
 CLONE_URL="${CLONE_URL:-https://github.com/5random/neu.git}"  # zum Vergleich der Origin-URL
 CLONE_DIR_DEFAULT="${SCRIPT_DIR}"                              # Repo ist schon geklont: default = Ort des Skripts
 CLONE_DIR="${CLONE_DIR:-$CLONE_DIR_DEFAULT}"
-PORT="${PORT:-8080}"                                           # App lauscht aktuell fest auf 8080 in main.py
+PORT="${PORT:-8080}"                                           # Standard-Port; wird als CVD_PORT an die App übergeben
 SERVICE_NAME="${SERVICE_NAME:-cvd_tracker}"
 
 # micromamba Binärpfad – wird nach detect_user auf USER_HOME angepasst, falls nicht explizit gesetzt
@@ -34,8 +34,8 @@ AUTO_UPDATE="${AUTO_UPDATE:-1}"
 msg() { echo -e "\n[setup] $*"; }
 
 ensure_supported_port() {
-  if [[ "$PORT" != "8080" ]]; then
-    msg "WARNUNG: PORT=${PORT} wird ignoriert, da main.py aktuell fest auf 8080 lauscht. Verwende 8080."
+  if [[ ! "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
+    msg "WARNUNG: Ungültiger PORT=${PORT}. Verwende 8080."
     PORT="8080"
   fi
 }
@@ -321,6 +321,7 @@ User=${RUN_USER}
 WorkingDirectory=${CLONE_DIR}
 Environment=MAMBA_ROOT_PREFIX=${MAMBA_ROOT_PREFIX}
 Environment=PYTHONUNBUFFERED=1
+Environment=CVD_PORT=${PORT}
 Environment=OMP_NUM_THREADS=1
 Environment=OPENBLAS_NUM_THREADS=1
 Environment=MKL_NUM_THREADS=1
