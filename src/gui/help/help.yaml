@@ -279,14 +279,32 @@ help:
         - **Level Filter** limits the visible entries to a selected severity.
         - **Pause** and **Clear** help isolate a specific issue while reproducing it.
 
-    - title: "Troubleshooting"
+    - title: "Troubleshooting and other tips and tricks"
       link: "/settings#logs"
       content: |
         ## Common Issues
-        - **Camera not working**: Check the physical connection, selected device index, and camera section status.
+        - **Camera not working**: Check the physical connection, selected device index, and camera section status. You may want to restart the application/PI after connecting the camera to ensure it is detected properly.
         - **No emails arrive**: Verify SMTP settings, sender address, and whether the intended recipients are static or part of an active group for the current run.
         - **Too many alerts**: Reduce motion sensitivity, review ROI placement, and confirm alert delay and cooldown values.
         - **Wrong people receive lifecycle emails**: Check static recipients in the E-Mail section and active groups plus event permissions in the Measurement section.
 
         ## Next Step
         If the issue persists, open **Settings > Logs** and export the recent logs for inspection.
+    
+    - title: "Power Menu and Restarting"
+      link: "/settings"
+      content: |
+        To apply certain changes or recover from specific issues, you may want/need to restart the application.
+
+        ## How to Access the Power Menu and Restart
+        - Click the KV-Logo button in the Header section. This will open the application-Power menu
+        - You will find the following options in the power menu:
+          - **Restart Application**: This option restarts the application.
+          - **Shutdown Application**: This option completely shuts down the application.
+          - **Reboot System**: This option restarts the entire system (e.g., Raspberry Pi).
+          - **Shutdown System**: This option completely shuts down the system.
+          
+        ## When to Restart
+        - After connecting a new camera or changing camera settings.
+        - If the application becomes unresponsive or behaves unexpectedly.
+        - After applying updates or significant configuration changes that require a restart to take effect.
