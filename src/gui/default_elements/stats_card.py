@@ -70,7 +70,9 @@ def create_stats_card() -> None:
             row_classes='items-center gap-2',
             icon_classes='text-primary text-xl shrink-0',
         )
-        
+
+        ui.label('Showing Alarms per Hour of Last 24 Hours').classes('text-caption text-grey-7')
+
         chart = ui.echart({
             'tooltip': {'trigger': 'axis'},
             'xAxis': {'type': 'category', 'data': []},

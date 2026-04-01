@@ -17,7 +17,7 @@ metadata:
 # Webcam
 # ---------------------------------------------------------------------------
 webcam:
-  camera_index: 1
+  camera_index: 0
   default_resolution:
     width: 1920
     height: 1080
@@ -67,10 +67,10 @@ uvc_controls:
 motion_detection:
   region_of_interest:
     enabled: true
-    x: 891
-    y: 527
-    width: 93
-    height: 93
+    x: 100
+    y: 100
+    width: 1720
+    height: 880
   sensitivity: 0.1
   background_learning_rate: 0.005
   min_contour_area: 252
@@ -85,11 +85,11 @@ measurement:
   image_save_path: ./alerts/
   image_format: jpg
   image_quality: 85
-  alert_delay_seconds: 30
+  alert_delay_seconds: 120
   session_timeout_seconds: 0
   max_alerts_per_session: 5
   alert_check_interval: 5.0
-  alert_cooldown_seconds: 30
+  alert_cooldown_seconds: 180
   alert_include_snapshot: true
   inactivity_timeout_minutes: 120
   motion_summary_interval_seconds: 900
@@ -102,14 +102,11 @@ measurement:
 email:
   website_url: http://localhost:8080/
   website_url_source: runtime_persist
-  recipients:
-    - haha@tuhh.de
-    - hoho@tuhh.de
-    - wild@tuhh.de
-    - lols@tuhh.de
-  smtp_server: smtp.freesmtpservers.com
+  recipients: []
+  smtp_server: mail.tuhh.de
   smtp_port: 25
   sender_email: CHANGE_ME@tuhh.de
+  send_as_html: true
   templates:
     alert:
       subject: 'CVD-TRACKER{cvd_id}-{cvd_name}-Alert: no motion detected - {timestamp}'
@@ -196,45 +193,16 @@ email:
            Camera: Index   {camera_index}
            Sensitivity:    {sensitivity}
            ROI enabled:    {roi_enabled}
-  send_as_html: true
-  groups:
-    TEST:
-      - haha@tuhh.de
-      - hoho@tuhh.de
-      - wild@tuhh.de
-    TEST2:
-      - wild@tuhh.de
-      - haha@tuhh.de
-    TEST3:
-      - lols@tuhh.de
-  active_groups:
-    - TEST3
-    - TEST
-  static_recipients:
-    - haha@tuhh.de
+  groups: {}
+  active_groups: []
+  static_recipients: []
   explicit_targeting: true
   notifications:
     on_start: true
     on_end: true
     on_stop: true
-  group_prefs:
-    TEST:
-      on_start: true
-      on_end: true
-      on_stop: false
-    TEST2:
-      on_start: true
-      on_end: true
-      on_stop: true
-    TEST3:
-      on_start: true
-      on_end: true
-      on_stop: true
-  recipient_prefs:
-    haha@tuhh.de:
-      on_start: true
-      on_end: true
-      on_stop: true
+  group_prefs: {}
+  recipient_prefs: {}
 
 # ---------------------------------------------------------------------------
 # GUI
