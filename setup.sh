@@ -365,24 +365,24 @@ require_64bit_arm() {
 
 discover_primary_ipv4() {
   PRIMARY_IPV4="$(
-    ip -4 route get 1.1.1.1 2>/dev/null \
+    { ip -4 route get 1.1.1.1 2>/dev/null || true; } \
       | awk '{for (i = 1; i <= NF; i++) if ($i == "src") { print $(i + 1); exit }}'
   )"
   if [[ -z "$PRIMARY_IPV4" ]]; then
-    PRIMARY_IPV4="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    PRIMARY_IPV4="$({ hostname -I 2>/dev/null || true; } | awk '{print $1}')"
   fi
 }
 
 show_network_inventory() {
   discover_primary_ipv4
   msg "Network interfaces"
-  ip -o -4 addr show scope global | awk '{print "  " $2 "  IPv4: " $4}'
-  ip -o link show | awk -F': ' '$2 != "lo" {print $2}' | while read -r ifc; do
+  ip -o -4 addr show scope global 2>/dev/null | awk '{print "  " $2 "  IPv4: " $4}' || true
+  while read -r ifc; do
     local mac state
     mac="$(cat "/sys/class/net/$ifc/address" 2>/dev/null || true)"
     state="$(cat "/sys/class/net/$ifc/operstate" 2>/dev/null || true)"
     echo "  ${ifc}  MAC: ${mac}  STATE: ${state}"
-  done
+  done < <(ip -o link show 2>/dev/null | awk -F': ' '$2 != "lo" {print $2}' || true)
   if [[ -n "$PRIMARY_IPV4" ]]; then
     echo "  Primary IPv4: ${PRIMARY_IPV4}"
   fi
@@ -528,7 +528,7 @@ verify_repo() {
 
   if [[ -n "$dirty" ]]; then
     warn "Local changes detected; automatic Git update skipped."
-  elif [[ "${behind:-0}" -gt 0 && is_truthy "$AUTO_UPDATE" ]]; then
+  elif [[ "${behind:-0}" -gt 0 ]] && is_truthy "$AUTO_UPDATE"; then
     msg "Updating repository with fast-forward pull"
     run_as_target_user git -C "$CLONE_DIR" pull --ff-only || warn "Fast-forward pull failed; please review manually."
   fi
@@ -986,11 +986,11 @@ show_menu() {
       5) setup_ssh_server ;;
       6) ensure_repo_present; verify_repo ;;
       7) install_micromamba ;;
-      8) create_mamba_env ;;
-      9) create_mamba_env; install_python_requirements ;;
-      10) prompt_for_access_settings; prepare_install_settings; create_mamba_env; configure_application ;;
+      8) install_micromamba; create_mamba_env ;;
+      9) install_micromamba; create_mamba_env; install_python_requirements ;;
+      10) prompt_for_access_settings; ensure_supported_port; prepare_install_settings; install_micromamba; create_mamba_env; configure_application ;;
       11) prompt_for_access_settings; prepare_install_settings; setup_firewall ;;
-      12) setup_systemd_service ;;
+      12) install_micromamba; setup_systemd_service ;;
       13) start_services ;;
       14) sudo systemctl status "${SERVICE_NAME}" ;;
       15) break ;;
@@ -1061,6 +1061,7 @@ main() {
       ;;
     service)
       detect_user
+      install_micromamba
       setup_systemd_service
       ;;
     start)
