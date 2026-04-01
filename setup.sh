@@ -493,7 +493,7 @@ ensure_repo_present() {
     die "CLONE_DIR exists but is not a directory: ${CLONE_DIR}"
   fi
 
-  if [[ -d "$CLONE_DIR" && ! -d "$CLONE_DIR/.git" && ! directory_is_empty "$CLONE_DIR" ]]; then
+  if [[ -d "$CLONE_DIR" && ! -d "$CLONE_DIR/.git" ]] && ! directory_is_empty "$CLONE_DIR"; then
     die "CLONE_DIR exists and is not an empty Git checkout: ${CLONE_DIR}"
   fi
 
