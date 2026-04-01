@@ -1,31 +1,33 @@
 # CVD-Tracker
 
-CVD-Tracker is a small Pythonprogramm to track a CVD-Reactor.
+CVD-Tracker is a small Python application for monitoring a CVD reactor.
 
-## Projectdiscription
+## Project Description
 
-For further details watch the [Projectdiscription](projektbeschreibung.md).
+For further details, see [projektbeschreibung.md](projektbeschreibung.md).
 
 ## Installation
 
-Install [RaspberryPi OS (Lite)](https://www.raspberrypi.com/documentation/computers/getting-started.html) on your RaspberryPi.
+Install [Raspberry Pi OS Lite](https://www.raspberrypi.com/documentation/computers/getting-started.html) on your Raspberry Pi.
 
-Once the Sourcecode is Cloned via
+Clone the repository:
 
-'''bash
+```bash
+sudo apt install git
 git clone https://github.com/5random/neu.git
-'''
+cd neu
+```
 
-Run the following command on your RaspberryPi:
+Run the setup script:
 
-'''bash
-setup.sh
-'''
+```bash
+bash setup.sh full
+```
+
+Follow the prompts. The script installs the required system packages, micromamba, the Python environment, configures the Pi, writes the application settings, and enables the service.
 
 ## Usage
 
-1. Plug the UVC-Webcam in the RaspberryPI
-2. Start your Pi
-3. Wait until the Server started
-4. You can now use the Tracker via the [CVD_TRACKER Website](http://134.28.91.48:8080)
-
+1. Connect the UVC webcam to the Raspberry Pi.
+2. Power on the Pi and wait until the setup has finished.
+3. Open the URL shown by the setup script.
