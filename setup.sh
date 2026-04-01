@@ -726,7 +726,7 @@ configure_application() {
   backup_config
 
   msg "Applying application configuration"
-  cat <<'PY' | (
+  (
     cd "$CLONE_DIR"
     micromamba_exec run -n "$ENV_NAME" python - \
       "config/config.yaml" \
@@ -737,8 +737,7 @@ configure_application() {
       "$ROOT_PATH_NORMALIZED" \
       "$website_url_source" \
       "$website_url" \
-      "$https_only"
-  )
+      "$https_only" <<'PY'
 from __future__ import annotations
 
 import sys
@@ -788,6 +787,7 @@ print(
     f"website_url={cfg.email.website_url!r}"
 )
 PY
+  )
 }
 
 csv_to_lines() {
