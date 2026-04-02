@@ -24,6 +24,13 @@ Run the setup script:
 bash setup.sh full
 ```
 
+Alternatively, start the setup script with the following commands:
+
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
 Follow the prompts. The script installs the required system packages, micromamba, the Python environment, configures the Pi, writes the application settings, and enables the service. Enter IP-Adress for Proxy HTTPS.
 
 ## Usage
