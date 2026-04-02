@@ -38,3 +38,6 @@ Follow the prompts. The script installs the required system packages, micromamba
 1. Connect the UVC webcam to the Raspberry Pi.
 2. Power on the Pi and wait until the setup has finished.
 3. Open the URL shown by the setup script.
+
+## CAD Files for 3D-Printed Camera Arm
+CAD files are provided via GitLab (CAD-Files.zip).
