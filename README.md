@@ -8,7 +8,7 @@ For further details, see [projektbeschreibung.md](projektbeschreibung.md).
 
 ## Installation
 
-Install [Raspberry Pi OS Lite](https://www.raspberrypi.com/documentation/computers/getting-started.html) on your Raspberry Pi.
+Install [Raspberry Pi OS Lite](https://www.raspberrypi.com/documentation/computers/getting-started.html) on your Raspberry Pi. When installing, activate SSH; you won't need to set up Wi-Fi as it is not needed.
 
 Clone the repository:
 
