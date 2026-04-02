@@ -14,7 +14,7 @@ Clone the repository:
 
 ```bash
 sudo apt install git
-git clone https://github.com/5random/neu.git
+git clone https://collaborating.tuhh.de/cuf3111/cvd_tracker.git
 cd neu
 ```
 
@@ -24,7 +24,7 @@ Run the setup script:
 bash setup.sh full
 ```
 
-Follow the prompts. The script installs the required system packages, micromamba, the Python environment, configures the Pi, writes the application settings, and enables the service.
+Follow the prompts. The script installs the required system packages, micromamba, the Python environment, configures the Pi, writes the application settings, and enables the service. Enter IP-Adress for Proxy HTTPS.
 
 ## Usage
 
