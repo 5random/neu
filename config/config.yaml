@@ -102,7 +102,8 @@ measurement:
 email:
   website_url: http://localhost:8080/
   website_url_source: runtime_persist
-  recipients: []
+  recipients:
+    - willem.dittloff@tuhh.de
   smtp_server: mail.tuhh.de
   smtp_port: 25
   sender_email: CHANGE_ME@tuhh.de

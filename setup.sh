@@ -790,13 +790,6 @@ PY
   )
 }
 
-csv_to_lines() {
-  printf '%s' "$1" \
-    | tr ',' '\n' \
-    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
-    | sed '/^$/d'
-}
-
 setup_firewall() {
   msg "Configuring UFW"
   sudo ufw default deny incoming || true
@@ -804,17 +797,8 @@ setup_firewall() {
   sudo ufw allow OpenSSH || sudo ufw allow 22/tcp || true
   sudo ufw limit ssh || true
 
-  if is_truthy "$USE_REVERSE_PROXY"; then
-    if [[ "$FORWARDED_ALLOW_IPS" == "*" ]]; then
-      sudo ufw allow "${PORT}/tcp" || true
-    else
-      while read -r proxy_ip; do
-        sudo ufw allow from "$proxy_ip" to any port "$PORT" proto tcp || true
-      done < <(csv_to_lines "$FORWARDED_ALLOW_IPS")
-    fi
-  else
-    sudo ufw allow "${PORT}/tcp" || true
-  fi
+  # Always open the configured app port globally in UFW.
+  sudo ufw allow "${PORT}" || true
 
   sudo ufw --force enable || true
   sudo ufw status verbose || true
@@ -950,7 +934,7 @@ Notes:
   - In interactive mode, the script asks whether HTTPS runs behind an external reverse proxy.
   - forwarded_allow_ips must contain trusted proxy IPs only, not browser IPs and not ports.
   - Without reverse proxy, the app listens on PORT and the script stores a direct http://... URL.
-  - With reverse proxy, the app still listens on PORT and the firewall is restricted to FORWARDED_ALLOW_IPS.
+  - With reverse proxy, the app still listens on PORT and UFW opens that PORT globally.
 EOF
 }
 
