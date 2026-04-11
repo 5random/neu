@@ -221,22 +221,48 @@ def register_combined_motion_listener(
         except Exception:
             logger.exception('Failed to run previous combined motion listener cleanup')
 
-    def _camera_motion_callback(_: Any, result: Any) -> None:
-        callback(
+    emit_lock = threading.Lock()
+    last_emitted: dict[str, Any] = {'motion': None, 'changed_at': None}
+
+    def _emit_if_changed(new_motion: bool, changed_at: datetime) -> None:
+        with emit_lock:
+            previous_motion = last_emitted['motion']
+            previous_changed_at = last_emitted['changed_at']
+            if previous_motion == new_motion and previous_changed_at == changed_at:
+                return
+            if previous_motion == new_motion and previous_changed_at is not None:
+                return
+            last_emitted['motion'] = new_motion
+            last_emitted['changed_at'] = changed_at
+        callback(new_motion, changed_at)
+
+    def _camera_motion_callback(result: Any) -> None:
+        _emit_if_changed(
             bool(getattr(result, 'motion_detected', False)),
             _timestamp_to_datetime(getattr(result, 'timestamp', None)) or datetime.now(),
         )
 
+    def _legacy_camera_motion_callback(_: Any, result: Any) -> None:
+        _camera_motion_callback(result)
+
     def _api_motion_listener(new_motion: bool, changed_at: datetime) -> None:
-        callback(new_motion, changed_at)
+        _emit_if_changed(new_motion, changed_at)
 
     try:
-        camera.enable_motion_detection(_camera_motion_callback)
+        register_result = getattr(camera, 'register_motion_result_callback', None)
+        if callable(register_result):
+            register_result(_camera_motion_callback)
+        else:
+            camera.enable_motion_detection(_legacy_camera_motion_callback)
         _register_api_motion_listener(_api_motion_listener)
     except Exception:
         logger.exception('Failed to register combined motion listener')
         try:
-            camera.disable_motion_detection(_camera_motion_callback)
+            unregister_result = getattr(camera, 'unregister_motion_result_callback', None)
+            if callable(unregister_result):
+                unregister_result(_camera_motion_callback)
+            else:
+                camera.disable_motion_detection(_legacy_camera_motion_callback)
         except Exception:
             logger.debug('Failed to roll back combined motion listener registration', exc_info=True)
         try:
@@ -247,7 +273,11 @@ def register_combined_motion_listener(
 
     def _cleanup() -> None:
         try:
-            camera.disable_motion_detection(_camera_motion_callback)
+            unregister_result = getattr(camera, 'unregister_motion_result_callback', None)
+            if callable(unregister_result):
+                unregister_result(_camera_motion_callback)
+            else:
+                camera.disable_motion_detection(_legacy_camera_motion_callback)
         except Exception:
             logger.exception('Failed to unregister combined camera motion listener')
         try:

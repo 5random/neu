@@ -47,6 +47,9 @@ class _ActiveVideoSource(Protocol):
     def get_current_frame(self, copy_frame: bool = True) -> Optional[np.ndarray]:
         ...
 
+    def get_current_jpeg_frame(self) -> Optional[bytes]:
+        ...
+
 
 def _get_video_route_logger(camera: "_ActiveVideoSource | None") -> logging.Logger:
     if camera is not None:
@@ -81,6 +84,59 @@ def _get_cached_video_frame_bytes(camera: "_ActiveVideoSource | None") -> bytes 
     if isinstance(cached_frame, (bytes, bytearray, memoryview)):
         return bytes(cached_frame)
     return None
+
+
+def _build_preview_frame_bytes(camera: "_ActiveVideoSource | None") -> bytes | None:
+    if camera is None:
+        return None
+
+    build_preview_frame = getattr(camera, "build_preview_jpeg_frame", None)
+    if not callable(build_preview_frame):
+        return None
+
+    try:
+        preview_frame = build_preview_frame()
+    except Exception as exc:
+        _get_video_route_logger(camera).debug("Error building preview jpeg frame: %s", exc, exc_info=True)
+        return None
+
+    if isinstance(preview_frame, (bytes, bytearray, memoryview)):
+        return bytes(preview_frame)
+    return None
+
+
+def _register_video_preview_consumer(camera: "_ActiveVideoSource | None") -> None:
+    if camera is None:
+        return
+    register_consumer = getattr(camera, "register_preview_consumer", None)
+    if callable(register_consumer):
+        try:
+            register_consumer()
+        except Exception:
+            _get_video_route_logger(camera).debug("Failed to register preview consumer", exc_info=True)
+
+
+def _unregister_video_preview_consumer(camera: "_ActiveVideoSource | None") -> None:
+    if camera is None:
+        return
+    unregister_consumer = getattr(camera, "unregister_preview_consumer", None)
+    if callable(unregister_consumer):
+        try:
+            unregister_consumer()
+        except Exception:
+            _get_video_route_logger(camera).debug("Failed to unregister preview consumer", exc_info=True)
+
+
+def _get_video_stream_sleep_seconds(camera: "_ActiveVideoSource | None") -> float:
+    if camera is None:
+        return 0.1
+    get_interval = getattr(camera, "get_preview_stream_interval_seconds", None)
+    if callable(get_interval):
+        try:
+            return max(0.03, float(get_interval()))
+        except Exception:
+            _get_video_route_logger(camera).debug("Failed to read preview stream interval", exc_info=True)
+    return 0.1
 
 
 def _get_active_video_camera() -> "_ActiveVideoSource | None":
@@ -120,6 +176,10 @@ def _build_video_frame_response(camera: "_ActiveVideoSource | None") -> Response
     if cached_frame is not None:
         return Response(content=cached_frame, media_type="image/jpeg")
 
+    preview_frame = _build_preview_frame_bytes(camera)
+    if preview_frame is not None:
+        return Response(content=preview_frame, media_type="image/jpeg")
+
     try:
         frame = camera.get_current_frame(copy_frame=False)
     except Exception as exc:
@@ -152,14 +212,21 @@ def _build_video_stream_chunk(camera: "_ActiveVideoSource | None") -> bytes:
 
 
 def _generate_active_video_frames() -> Iterator[bytes]:
+    registered_camera: "_ActiveVideoSource | None" = None
     try:
         while True:
             current_camera = _get_active_video_camera()
+            if current_camera is not registered_camera:
+                _unregister_video_preview_consumer(registered_camera)
+                _register_video_preview_consumer(current_camera)
+                registered_camera = current_camera
             yield _build_video_stream_chunk(current_camera)
-            time.sleep(0.03 if current_camera is not None else 0.1)
+            time.sleep(_get_video_stream_sleep_seconds(current_camera))
     except GeneratorExit:
         _get_video_route_logger(_get_active_video_camera()).debug("Video stream generator closed")
         raise
+    finally:
+        _unregister_video_preview_consumer(registered_camera)
 
 
 def _ensure_video_routes_registered_locked(route_app: Any) -> None:
@@ -258,6 +325,7 @@ class Camera:
         self.current_frame: Optional[np.ndarray] = None
         self._current_jpeg_frame: Optional[bytes] = None
         self.frame_lock = threading.Lock()
+        self._preview_consumers_lock = threading.Lock()
         self.capture_lock = threading.RLock()  # Protects video_capture access
         self._init_complete = threading.Event()  # Signals when async init is done
         self._init_cancel = threading.Event()
@@ -273,6 +341,10 @@ class Camera:
         self._motion_callbacks: Dict[
             Callable[[np.ndarray, MotionResult], None],
             Callable[[np.ndarray, MotionResult], None],
+        ] = {}
+        self._motion_result_callbacks: Dict[
+            Callable[[MotionResult], None],
+            Callable[[MotionResult], None],
         ] = {}
         self._motion_callbacks_lock = threading.Lock()
 
@@ -290,7 +362,12 @@ class Camera:
         self._reconnect_attempts = 0
         
         # Performance optimization
-        self.motion_skip_frames = 2  # Run motion detection only every 2nd frame
+        self.motion_skip_frames = max(1, int(getattr(self.app_config.motion_detection, "frame_skip", 2) or 2))
+        self._preview_consumer_count = 0
+        self._preview_frame_resolution: Optional[Dict[str, int]] = None
+        self._preview_frame_timestamp: Optional[float] = None
+        self._last_preview_publish_monotonic = 0.0
+        self._preview_publish_in_progress = False
         
         # -- Platzhalterbild für fehlende Kamera --
         self._uvc_cache_time: float = 0.0
@@ -1125,15 +1202,14 @@ class Camera:
                 consecutive_failures = 0
                 self._reconnect_attempts = 0
 
-                frame_copy = frame.copy()
-
-                self._publish_current_frame(frame_copy)
+                self._publish_current_frame(frame)
+                self._maybe_publish_preview_frame(frame)
 
                 self._capture_runtime_error = None
                 self._capture_ready.set()
 
                 # Motion Detection
-                self._process_motion_detection(frame, frame_copy)
+                self._process_motion_detection(frame)
         except Exception as exc:
             capture_error = exc
             self.logger.error("Unhandled error in frame capture loop: %s", exc, exc_info=True)
@@ -1147,16 +1223,16 @@ class Camera:
                 self.frame_thread = None
             self.logger.info("Frame capture loop stopped")
     
-    def _process_motion_detection(self, original_frame: np.ndarray, frame_copy: np.ndarray) -> None:
+    def _process_motion_detection(self, frame: np.ndarray) -> None:
         # Frame skipping optimization
         if self.frame_count % self.motion_skip_frames != 0:
             return
 
         if self.motion_detector and self.motion_enabled:
             try:
-                motion_result = self.motion_detector.detect_motion(original_frame)
+                motion_result = self.motion_detector.detect_motion(frame)
                 self.last_motion_result = motion_result
-                self._dispatch_motion_callbacks(frame_copy, motion_result)
+                self._dispatch_motion_callbacks(frame, motion_result)
             except Exception as exc:
                 self.logger.error(f"Motion-Detection-Error: {exc}")
 
@@ -1171,7 +1247,7 @@ class Camera:
                     roi_used=False,
                 )
                 self.last_motion_result = dummy_result
-                self._dispatch_motion_callbacks(original_frame, dummy_result)
+                self._dispatch_motion_callbacks(frame, dummy_result)
                 self.logger.debug("Motion callback called with dummy result")
             except Exception as exc:
                 self.logger.error(f"Dummy-Motion-Callback-Error: {exc}")
@@ -1183,10 +1259,12 @@ class Camera:
         if self._has_motion_callbacks():
             try:
                 # Dummy-Frame für Callback
-                dummy_frame = self.get_current_frame()
-                if dummy_frame is None:
-                    res = self.webcam_config.get_default_resolution()
-                    dummy_frame = np.zeros((res.height, res.width, 3), dtype=np.uint8)
+                dummy_frame: Optional[np.ndarray] = None
+                if self._has_legacy_motion_callbacks():
+                    dummy_frame = self.get_current_frame()
+                    if dummy_frame is None:
+                        res = self.webcam_config.get_default_resolution()
+                        dummy_frame = np.zeros((res.height, res.width, 3), dtype=np.uint8)
                 
                 # Disconnect-MotionResult erstellen
                 disconnect_result = MotionResult(
@@ -1242,27 +1320,60 @@ class Camera:
     # ---------------- Motion-Detection Steuerung --------------------- #
     def _has_motion_callbacks(self) -> bool:
         with self._motion_callbacks_lock:
+            return bool(self._motion_callbacks or self._motion_result_callbacks)
+
+    def _has_legacy_motion_callbacks(self) -> bool:
+        with self._motion_callbacks_lock:
             return bool(self._motion_callbacks)
 
-    def _dispatch_motion_callbacks(self, frame: np.ndarray, motion_result: MotionResult) -> None:
+    def _ensure_motion_detector(self) -> bool:
+        if self.motion_detector is not None:
+            return True
+        try:
+            self.motion_detector = MotionDetector(self.app_config.motion_detection)
+            self.logger.info("Motion detector initialized")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error initializing motion detector: {e}")
+            return False
+
+    def _update_motion_enabled_locked(self) -> None:
+        self.motion_enabled = bool(self._motion_callbacks or self._motion_result_callbacks)
+
+    def _dispatch_motion_callbacks(self, frame: Optional[np.ndarray], motion_result: MotionResult) -> None:
         with self._motion_callbacks_lock:
             callbacks = list(self._motion_callbacks.values())
+            result_callbacks = list(self._motion_result_callbacks.values())
+
+        for callback in result_callbacks:
+            try:
+                callback(motion_result)
+            except Exception as exc:
+                self.logger.error(f"Motion result callback dispatch error: {exc}")
+
+        if not callbacks:
+            return
+
+        shared_frame: Optional[np.ndarray] = None
+        if isinstance(frame, np.ndarray):
+            try:
+                shared_frame = frame.copy()
+                shared_frame.setflags(write=False)
+            except Exception:
+                shared_frame = frame
 
         for callback in callbacks:
             try:
-                callback(frame, motion_result)
+                if shared_frame is None:
+                    continue
+                callback(shared_frame, motion_result)
             except Exception as exc:
                 self.logger.error(f"Motion callback dispatch error: {exc}")
 
     def enable_motion_detection(self, callback: Callable[[np.ndarray, MotionResult], None]) -> None:
         """Aktiviert die Bewegungserkennung und registriert einen Listener."""
-        if not self.motion_detector:
-            try:
-                self.motion_detector = MotionDetector(self.app_config.motion_detection)
-                self.logger.info("Motion detector initialized")
-            except Exception as e:
-                self.logger.error(f"Error initializing motion detector: {e}")
-                return
+        if not self._ensure_motion_detector():
+            return
 
         def safe_callback(frame: np.ndarray, motion_result: MotionResult) -> None:
             """Sicherer Callback, der sicherstellt, dass der Frame gültig ist."""
@@ -1285,10 +1396,31 @@ class Camera:
 
         with self._motion_callbacks_lock:
             self._motion_callbacks[callback] = safe_callback
-            self.motion_enabled = bool(self._motion_callbacks)
+            self._update_motion_enabled_locked()
             callback_count = len(self._motion_callbacks)
 
         self.logger.debug("Motion callback registered; total listeners=%s", callback_count)
+
+    def register_motion_result_callback(self, callback: Callable[[MotionResult], None]) -> None:
+        """Register a lightweight motion listener that only receives MotionResult."""
+        if not self._ensure_motion_detector():
+            return
+
+        def safe_callback(motion_result: MotionResult) -> None:
+            if not isinstance(motion_result, MotionResult):
+                self.logger.error(f"Motion result callback called with non-MotionResult: {type(motion_result)}")
+                return
+            try:
+                callback(motion_result)
+            except Exception as exc:
+                self.logger.error(f"Motion-Result-Callback-Error: {exc}")
+
+        with self._motion_callbacks_lock:
+            self._motion_result_callbacks[callback] = safe_callback
+            self._update_motion_enabled_locked()
+            callback_count = len(self._motion_result_callbacks)
+
+        self.logger.debug("Motion result callback registered; total listeners=%s", callback_count)
 
     def disable_motion_detection(
         self,
@@ -1300,10 +1432,25 @@ class Camera:
                 self._motion_callbacks.clear()
             else:
                 self._motion_callbacks.pop(callback, None)
-            self.motion_enabled = bool(self._motion_callbacks)
+            self._update_motion_enabled_locked()
             callback_count = len(self._motion_callbacks)
 
         self.logger.debug("Motion callback unregistered; total listeners=%s", callback_count)
+
+    def unregister_motion_result_callback(
+        self,
+        callback: Optional[Callable[[MotionResult], None]] = None,
+    ) -> None:
+        """Remove a lightweight motion listener that only receives MotionResult."""
+        with self._motion_callbacks_lock:
+            if callback is None:
+                self._motion_result_callbacks.clear()
+            else:
+                self._motion_result_callbacks.pop(callback, None)
+            self._update_motion_enabled_locked()
+            callback_count = len(self._motion_result_callbacks)
+
+        self.logger.debug("Motion result callback unregistered; total listeners=%s", callback_count)
 
     def is_motion_active(self) -> bool:
         """Gibt zurück, ob die Bewegungserkennung aktiv ist."""
@@ -1371,6 +1518,9 @@ class Camera:
                 "frame_count": self.frame_count,
                 "is_running": self.is_running,
                 "motion_enabled": self.motion_enabled,
+                "preview_resolution": self.get_preview_resolution(),
+                "preview_fps": int(getattr(self.webcam_config, "preview_fps", 15) or 15),
+                "preview_active_consumers": self.get_preview_consumer_count(),
                 "reconnect_attempts": self._reconnect_attempts,
                 "error_status": self._reconnect_attempts >= self.max_reconnect_attempts
             }
@@ -1553,14 +1703,28 @@ class Camera:
         if frame_lock is None:
             self.current_frame = None
             self._current_jpeg_frame = None
+            self._preview_frame_resolution = None
+            self._preview_frame_timestamp = None
+            self._last_preview_publish_monotonic = 0.0
+            self._preview_publish_in_progress = False
             return
         with frame_lock:
             self.current_frame = None
             self._current_jpeg_frame = None
+            self._preview_frame_resolution = None
+            self._preview_frame_timestamp = None
+            self._last_preview_publish_monotonic = 0.0
+            self._preview_publish_in_progress = False
 
-    def _encode_frame_to_jpeg_bytes(self, frame: np.ndarray) -> Optional[bytes]:
+    def _encode_frame_to_jpeg_bytes(
+        self,
+        frame: np.ndarray,
+        *,
+        quality: Optional[int] = None,
+    ) -> Optional[bytes]:
+        jpeg_quality = int(quality if quality is not None else 70)
         try:
-            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
         except Exception as exc:
             self.logger.debug('Error encoding cached frame: %s', exc, exc_info=True)
             return None
@@ -1568,11 +1732,104 @@ class Camera:
             return None
         return buffer.tobytes()
 
+    def _build_preview_frame(self, frame: np.ndarray) -> tuple[np.ndarray, Dict[str, int]]:
+        preview_frame = frame
+        frame_height, frame_width = frame.shape[:2]
+        target_width = max(1, int(getattr(self.webcam_config, "preview_max_width", frame_width) or frame_width))
+
+        if frame_width > target_width:
+            scale = target_width / float(frame_width)
+            target_height = max(1, int(frame_height * scale))
+            preview_frame = cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_AREA)
+            frame_width = target_width
+            frame_height = target_height
+
+        return preview_frame, {"width": int(frame_width), "height": int(frame_height)}
+
+    def _encode_preview_frame(self, frame: np.ndarray) -> tuple[Optional[bytes], Optional[Dict[str, int]]]:
+        preview_frame, preview_resolution = self._build_preview_frame(frame)
+        jpeg_bytes = self._encode_frame_to_jpeg_bytes(
+            preview_frame,
+            quality=int(getattr(self.webcam_config, "preview_jpeg_quality", 75) or 75),
+        )
+        if jpeg_bytes is None:
+            return None, None
+        return jpeg_bytes, preview_resolution
+
+    def register_preview_consumer(self) -> None:
+        with self._preview_consumers_lock:
+            self._preview_consumer_count += 1
+
+    def unregister_preview_consumer(self) -> None:
+        with self._preview_consumers_lock:
+            if self._preview_consumer_count > 0:
+                self._preview_consumer_count -= 1
+
+    def get_preview_consumer_count(self) -> int:
+        preview_consumers_lock = getattr(self, "_preview_consumers_lock", None)
+        if preview_consumers_lock is None:
+            return int(getattr(self, "_preview_consumer_count", 0) or 0)
+        with preview_consumers_lock:
+            return int(getattr(self, "_preview_consumer_count", 0) or 0)
+
+    def get_preview_stream_interval_seconds(self) -> float:
+        preview_fps = max(1, int(getattr(self.webcam_config, "preview_fps", 15) or 15))
+        return 1.0 / float(preview_fps)
+
+    def get_preview_resolution(self) -> Optional[Dict[str, int]]:
+        frame_lock = getattr(self, "frame_lock", None)
+        if frame_lock is None:
+            resolution = getattr(self, "_preview_frame_resolution", None)
+            if resolution is not None:
+                return dict(resolution)
+            return None
+        with frame_lock:
+            resolution = getattr(self, "_preview_frame_resolution", None)
+            if resolution is not None:
+                return dict(resolution)
+        return None
+
+    def _maybe_publish_preview_frame(self, frame: np.ndarray, *, force: bool = False) -> Optional[bytes]:
+        if frame is None or frame.size == 0:
+            return None
+        if not force and self.get_preview_consumer_count() <= 0:
+            return None
+
+        now_monotonic = time.monotonic()
+        preview_interval = self.get_preview_stream_interval_seconds()
+
+        with self.frame_lock:
+            current_jpeg_frame = getattr(self, "_current_jpeg_frame", None)
+            if getattr(self, "_preview_publish_in_progress", False):
+                if current_jpeg_frame is not None:
+                    return bytes(current_jpeg_frame)
+                return None
+            if (
+                not force
+                and current_jpeg_frame is not None
+                and (now_monotonic - self._last_preview_publish_monotonic) < preview_interval
+            ):
+                return None
+            self._preview_publish_in_progress = True
+
+        jpeg_bytes, preview_resolution = self._encode_preview_frame(frame)
+        if jpeg_bytes is None or preview_resolution is None:
+            with self.frame_lock:
+                self._preview_publish_in_progress = False
+                self._last_preview_publish_monotonic = 0.0
+            return None
+
+        with self.frame_lock:
+            self._current_jpeg_frame = jpeg_bytes
+            self._preview_frame_resolution = dict(preview_resolution)
+            self._preview_frame_timestamp = time.time()
+            self._last_preview_publish_monotonic = now_monotonic
+            self._preview_publish_in_progress = False
+            return bytes(self._current_jpeg_frame)
+
     def _publish_current_frame(self, frame: np.ndarray) -> None:
-        jpeg_bytes = self._encode_frame_to_jpeg_bytes(frame)
         with self.frame_lock:
             self.current_frame = frame
-            self._current_jpeg_frame = jpeg_bytes
             self.frame_count += 1
 
     def take_snapshot(self) -> Optional[np.ndarray]:
@@ -1584,12 +1841,16 @@ class Camera:
 
     def get_current_jpeg_frame(self) -> Optional[bytes]:
         with self.frame_lock:
-            if self.current_frame is None:
-                return None
             current_jpeg_frame = getattr(self, '_current_jpeg_frame', None)
             if current_jpeg_frame is not None:
                 return bytes(current_jpeg_frame)
         return None
+
+    def build_preview_jpeg_frame(self) -> Optional[bytes]:
+        frame = self.get_current_frame(copy_frame=False)
+        if frame is None:
+            return None
+        return self._maybe_publish_preview_frame(frame, force=True)
     
     def get_current_frame(self, copy_frame: bool = True) -> Optional[np.ndarray]:
         """
@@ -1743,12 +2004,16 @@ class Camera:
                     self.motion_detector = None
                 with self._motion_callbacks_lock:
                     self._motion_callbacks.clear()
+                    self._motion_result_callbacks.clear()
                     self.motion_enabled = False
                 
                 # Clear frame pool (Issue #5)
                 if hasattr(self, '_frame_pool'):
                     self._frame_pool.clear()
-                
+
+                with self._preview_consumers_lock:
+                    self._preview_consumer_count = 0
+                 
                 # Release camera
                 if not self._try_release_video_capture(timeout=0.05):
                     cleanup_complete = False

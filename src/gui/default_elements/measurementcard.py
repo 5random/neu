@@ -1130,8 +1130,8 @@ def create_measurement_card(
             ui.label('Stop measurement?').classes('text-h6')
             ui.label('The current measurement session will be ended immediately.').classes('text-body2')
             with ui.row().classes('gap-2'):
-                ui.button('Stop', on_click=_confirm_stop_session).props('color=primary')
-                ui.button('Cancel', on_click=stop_confirm_dialog.close).props('color=negative')
+                ui.button('Cancel', on_click=stop_confirm_dialog.close).props('color=primary')
+                ui.button('Stop', on_click=_confirm_stop_session).props('color=negative')
 
     start_stop_btn.on('click', start_stop)
     enable_limit.on('update:model-value', toggle_duration)
@@ -1141,7 +1141,14 @@ def create_measurement_card(
     duration_unit.on('update:model-value', on_duration_unit_change)
     duration_input.on('update:model-value', on_duration_input_change)
 
-    measurement_refresh_timer = ui.timer(1.0, tick)
+    gui_config = getattr(config, 'gui', None)
+    refresh_interval_ms_getter = getattr(gui_config, 'get_status_refresh_interval_ms', None)
+    if callable(refresh_interval_ms_getter):
+        raw_refresh_interval_ms = refresh_interval_ms_getter()
+    else:
+        raw_refresh_interval_ms = getattr(gui_config, 'status_refresh_interval_ms', 1000)
+    refresh_interval_seconds = max(0.2, float(raw_refresh_interval_ms or 1000) / 1000.0)
+    measurement_refresh_timer = ui.timer(refresh_interval_seconds, tick)
 
     sync_duration_controls(bool(initial_status.get('is_active', False)))
     update_duration_ui()

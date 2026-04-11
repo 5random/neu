@@ -39,6 +39,9 @@ from .util import (
 
 _title_sync_registered = False
 _RUNTIME_STATE_UNSET = object()
+_CLIENT_RUNTIME_TITLE_SIGNATURE_ATTR = 'cvd_runtime_title_signature'
+_CLIENT_RUNTIME_TITLE_PENDING_SIGNATURE_ATTR = 'cvd_runtime_title_pending_signature'
+_CLIENT_RUNTIME_BASE_TITLE_ATTR = 'cvd_runtime_base_title'
 _runtime_measurement_state_lock = threading.RLock()
 _runtime_measurement_state: dict[str, Any] = {
     'is_active': False,
@@ -109,6 +112,37 @@ def _get_runtime_measurement_state() -> dict[str, Any]:
         return dict(_runtime_measurement_state)
 
 
+def _runtime_measurement_visual_signature(state: dict[str, Any]) -> tuple[bool, bool | None]:
+    is_active = bool(state.get('is_active', False))
+    if not is_active:
+        return False, None
+    recent_motion = state.get('recent_motion_detected')
+    return True, None if recent_motion is None else bool(recent_motion)
+
+
+def _set_client_runtime_attr(client: Any, attr_name: str, value: Any) -> bool:
+    try:
+        setattr(client, attr_name, value)
+        return True
+    except Exception:
+        return False
+
+
+def _clear_client_runtime_attr(client: Any, attr_name: str) -> None:
+    try:
+        if hasattr(client, attr_name):
+            delattr(client, attr_name)
+    except Exception:
+        pass
+
+
+def _reset_client_runtime_title_cache(client: Any, *, clear_base_title: bool = False) -> None:
+    _clear_client_runtime_attr(client, _CLIENT_RUNTIME_TITLE_SIGNATURE_ATTR)
+    _clear_client_runtime_attr(client, _CLIENT_RUNTIME_TITLE_PENDING_SIGNATURE_ATTR)
+    if clear_base_title:
+        _clear_client_runtime_attr(client, _CLIENT_RUNTIME_BASE_TITLE_ATTR)
+
+
 def _set_runtime_measurement_state(
     *,
     state: dict[str, Any] | None = None,
@@ -116,7 +150,7 @@ def _set_runtime_measurement_state(
     session_id: Any = None,
     session_start_time: Any = None,
     recent_motion_detected: Any = _RUNTIME_STATE_UNSET,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     merged_state = _get_runtime_measurement_state()
     if state:
         merged_state.update(dict(state))
@@ -129,24 +163,14 @@ def _set_runtime_measurement_state(
         recent_motion_detected=recent_motion_detected,
     )
     with _runtime_measurement_state_lock:
+        previous = dict(_runtime_measurement_state)
         _runtime_measurement_state.update(normalized)
-        return dict(_runtime_measurement_state)
+        return previous, dict(_runtime_measurement_state)
 
 
 def _build_browser_display_title(base_title: str, measurement_state: dict[str, Any] | None = None) -> str:
-    state = measurement_state or _get_runtime_measurement_state()
-    if not bool(state.get('is_active', False)):
-        return base_title
-
-    recent_motion_detected = state.get('recent_motion_detected')
-    if recent_motion_detected is True:
-        icon_prefix = '\U0001F7E2'
-    elif recent_motion_detected is False:
-        icon_prefix = '\U0001F7E0'
-    else:
-        icon_prefix = '\u26AA'
-
-    return f'{icon_prefix} Messung aktiv | {base_title}'
+    _ = measurement_state or _get_runtime_measurement_state()
+    return base_title
 
 
 def _build_header_display_title(base_title: str, measurement_state: dict[str, Any] | None = None) -> str:
@@ -270,6 +294,7 @@ def sync_runtime_gui_title(
     visual_state = _resolve_runtime_title_visual_state(base_title, resolved_state)
     browser_title = str(visual_state['browser_title'])
     favicon_url = str(visual_state['favicon_url'])
+    current_signature = _runtime_measurement_visual_signature(resolved_state)
 
     try:
         app.config.title = base_title
@@ -283,14 +308,47 @@ def sync_runtime_gui_title(
 
     label_sync_code = _build_runtime_title_sync_script(base_title, resolved_state)
 
-    try:
-        if client is not None:
-            if hasattr(client, 'title'):
-                client.title = browser_title
-            set_tab(title=browser_title, icon_url=favicon_url, client=client)
+    if client is not None:
+        try:
+            last_synced_base_title = getattr(client, _CLIENT_RUNTIME_BASE_TITLE_ATTR, None)
+            should_sync_title = last_synced_base_title != browser_title
+
+            tab_synced = bool(set_tab(
+                title=browser_title if should_sync_title else None,
+                icon_url=favicon_url,
+                client=client,
+            ))
+            header_synced = True
             if hasattr(client, 'run_javascript'):
-                client.run_javascript(label_sync_code)
-        elif broadcast:
+                try:
+                    client.run_javascript(label_sync_code)
+                except Exception:
+                    header_synced = False
+                    logger.debug('Failed to sync runtime header state to client', exc_info=True)
+
+            if tab_synced and header_synced:
+                _set_client_runtime_attr(client, _CLIENT_RUNTIME_TITLE_SIGNATURE_ATTR, current_signature)
+                if should_sync_title:
+                    _set_client_runtime_attr(client, _CLIENT_RUNTIME_BASE_TITLE_ATTR, browser_title)
+                    try:
+                        if hasattr(client, 'title'):
+                            client.title = browser_title
+                    except Exception:
+                        pass
+            else:
+                logger.debug(
+                    'Runtime GUI title sync incomplete (tab_synced=%s, header_synced=%s)',
+                    tab_synced,
+                    header_synced,
+                )
+        except Exception:
+            logger.debug('Failed to sync GUI title to client', exc_info=True)
+        finally:
+            _clear_client_runtime_attr(client, _CLIENT_RUNTIME_TITLE_PENDING_SIGNATURE_ATTR)
+        return base_title
+
+    if broadcast:
+        try:
             clients_dict = getattr(app, 'clients', {})
             try:
                 clients = list(getattr(clients_dict, 'values', lambda: [])())
@@ -302,8 +360,8 @@ def sync_runtime_gui_title(
                     client=connected_client,
                     measurement_state=resolved_state,
                 )
-    except Exception:
-        logger.debug('Failed to sync GUI title to client(s)', exc_info=True)
+        except Exception:
+            logger.debug('Failed to sync GUI title to client(s)', exc_info=True)
 
     return base_title
 
@@ -337,13 +395,23 @@ def sync_runtime_measurement_state(
     broadcast: bool = False,
     schedule_gui_sync: bool = False,
 ) -> dict[str, Any]:
-    normalized = _set_runtime_measurement_state(
+    previous_state, normalized = _set_runtime_measurement_state(
         state=state,
         is_active=is_active,
         session_id=session_id,
         session_start_time=session_start_time,
         recent_motion_detected=recent_motion_detected,
     )
+    previous_signature = _runtime_measurement_visual_signature(previous_state)
+    current_signature = _runtime_measurement_visual_signature(normalized)
+    if client is not None:
+        last_client_signature = getattr(client, _CLIENT_RUNTIME_TITLE_SIGNATURE_ATTR, None)
+        pending_client_signature = getattr(client, _CLIENT_RUNTIME_TITLE_PENDING_SIGNATURE_ATTR, None)
+        if last_client_signature == current_signature or pending_client_signature == current_signature:
+            return normalized
+        _set_client_runtime_attr(client, _CLIENT_RUNTIME_TITLE_PENDING_SIGNATURE_ATTR, current_signature)
+    elif not broadcast and previous_signature == current_signature:
+        return normalized
     if schedule_gui_sync:
         _schedule_runtime_gui_title_sync(
             client=client,
@@ -375,6 +443,8 @@ def register_client_runtime_title_sync(
             previous_cleanup()
         except Exception:
             logger.exception('Failed to run previous runtime title listener cleanup')
+
+    _reset_client_runtime_title_cache(client)
 
     if measurement_controller is None or not hasattr(measurement_controller, 'register_session_state_callback'):
         sync_runtime_measurement_state(
@@ -438,6 +508,7 @@ def register_client_runtime_title_sync(
                         delattr(client, attr_name)
                 except Exception:
                     pass
+            _reset_client_runtime_title_cache(client, clear_base_title=True)
 
         register_client_disconnect_handler(
             client,

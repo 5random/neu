@@ -126,7 +126,8 @@ class MeasurementController:
         self._session_state_callbacks: list[Callable[[dict[str, Any]], None]] = []
         self._session_callbacks_lock = threading.Lock()
         self._camera_lock = threading.RLock()
-        self._camera_motion_listener: Optional[Callable[[np.ndarray, MotionResult], None]] = None
+        self._camera_motion_listener: Optional[Callable[[MotionResult], None]] = None
+        self._camera_motion_legacy_listener: Optional[Callable[[np.ndarray, MotionResult], None]] = None
         self._timeout_stop_event = threading.Event()
         self._timeout_thread = threading.Thread(
             target=self._timeout_monitor_loop,
@@ -136,6 +137,7 @@ class MeasurementController:
         self._timeout_thread.start()
 
         self._camera_motion_listener = self.on_motion_detected
+        self._camera_motion_legacy_listener = lambda _frame, result: self.on_motion_detected(result)
         self.set_camera(camera)
 
         if getattr(self.config, 'auto_start', False):
@@ -156,13 +158,18 @@ class MeasurementController:
         with self._camera_lock:
             previous_camera = self.camera
             motion_listener = self._camera_motion_listener
+            legacy_motion_listener = self._camera_motion_legacy_listener
 
             if previous_camera is camera:
                 return
 
             if previous_camera is not None and motion_listener is not None:
                 try:
-                    previous_camera.disable_motion_detection(motion_listener)
+                    unregister_result = getattr(previous_camera, 'unregister_motion_result_callback', None)
+                    if callable(unregister_result):
+                        unregister_result(motion_listener)
+                    elif legacy_motion_listener is not None:
+                        previous_camera.disable_motion_detection(legacy_motion_listener)
                 except Exception as exc:
                     self.logger.debug(f"Failed to unregister camera motion callback: {exc}")
 
@@ -170,7 +177,13 @@ class MeasurementController:
 
             if camera is not None and motion_listener is not None:
                 try:
-                    camera.enable_motion_detection(motion_listener)
+                    register_result = getattr(camera, 'register_motion_result_callback', None)
+                    if callable(register_result):
+                        register_result(motion_listener)
+                    elif legacy_motion_listener is not None:
+                        camera.enable_motion_detection(legacy_motion_listener)
+                    else:
+                        raise AttributeError('No compatible camera motion callback API available')
                     self.logger.info("Motion detection callback registered")
                 except Exception as exc:
                     self.logger.error(f"Failed to register camera motion callback: {exc}")
@@ -406,7 +419,7 @@ class MeasurementController:
         
         return True
 
-    def on_motion_detected(self, frame: np.ndarray, result: MotionResult) -> None:
+    def on_motion_detected(self, result: MotionResult) -> None:
         """Callback von der Kamera bei jedem verarbeiteten Frame."""
         
         # 1. Update Motion History (immer, auch ohne aktive Session)
@@ -424,10 +437,13 @@ class MeasurementController:
         # 2. Check Session Logic and Process Motion within a single lock acquisition
         # to prevent race conditions where session is stopped between checks
         session_active = False
+        motion_state_changed = False
         with self.session_lock:
+            previous_motion_state = self.recent_motion_detected
             self.recent_motion_detected = bool(result.motion_detected)
             session_active = self.is_session_active
             current_session_id = self.session_id
+            motion_state_changed = previous_motion_state != self.recent_motion_detected
 
             # 3. Process Motion (within lock to ensure consistency)
             if session_active and current_session_id is not None and result.motion_detected:
@@ -440,15 +456,16 @@ class MeasurementController:
                 self._check_alert_trigger_locked(current_session_id)
 
         # 4. Notify GUI callbacks (outside locks for safety, using snapshot)
-        callbacks_snapshot = []
-        with self._callbacks_lock:
-            callbacks_snapshot = list(self._motion_callbacks)
+        if motion_state_changed:
+            callbacks_snapshot = []
+            with self._callbacks_lock:
+                callbacks_snapshot = list(self._motion_callbacks)
 
-        for callback in callbacks_snapshot:
-            try:
-                callback(result)
-            except Exception as exc:
-                self.logger.debug(f"Motion callback error: {exc}")
+            for callback in callbacks_snapshot:
+                try:
+                    callback(result)
+                except Exception as exc:
+                    self.logger.debug(f"Motion callback error: {exc}")
 
         self._maybe_log_motion_summary()
 

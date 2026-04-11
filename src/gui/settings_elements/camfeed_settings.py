@@ -1,5 +1,4 @@
-from typing import Optional, Tuple, Any, Callable, cast
-import time
+from typing import Optional, Tuple, Any, cast
 
 from nicegui import ui
 
@@ -7,10 +6,10 @@ from src.cam.camera import Camera
 from src.config import get_logger, save_global_config, get_global_config
 from src.cam.motion import MotionDetector
 from src.gui.settings_elements.ui_helpers import create_action_button, create_heading_row
-from src.gui.util import register_client_disconnect_handler
 
 logger = get_logger('gui.camfeed')
-_SETTINGS_CAMFEED_TIMER_ATTR = 'cvd_camfeed_timer_settings'
+_VIDEO_STREAM_SOURCE = '/video_feed'
+_SETTINGS_FEED_MIN_HEIGHT_PX = 220
 
 
 def _resolve_capture_dimensions(camera: Optional[Camera]) -> Tuple[int, int]:
@@ -43,96 +42,275 @@ def _resolve_capture_dimensions(camera: Optional[Camera]) -> Tuple[int, int]:
     return 720, 405
 
 
-def _start_settings_camfeed_refresh_timer(refresh_callback: Callable[[], None]) -> Any:
-    """Start exactly one refresh timer for the settings camfeed."""
-    timer: Any | None = None
+def _calculate_preview_dimensions(capture_width: int, capture_height: int, preview_max_width: int) -> Tuple[int, int]:
+    capture_width = max(1, int(capture_width))
+    capture_height = max(1, int(capture_height))
+    preview_max_width = max(1, int(preview_max_width))
+    if capture_width <= preview_max_width:
+        return capture_width, capture_height
 
-    try:
-        client = ui.context.client
-    except Exception:
-        client = None
+    scale = preview_max_width / float(capture_width)
+    preview_height = max(1, int(capture_height * scale))
+    return int(preview_max_width), int(preview_height)
 
-    if client is None:
-        logger.debug('Starting unmanaged settings camfeed refresh timer without client context')
-        return ui.timer(0.2, refresh_callback)
 
-    try:
-        previous_timer = None
+def _resolve_preview_dimensions(camera: Optional[Camera], capture_width: int, capture_height: int) -> Tuple[int, int]:
+    if camera is not None:
         try:
-            previous_timer = getattr(client, _SETTINGS_CAMFEED_TIMER_ATTR, None)
+            status = camera.get_camera_status()
+            resolution = status.get('preview_resolution') or {}
+            width = int(resolution.get('width', 0) or 0)
+            height = int(resolution.get('height', 0) or 0)
+            if width > 0 and height > 0:
+                return width, height
         except Exception:
-            previous_timer = None
-
-        if previous_timer:
-            try:
-                previous_timer.cancel()
-            except Exception:
-                logger.warning(
-                    'Could not cancel previous settings camfeed timer; reusing it to avoid duplicate timers',
-                    exc_info=True,
-                )
-                return previous_timer
+            logger.debug('Could not resolve live preview dimensions', exc_info=True)
 
         try:
-            if getattr(client, _SETTINGS_CAMFEED_TIMER_ATTR, None) is previous_timer and previous_timer is not None:
-                delattr(client, _SETTINGS_CAMFEED_TIMER_ATTR)
+            preview_max_width = int(getattr(camera.webcam_config, 'preview_max_width', capture_width) or capture_width)
         except Exception:
-            pass
+            preview_max_width = capture_width
+    else:
+        preview_max_width = capture_width
 
-        timer_holder: dict[str, Any | None] = {'timer': None}
+    return _calculate_preview_dimensions(capture_width, capture_height, preview_max_width)
 
-        def _cleanup() -> None:
-            current_timer = timer_holder['timer']
-            if current_timer is not None:
-                try:
-                    current_timer.cancel()
-                except Exception:
-                    pass
-            try:
-                if getattr(client, _SETTINGS_CAMFEED_TIMER_ATTR, None) is current_timer:
-                    delattr(client, _SETTINGS_CAMFEED_TIMER_ATTR)
-            except Exception:
-                pass
 
-        def _guarded_refresh() -> None:
-            try:
-                if not bool(getattr(client, 'has_socket_connection', True)):
-                    _cleanup()
-                    return
-            except Exception:
-                logger.debug('Failed to inspect client connection state for settings camfeed timer', exc_info=True)
-            refresh_callback()
+def _preview_to_capture_coords(
+    x: int,
+    y: int,
+    *,
+    capture_width: int,
+    capture_height: int,
+    preview_width: int,
+    preview_height: int,
+) -> Tuple[int, int]:
+    preview_width = max(1, int(preview_width))
+    preview_height = max(1, int(preview_height))
+    capture_width = max(1, int(capture_width))
+    capture_height = max(1, int(capture_height))
+    px = max(0, min(int(x), preview_width - 1))
+    py = max(0, min(int(y), preview_height - 1))
+    capture_x = max(0, min(int(round(px * capture_width / float(preview_width))), capture_width - 1))
+    capture_y = max(0, min(int(round(py * capture_height / float(preview_height))), capture_height - 1))
+    return capture_x, capture_y
 
-        timer = ui.timer(0.2, _guarded_refresh)
-        timer_holder['timer'] = timer
-        try:
-            setattr(client, _SETTINGS_CAMFEED_TIMER_ATTR, timer)
-        except Exception:
-            logger.debug('Failed to store settings camfeed timer on client', exc_info=True)
 
-        registered = register_client_disconnect_handler(client, _cleanup, logger=logger)
-        if not registered:
-            logger.debug('Settings camfeed timer is active without disconnect auto-cleanup')
-        return timer
-    except Exception:
-        if timer is not None:
-            try:
-                timer.cancel()
-            except Exception:
-                pass
-            try:
-                if getattr(client, _SETTINGS_CAMFEED_TIMER_ATTR, None) is timer:
-                    delattr(client, _SETTINGS_CAMFEED_TIMER_ATTR)
-            except Exception:
-                pass
-        logger.warning('Falling back to unmanaged settings camfeed refresh timer', exc_info=True)
-        return ui.timer(0.2, refresh_callback)
+def _capture_to_preview_coords(
+    x: int,
+    y: int,
+    *,
+    capture_width: int,
+    capture_height: int,
+    preview_width: int,
+    preview_height: int,
+) -> Tuple[int, int]:
+    preview_width = max(1, int(preview_width))
+    preview_height = max(1, int(preview_height))
+    capture_width = max(1, int(capture_width))
+    capture_height = max(1, int(capture_height))
+    cx = max(0, min(int(x), capture_width - 1))
+    cy = max(0, min(int(y), capture_height - 1))
+    preview_x = max(0, min(int(round(cx * preview_width / float(capture_width))), preview_width - 1))
+    preview_y = max(0, min(int(round(cy * preview_height / float(capture_height))), preview_height - 1))
+    return preview_x, preview_y
+
+def _build_camfeed_surface_style(width: int, height: int) -> str:
+    width = max(1, int(width))
+    height = max(1, int(height))
+    return (
+        f'width:100%;height:auto;aspect-ratio:{width}/{height};'
+        f'min-height:{_SETTINGS_FEED_MIN_HEIGHT_PX}px;'
+        'display:block;overflow:hidden;'
+        'background:#0f172a;border:1px solid rgba(148, 163, 184, 0.24);'
+    )
+
+
+def _create_settings_camfeed_image(on_mouse: Any, *, preview_width: int, preview_height: int) -> Any:
+    return (
+        # interactive_image keeps its own reactive src state; leaving it empty
+        # makes JS-only img.src changes invisible and fragile on re-renders.
+        ui.interactive_image(
+            _VIDEO_STREAM_SOURCE,
+            on_mouse=on_mouse,
+            events=['click', 'move', 'mouseleave'],
+            cross='#19bfd2',
+        )
+        .style(_build_camfeed_surface_style(preview_width, preview_height))
+        .classes('rounded-borders')
+        .props('id=cvd-settings-camfeed')
+    )
+
+
+def _build_settings_camfeed_refresh_script() -> str:
+    return """
+            <script>
+            (function(){
+                try {
+                    var state = window.__cvdSettingsCamState || {};
+                    if (state.retryTimer) {
+                        clearTimeout(state.retryTimer);
+                        state.retryTimer = null;
+                    }
+                    function resolveImage(root) {
+                        if (!root) return null;
+                        var img = root.querySelector('img');
+                        if (img) return img;
+                        var qimg = root.querySelector('.q-img__image img');
+                        if (qimg) return qimg;
+                        return null;
+                    }
+                    function resolveStatus() {
+                        return document.getElementById('cvd-settings-camfeed-status');
+                    }
+                    function setPhase(phase) {
+                        var root = document.getElementById('cvd-settings-camfeed');
+                        if (root) {
+                            root.dataset.streamState = phase || '';
+                        }
+                    }
+                    function setStatus(message, phase) {
+                        var label = resolveStatus();
+                        if (!label) return;
+                        label.textContent = message || '';
+                        label.style.display = message ? '' : 'none';
+                        label.dataset.streamState = phase || '';
+                    }
+                    function clearRetry() {
+                        if (state.retryTimer) {
+                            clearTimeout(state.retryTimer);
+                            state.retryTimer = null;
+                        }
+                    }
+                    function cleanupImageListeners() {
+                        if (!state.boundImage) return;
+                        if (state.onLoad) {
+                            state.boundImage.removeEventListener('load', state.onLoad);
+                        }
+                        if (state.onError) {
+                            state.boundImage.removeEventListener('error', state.onError);
+                        }
+                        state.boundImage = null;
+                        state.onLoad = null;
+                        state.onError = null;
+                    }
+                    function scheduleReconnect() {
+                        clearRetry();
+                        if (document.visibilityState !== 'visible') return;
+                        state.retryTimer = window.setTimeout(function() {
+                            state.retryTimer = null;
+                            start(true);
+                        }, 900);
+                    }
+                    function bindImage(img) {
+                        if (!img || state.boundImage === img) return;
+                        cleanupImageListeners();
+                        state.boundImage = img;
+                        state.onLoad = function() {
+                            state.active = true;
+                            state.connecting = false;
+                            clearRetry();
+                            setPhase('ready');
+                            setStatus('', 'ready');
+                        };
+                        state.onError = function() {
+                            state.active = false;
+                            state.connecting = false;
+                            setPhase('reconnecting');
+                            setStatus('Reconnecting camera...', 'reconnecting');
+                            scheduleReconnect();
+                        };
+                        img.addEventListener('load', state.onLoad);
+                        img.addEventListener('error', state.onError);
+                    }
+                    function start(force) {
+                        var root = document.getElementById('cvd-settings-camfeed');
+                        if (!root || document.visibilityState !== 'visible') return;
+                        var img = resolveImage(root);
+                        if (!img) return;
+                        bindImage(img);
+
+                        var url = '/video_feed';
+                        var currentSrc = img.getAttribute('src') || '';
+                        if (!force && currentSrc === url) {
+                            if (img.complete && img.naturalWidth > 0) {
+                                state.active = true;
+                                state.connecting = false;
+                                clearRetry();
+                                setPhase('ready');
+                                setStatus('', 'ready');
+                            } else {
+                                state.active = false;
+                                state.connecting = true;
+                                setPhase('loading');
+                                setStatus('Connecting camera...', 'loading');
+                                scheduleReconnect();
+                            }
+                            return;
+                        }
+
+                        state.active = false;
+                        state.connecting = true;
+                        setPhase('loading');
+                        setStatus('Connecting camera...', 'loading');
+                        try { img.src = url; } catch (e) {}
+                    }
+                    function stop() {
+                        clearRetry();
+                        var root = document.getElementById('cvd-settings-camfeed');
+                        var img = resolveImage(root);
+                        if (img) {
+                            try { img.removeAttribute('src'); } catch (e) {}
+                            try { img.src = ''; } catch (e) {}
+                        }
+                        if (root) {
+                            try { root.removeAttribute('src'); } catch (e) {}
+                        }
+                        state.active = false;
+                        state.connecting = false;
+                        setPhase('paused');
+                        setStatus('Camera paused', 'paused');
+                    }
+                    if (state.onVisibilityChange) {
+                        document.removeEventListener('visibilitychange', state.onVisibilityChange);
+                    }
+                    if (state.onPageShow) {
+                        window.removeEventListener('pageshow', state.onPageShow);
+                    }
+                    if (state.onPageHide) {
+                        window.removeEventListener('pagehide', state.onPageHide);
+                    }
+                    if (state.onBeforeUnload) {
+                        window.removeEventListener('beforeunload', state.onBeforeUnload);
+                    }
+                    state.onVisibilityChange = function() {
+                        if (document.visibilityState === 'visible') start(true);
+                        else stop();
+                    };
+                    state.onPageShow = function(e) {
+                        if (e && e.persisted) start(true);
+                        else if (document.visibilityState === 'visible') start(false);
+                    };
+                    state.onPageHide = stop;
+                    state.onBeforeUnload = stop;
+                    document.addEventListener('visibilitychange', state.onVisibilityChange);
+                    window.addEventListener('pageshow', state.onPageShow);
+                    window.addEventListener('pagehide', state.onPageHide);
+                    window.addEventListener('beforeunload', state.onBeforeUnload);
+                    window.__cvdSettingsCamState = state;
+                    setPhase('loading');
+                    setStatus('Connecting camera...', 'loading');
+                    start(false);
+                } catch (e) { /* ignore */ }
+            })();
+            </script>
+            """
 
 
 def create_camfeed_content(camera: Optional[Camera] = None) -> None:
     """Render the live camera feed with an integrated ROI editor.
 
-    - Uses the streaming endpoint /video/frame for the image.
+    - Uses the shared streaming endpoint /video_feed for the image.
     - Maintains correct aspect ratio and coordinate mapping.
     - Allows selecting ROI corners with clicks and saving to config/camera.
     """
@@ -144,10 +322,12 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
 
     # Determine image resolution to preserve aspect ratio
     IMG_W, IMG_H = _resolve_capture_dimensions(camera)
+    initial_preview_width, initial_preview_height = _resolve_preview_dimensions(camera, IMG_W, IMG_H)
     MIN_ROI_SIZE_PX = 30  # unified minimum ROI edge length for live validation
 
     # ROI state and UI refs
     state: dict[str, Optional[Tuple[int, int]]] = {'p1': None, 'p2': None}
+    preview_state = {'width': int(initial_preview_width), 'height': int(initial_preview_height)}
     image = None
     tl_label = None
     br_label = None
@@ -160,6 +340,43 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
     w_input: Any = None
     h_input: Any = None
     _updating_inputs = False
+
+    def _current_preview_dimensions() -> Tuple[int, int]:
+        return (
+            max(1, int(preview_state.get('width', IMG_W) or IMG_W)),
+            max(1, int(preview_state.get('height', IMG_H) or IMG_H)),
+        )
+
+    def _sync_preview_state(*, preview_max_width: Optional[int] = None) -> Tuple[int, int]:
+        if preview_max_width is None:
+            preview_width, preview_height = _resolve_preview_dimensions(camera, IMG_W, IMG_H)
+        else:
+            preview_width, preview_height = _calculate_preview_dimensions(IMG_W, IMG_H, preview_max_width)
+        preview_state['width'] = int(preview_width)
+        preview_state['height'] = int(preview_height)
+        return int(preview_width), int(preview_height)
+
+    def _preview_to_capture(x: int, y: int) -> Tuple[int, int]:
+        preview_width, preview_height = _current_preview_dimensions()
+        return _preview_to_capture_coords(
+            x,
+            y,
+            capture_width=IMG_W,
+            capture_height=IMG_H,
+            preview_width=preview_width,
+            preview_height=preview_height,
+        )
+
+    def _capture_to_preview(x: int, y: int) -> Tuple[int, int]:
+        preview_width, preview_height = _current_preview_dimensions()
+        return _capture_to_preview_coords(
+            x,
+            y,
+            capture_width=IMG_W,
+            capture_height=IMG_H,
+            preview_width=preview_width,
+            preview_height=preview_height,
+        )
 
     def svg_cross(x: int, y: int, s: int = 14, col: str = 'deepskyblue') -> str:
         dis_scale = 300 / IMG_H if IMG_H > 300 else 1.0
@@ -208,15 +425,21 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
 
         if p1 is not None:
             cross_col = '#19bfd2' if enabled else '#9aa0a6'  # blue vs gray
-            parts.append(svg_cross(p1[0], p1[1], col=cross_col))
+            px, py = _capture_to_preview(p1[0], p1[1])
+            parts.append(svg_cross(px, py, col=cross_col))
         if p2 is not None:
             cross_col = '#19bfd2' if enabled else '#9aa0a6'
-            parts.append(svg_cross(p2[0], p2[1], col=cross_col))
+            px, py = _capture_to_preview(p2[0], p2[1])
+            parts.append(svg_cross(px, py, col=cross_col))
         if (b := roi_bounds()):
             x0, y0, x1, y1 = b
             w = max(1, x1 - x0)
             h = max(1, y1 - y0)
             too_small = (w < MIN_ROI_SIZE_PX) or (h < MIN_ROI_SIZE_PX)
+            px0, py0 = _capture_to_preview(x0, y0)
+            px1, py1 = _capture_to_preview(x1, y1)
+            preview_w = max(1, px1 - px0)
+            preview_h = max(1, py1 - py0)
 
             if not enabled:
                 rect_style = 'stroke="#9aa0a6" stroke-width="3" stroke-dasharray="8,6" stroke-opacity="0.9" fill="none"'
@@ -226,23 +449,23 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
                 rect_style = 'stroke="lime" stroke-width="3" fill="none"'
 
             parts.append(
-                f'<rect x="{x0}" y="{y0}" width="{w}" height="{h}" '
+                f'<rect x="{px0}" y="{py0}" width="{preview_w}" height="{preview_h}" '
                 f'{rect_style} pointer-events="none" vector-effect="non-scaling-stroke" />'
             )
-            parts.extend([svg_circle(x0, y0, col=("#19bfd2" if enabled else "#9aa0a6")),
-                         svg_circle(x1, y1, col=("#19bfd2" if enabled else "#9aa0a6"))])
+            parts.extend([svg_circle(px0, py0, col=("#19bfd2" if enabled else "#9aa0a6")),
+                         svg_circle(px1, py1, col=("#19bfd2" if enabled else "#9aa0a6"))])
 
             # Optional inline text hint within overlay for clarity
             if not enabled:
-                cx = (x0 + x1) // 2
-                cy = max(14, y0 + 16)
+                cx = (px0 + px1) // 2
+                cy = max(14, py0 + 16)
                 parts.append(
                     f'<text x="{cx}" y="{cy}" fill="#9aa0a6" font-size="14" text-anchor="middle" '
                     'pointer-events="none">ROI disabled</text>'
                 )
             elif too_small:
-                cx = (x0 + x1) // 2
-                cy = max(14, y0 + 16)
+                cx = (px0 + px1) // 2
+                cy = max(14, py0 + 16)
                 parts.append(
                     f'<text x="{cx}" y="{cy}" fill="orange" font-size="14" text-anchor="middle" '
                     'pointer-events="none">min size '
@@ -574,14 +797,17 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
                     coords_label.text = '(-, -)'
                 else:
                     try:
-                        ix = int(getattr(e, 'image_x', 0))
-                        iy = int(getattr(e, 'image_y', 0))
+                        raw_ix = int(getattr(e, 'image_x', 0))
+                        raw_iy = int(getattr(e, 'image_y', 0))
+                        ix, iy = _preview_to_capture(raw_ix, raw_iy)
                     except Exception:
                         ix, iy = 0, 0
                     coords_label.text = f'({ix}, {iy})'
             if getattr(e, 'type', '') == 'click':
-                ix = int(getattr(e, 'image_x', 0))
-                iy = int(getattr(e, 'image_y', 0))
+                ix, iy = _preview_to_capture(
+                    int(getattr(e, 'image_x', 0)),
+                    int(getattr(e, 'image_y', 0)),
+                )
                 target = 'p1' if state['p1'] is None else ('p2' if state['p2'] is None else None)
                 if target:
                     state[target] = (ix, iy)
@@ -609,34 +835,15 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
             ui.label(
             'Edit Region of Interest (ROI) by clicking on the feed to set corners or using the inputs below.'
             ).classes('text-body2 text-grey-7')
-            # Ensure correct aspect ratio for coordinate mapping
-            # Avoid fixed aspect-ratio (can desync if camera stream resolution differs); let the image keep its natural ratio
-            ratio_style = "width:100%;height:auto;"
-            image = (
-                ui.interactive_image(
-                    f'/video/frame?{time.time()}',
-                    on_mouse=handle_mouse,
-                    events=['click', 'move', 'mouseleave'],
-                    cross='#19bfd2',
-                )
-                .style(ratio_style)
-                .classes('rounded-borders')
+            ui.label('Connecting camera...').classes('text-caption font-medium text-slate-400').props(
+                'id=cvd-settings-camfeed-status'
             )
-
-            # Update the streaming source periodically (with fallback for older NiceGUI versions)
-            # Issue #14 fix: Check capability once to avoid repeated try-except
-            has_set_source = hasattr(image, 'set_source')
-            
-            def _refresh_stream() -> None:
-                src = f'/video/frame?{time.time()}'
-                if has_set_source:
-                    image.set_source(src)
-                else:
-                    try:
-                        image.source = src
-                    except Exception:
-                        pass
-            _start_settings_camfeed_refresh_timer(_refresh_stream)
+            image = _create_settings_camfeed_image(
+                handle_mouse,
+                preview_width=initial_preview_width,
+                preview_height=initial_preview_height,
+            )
+            ui.add_body_html(_build_settings_camfeed_refresh_script())
 
             
             with ui.column().classes('w-full gap-3'):

@@ -324,9 +324,26 @@ class WebcamConfig:
     default_resolution: Dict[str, int]
     fps: int
     resolution: List[Dict[str, int]]
+    preview_fps: int = 15
+    preview_max_width: int = 1280
+    preview_jpeg_quality: int = 75
 
     def get_default_resolution(self) -> Resolution:
         return Resolution(**self.default_resolution)
+
+    def validate(self) -> List[str]:
+        errors: List[str] = []
+        if self.camera_index < 0:
+            errors.append("camera_index must be >= 0")
+        if self.fps < 1:
+            errors.append("fps must be >= 1")
+        if self.preview_fps < 1:
+            errors.append("preview_fps must be >= 1")
+        if self.preview_max_width < 1:
+            errors.append("preview_max_width must be >= 1")
+        if not 1 <= self.preview_jpeg_quality <= 100:
+            errors.append("preview_jpeg_quality must be within [1, 100]")
+        return errors
 
 # ---------------------------------------------------------------------------
 # Bewegungserkennung
@@ -379,6 +396,8 @@ class MotionDetectionConfig:
     sensitivity: float
     background_learning_rate: float
     min_contour_area: int
+    frame_skip: int = 2
+    processing_max_width: int = 640
 
     def get_roi(self) -> ROI:
         return ROI(**self.region_of_interest)
@@ -389,6 +408,10 @@ class MotionDetectionConfig:
             errors.append("Sensitivity outside [0.001, 1.0]")
         if not 0.001 <= self.background_learning_rate <= 1.0:
             errors.append("Learning rate outside [0.001, 1.0]")
+        if self.frame_skip < 1:
+            errors.append("frame_skip must be >= 1")
+        if self.processing_max_width < 1:
+            errors.append("processing_max_width must be >= 1")
         if self.min_contour_area < 1:
             errors.append("min_contour_area must be ≥1")
         return errors
@@ -1038,6 +1061,7 @@ class GUIConfig:
     port: int
     auto_open_browser: bool = False
     update_interval_ms: int = 100
+    status_refresh_interval_ms: int = 1000
     reverse_proxy_enabled: bool = False
     forwarded_allow_ips: str = "127.0.0.1"
     root_path: str = ""
@@ -1066,6 +1090,13 @@ class GUIConfig:
         else:
             if normalized_interval < 1:
                 errors.append("update_interval_ms must be >= 1")
+        try:
+            normalized_status_interval = int(self.status_refresh_interval_ms)
+        except (TypeError, ValueError):
+            errors.append("status_refresh_interval_ms must be an integer")
+        else:
+            if normalized_status_interval < 1:
+                errors.append("status_refresh_interval_ms must be >= 1")
         if not isinstance(self.auto_open_browser, bool):
             errors.append("auto_open_browser must be a bool")
         if not isinstance(self.reverse_proxy_enabled, bool):
@@ -1086,6 +1117,16 @@ class GUIConfig:
         except ValueError as exc:
             errors.append(str(exc))
         return errors
+
+    def get_status_refresh_interval_ms(self) -> int:
+        raw_value = getattr(self, "status_refresh_interval_ms", 0) or 0
+        try:
+            normalized = int(raw_value)
+        except (TypeError, ValueError):
+            normalized = 0
+        if normalized > 0:
+            return normalized
+        return max(1, int(getattr(self, "update_interval_ms", 100) or 100))
 
 @dataclass
 class LoggingConfig:
@@ -1117,7 +1158,6 @@ class LoggingConfig:
             errors.append("backup_count must not be negative")
         elif self.backup_count > 20:
             errors.append("backup_count must not be greater than 20")
-
         return errors
 
     def _has_desired_logger_configuration(
@@ -1280,6 +1320,8 @@ class AppConfig:
 
     def validate_all(self) -> Dict[str, List[str]]:
         res: Dict[str, List[str]] = {}
+        if (e := self.webcam.validate()):
+            res["webcam"] = e
         if (e := self.uvc_controls.validate()):
             res["uvc_controls"] = e
         if (e := self.motion_detection.validate()):
@@ -1412,6 +1454,9 @@ _CONFIG_IMPORT_PATHS: Dict[str, List[str]] = {
         "webcam.default_resolution",
         "webcam.fps",
         "webcam.resolution",
+        "webcam.preview_fps",
+        "webcam.preview_max_width",
+        "webcam.preview_jpeg_quality",
     ],
     "uvc_controls": [
         "uvc_controls.brightness",
@@ -1437,6 +1482,8 @@ _CONFIG_IMPORT_PATHS: Dict[str, List[str]] = {
         "motion_detection.sensitivity",
         "motion_detection.background_learning_rate",
         "motion_detection.min_contour_area",
+        "motion_detection.frame_skip",
+        "motion_detection.processing_max_width",
     ],
     "measurement": [
         "measurement.auto_start",
@@ -1492,6 +1539,7 @@ _CONFIG_IMPORT_PATHS: Dict[str, List[str]] = {
         "gui.session_cookie_https_only",
         "gui.auto_open_browser",
         "gui.update_interval_ms",
+        "gui.status_refresh_interval_ms",
     ],
     "logging": [
         "logging.level",
@@ -1769,6 +1817,14 @@ def _normalize_loaded_gui_data(gui_data: Any, logger: logging.Logger) -> Dict[st
             converter=_coerce_int,
             logger=logger,
             validator=lambda value: _validate_min(value, 1, label="update_interval_ms"),
+        ),
+        "status_refresh_interval_ms": _normalize_loaded_scalar(
+            gui_data.get("status_refresh_interval_ms", gui_data.get("update_interval_ms", 1000)),
+            label="gui.status_refresh_interval_ms",
+            default=1000,
+            converter=_coerce_int,
+            logger=logger,
+            validator=lambda value: _validate_min(value, 1, label="status_refresh_interval_ms"),
         ),
         "reverse_proxy_enabled": _normalize_loaded_scalar(
             gui_data.get("reverse_proxy_enabled", False),
@@ -2125,7 +2181,15 @@ def _analyze_webcam_section(imported_data: Dict[str, Any], collector: _ConfigImp
         return
     seen_paths: set[str] = set()
     for key, value in section_data.items():
-        if key not in {"camera_index", "default_resolution", "fps", "resolution"}:
+        if key not in {
+            "camera_index",
+            "default_resolution",
+            "fps",
+            "preview_fps",
+            "preview_max_width",
+            "preview_jpeg_quality",
+            "resolution",
+        }:
             collector.add_unknown(f"webcam.{key}", value)
     _process_scalar_field(
         collector,
@@ -2156,6 +2220,33 @@ def _analyze_webcam_section(imported_data: Dict[str, Any], collector: _ConfigImp
             converter=_coerce_int,
             validator=lambda value: _validate_min(value, 1, label="fps"),
         )
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="preview_fps",
+        path="webcam.preview_fps",
+        seen_paths=seen_paths,
+        converter=_coerce_int,
+        validator=lambda value: _validate_min(value, 1, label="preview_fps"),
+    )
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="preview_max_width",
+        path="webcam.preview_max_width",
+        seen_paths=seen_paths,
+        converter=_coerce_int,
+        validator=lambda value: _validate_min(value, 1, label="preview_max_width"),
+    )
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="preview_jpeg_quality",
+        path="webcam.preview_jpeg_quality",
+        seen_paths=seen_paths,
+        converter=_coerce_int,
+        validator=lambda value: _validate_range(value, 1, 100, label="preview_jpeg_quality"),
+    )
     if "resolution" in section_data:
         path = "webcam.resolution"
         seen_paths.add(path)
@@ -2274,7 +2365,14 @@ def _analyze_motion_section(imported_data: Dict[str, Any], collector: _ConfigImp
         return
     seen_paths: set[str] = set()
     for key, value in section_data.items():
-        if key not in {"region_of_interest", "sensitivity", "background_learning_rate", "min_contour_area"}:
+        if key not in {
+            "region_of_interest",
+            "sensitivity",
+            "background_learning_rate",
+            "min_contour_area",
+            "frame_skip",
+            "processing_max_width",
+        }:
             collector.add_unknown(f"motion_detection.{key}", value)
 
     roi_expected = [
@@ -2374,6 +2472,24 @@ def _analyze_motion_section(imported_data: Dict[str, Any], collector: _ConfigImp
         seen_paths=seen_paths,
         converter=_coerce_int,
         validator=lambda value: _validate_min(value, 1, label="min_contour_area"),
+    )
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="frame_skip",
+        path="motion_detection.frame_skip",
+        seen_paths=seen_paths,
+        converter=_coerce_int,
+        validator=lambda value: _validate_min(value, 1, label="frame_skip"),
+    )
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="processing_max_width",
+        path="motion_detection.processing_max_width",
+        seen_paths=seen_paths,
+        converter=_coerce_int,
+        validator=lambda value: _validate_min(value, 1, label="processing_max_width"),
     )
     _mark_missing_paths(collector, _CONFIG_IMPORT_PATHS["motion_detection"], seen_paths)
 
@@ -2792,6 +2908,7 @@ def _analyze_gui_section(imported_data: Dict[str, Any], collector: _ConfigImport
             "session_cookie_https_only",
             "auto_open_browser",
             "update_interval_ms",
+            "status_refresh_interval_ms",
         }:
             collector.add_unknown(f"gui.{key}", value)
     _process_scalar_field(collector, section_data, key="title", path="gui.title", seen_paths=seen_paths, converter=_coerce_string)
@@ -2853,6 +2970,15 @@ def _analyze_gui_section(imported_data: Dict[str, Any], collector: _ConfigImport
         seen_paths=seen_paths,
         converter=_coerce_int,
         validator=lambda value: _validate_min(value, 1, label="update_interval_ms"),
+    )
+    _process_scalar_field(
+        collector,
+        section_data,
+        key="status_refresh_interval_ms",
+        path="gui.status_refresh_interval_ms",
+        seen_paths=seen_paths,
+        converter=_coerce_int,
+        validator=lambda value: _validate_min(value, 1, label="status_refresh_interval_ms"),
     )
     _mark_missing_paths(collector, _CONFIG_IMPORT_PATHS["gui"], seen_paths)
 
@@ -3277,8 +3403,11 @@ def _create_default_config(*, log_creation: bool = True) -> AppConfig:
         ),
         webcam=WebcamConfig(
             camera_index=0,
-            default_resolution={"width": 1920, "height": 1080},
+            default_resolution={"width": 1280, "height": 720},
             fps=30,
+            preview_fps=15,
+            preview_max_width=1280,
+            preview_jpeg_quality=75,
             resolution=[{"width": 320, "height": 240},
                         {"width": 352, "height": 288},
                         {"width": 640, "height": 480},
@@ -3298,7 +3427,8 @@ def _create_default_config(*, log_creation: bool = True) -> AppConfig:
         ),
         motion_detection=MotionDetectionConfig(
             region_of_interest={"enabled": False, "x": 100, "y": 100, "width": 300, "height": 200},
-            sensitivity=0.1, background_learning_rate=0.005, min_contour_area=252
+            sensitivity=0.1, background_learning_rate=0.005, min_contour_area=252,
+            frame_skip=2, processing_max_width=640,
         ),
         measurement=MeasurementConfig(
             auto_start=False, session_timeout_minutes=60, session_timeout_seconds=3600, save_alert_images=True,
@@ -3390,6 +3520,7 @@ def _create_default_config(*, log_creation: bool = True) -> AppConfig:
             title="CVD-Tracker", host="localhost", port=8080,
             auto_open_browser=False,
             update_interval_ms=100,
+            status_refresh_interval_ms=1000,
             reverse_proxy_enabled=False,
             forwarded_allow_ips="127.0.0.1",
             root_path="",
@@ -3550,6 +3681,19 @@ def _prepare_for_yaml(cfg_dict: dict) -> dict:
     # webcam: width vor height
     if "webcam" in data:
         wc = data["webcam"]
+        data["webcam"] = _order_map(
+            wc,
+            [
+                "camera_index",
+                "default_resolution",
+                "fps",
+                "preview_fps",
+                "preview_max_width",
+                "preview_jpeg_quality",
+                "resolution",
+            ],
+        )
+        wc = data["webcam"]
         if "default_resolution" in wc and isinstance(wc["default_resolution"], dict):
             wc["default_resolution"] = _order_map(wc["default_resolution"], ["width", "height"])
         if "resolution" in wc and isinstance(wc["resolution"], list):
@@ -3615,6 +3759,7 @@ def _prepare_for_yaml(cfg_dict: dict) -> dict:
                 "session_cookie_https_only",
                 "auto_open_browser",
                 "update_interval_ms",
+                "status_refresh_interval_ms",
             ],
         )
 

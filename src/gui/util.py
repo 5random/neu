@@ -24,7 +24,7 @@ _DELETED_PARENT_SLOT_ERROR_FRAGMENTS = (
 )
 
 # --- Tab helpers: dynamic title & favicon per client/all clients ---
-def set_tab(title: str | None = None, icon_url: str | None = None, client: Optional[Client] = None) -> None:
+def set_tab(title: str | None = None, icon_url: str | None = None, client: Optional[Client] = None) -> bool:
     """Set browser tab title and/or favicon on the given or current client.
 
     Safe no-op if no client context is available.
@@ -52,16 +52,19 @@ def set_tab(title: str | None = None, icon_url: str | None = None, client: Optio
                 "}\n"
             )
         )
-    if js_parts:
-        code = '\n'.join(js_parts)
-        try:
-            if c is not None and hasattr(c, 'run_javascript'):
-                c.run_javascript(code)
-            else:
-                # Executes on the current client's context (if any)
-                ui.run_javascript(code)
-        except Exception:
-            pass
+    if not js_parts:
+        return True
+
+    code = '\n'.join(js_parts)
+    try:
+        if c is not None and hasattr(c, 'run_javascript'):
+            c.run_javascript(code)
+        else:
+            # Executes on the current client's context (if any)
+            ui.run_javascript(code)
+        return True
+    except Exception:
+        return False
 
 
 def set_tab_all(title: str | None = None, icon_url: str | None = None) -> None:

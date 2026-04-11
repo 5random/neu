@@ -86,6 +86,7 @@ class _DummyElement:
     def __init__(self, owner: "_FakeUI") -> None:
         self.owner = owner
         self._source = None
+        self.style_calls: list[str] = []
 
     def __enter__(self) -> "_DummyElement":
         return self
@@ -96,7 +97,9 @@ class _DummyElement:
     def classes(self, *_args, **_kwargs) -> "_DummyElement":
         return self
 
-    def style(self, *_args, **_kwargs) -> "_DummyElement":
+    def style(self, *args, **_kwargs) -> "_DummyElement":
+        if args:
+            self.style_calls.append(str(args[0]))
         return self
 
     def props(self, *_args, **_kwargs) -> "_DummyElement":
@@ -194,9 +197,11 @@ class _FakeUI:
         self.icons.append(name)
         return _DummyElement(self)
 
-    def interactive_image(self) -> _DummyElement:
+    def interactive_image(self, *args, **kwargs) -> _DummyElement:
         self.interactive_images_created += 1
         self.last_interactive_image = self._interactive_image_factory(self)
+        if args:
+            self.last_interactive_image.source = args[0]
         return self.last_interactive_image
 
     def add_body_html(self, html: str) -> None:
@@ -216,66 +221,38 @@ def test_dashboard_camfeed_renders_placeholder_without_camera(monkeypatch) -> No
     assert fake_ui.interactive_images_created == 0
 
 
-def test_dashboard_camfeed_uses_set_source_when_camera_is_available(monkeypatch) -> None:
+def test_dashboard_camfeed_uses_stream_source_for_interactive_image(monkeypatch) -> None:
     fake_ui = _FakeUI()
     fake_logger = _FakeLogger()
 
     monkeypatch.setattr(default_camfeed, "ui", fake_ui)
     monkeypatch.setattr(default_camfeed, "logger", fake_logger)
     monkeypatch.setattr(default_camfeed, "create_heading_row", lambda *args, **kwargs: None)
-    monkeypatch.setattr(default_camfeed.time, "time", lambda: 123.0)
 
     default_camfeed.create_camfeed_content(camera_available=True)
 
     assert fake_ui.interactive_images_created == 1
-    assert fake_ui.last_interactive_image.source == "/video/frame?123.0"
+    assert "Connecting camera..." in fake_ui.labels
+    assert fake_ui.last_interactive_image.source == "/video_feed"
+    assert any("aspect-ratio:1280/720" in style for style in fake_ui.last_interactive_image.style_calls)
+    assert any("min-height:240px" in style for style in fake_ui.last_interactive_image.style_calls)
     assert fake_ui.body_html_calls != []
     assert fake_logger.debug_calls == []
     assert fake_logger.warning_calls == []
-
-
-def test_dashboard_camfeed_logs_debug_when_falling_back_to_direct_source_assignment(monkeypatch) -> None:
-    fake_ui = _FakeUI(interactive_image_factory=lambda owner: _FailingInteractiveImage(owner, fail_set_source=True))
-    fake_logger = _FakeLogger()
-
-    monkeypatch.setattr(default_camfeed, "ui", fake_ui)
-    monkeypatch.setattr(default_camfeed, "logger", fake_logger)
-    monkeypatch.setattr(default_camfeed, "create_heading_row", lambda *args, **kwargs: None)
-    monkeypatch.setattr(default_camfeed.time, "time", lambda: 456.0)
-
-    default_camfeed.create_camfeed_content(camera_available=True)
-
-    assert fake_ui.last_interactive_image.source == "/video/frame?456.0"
-    assert fake_logger.debug_calls
-    assert "falling back to direct source assignment" in fake_logger.debug_calls[0][0]
-    assert fake_logger.warning_calls == []
-
-
-def test_dashboard_camfeed_logs_warning_when_both_source_updates_fail(monkeypatch) -> None:
-    fake_ui = _FakeUI(
-        interactive_image_factory=lambda owner: _FailingInteractiveImage(
-            owner,
-            fail_set_source=True,
-            fail_source_assignment=True,
-        )
-    )
-    fake_logger = _FakeLogger()
-
-    monkeypatch.setattr(default_camfeed, "ui", fake_ui)
-    monkeypatch.setattr(default_camfeed, "logger", fake_logger)
-    monkeypatch.setattr(default_camfeed, "create_heading_row", lambda *args, **kwargs: None)
-
-    default_camfeed.create_camfeed_content(camera_available=True)
-
-    assert fake_logger.debug_calls
-    assert fake_logger.warning_calls
-    assert "Failed to set dashboard camera source" in fake_logger.warning_calls[0][0]
 
 
 def test_dashboard_camfeed_refresh_script_reuses_single_global_state() -> None:
     script = default_camfeed._build_camfeed_refresh_script()
 
     assert "window.__cvdDefaultCamState" in script
+    assert "/video_feed?ts=" not in script
+    assert "var url = '/video_feed';" in script
+    assert "if (!force && currentSrc === url)" in script
+    assert script.count("scheduleReconnect();") >= 2
+    assert "start(true);" in script
+    assert "document.visibilityState !== 'visible'" in script
+    assert "addEventListener('load'" in script
+    assert "addEventListener('error'" in script
     assert "removeEventListener('visibilitychange'" in script
     assert "removeEventListener('pagehide'" in script
     assert "removeEventListener('beforeunload'" in script

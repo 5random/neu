@@ -19,9 +19,12 @@ metadata:
 webcam:
   camera_index: 0
   default_resolution:
-    width: 1920
-    height: 1080
+    width: 1280
+    height: 720
   fps: 30
+  preview_fps: 15
+  preview_max_width: 1280
+  preview_jpeg_quality: 70
   resolution:
     - width: 320
       height: 240
@@ -67,13 +70,15 @@ uvc_controls:
 motion_detection:
   region_of_interest:
     enabled: true
-    x: 250
-    y: 102
-    width: 1518
-    height: 932
+    x: 167
+    y: 67
+    width: 937
+    height: 569
   sensitivity: 0.1
   background_learning_rate: 0.005
   min_contour_area: 252
+  frame_skip: 1
+  processing_max_width: 800
 
 # ---------------------------------------------------------------------------
 # Measurement
@@ -223,6 +228,7 @@ gui:
   session_cookie_https_only: false
   auto_open_browser: false
   update_interval_ms: 100
+  status_refresh_interval_ms: 1000
 
 # ---------------------------------------------------------------------------
 # Logging

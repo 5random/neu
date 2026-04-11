@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
 import logging
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +20,18 @@ class _CameraStub:
 
     def disable_motion_detection(self, callback) -> None:
         self.disabled_callbacks.append(callback)
+
+
+class _ResultCameraStub:
+    def __init__(self) -> None:
+        self.registered_callbacks: list[object] = []
+        self.unregistered_callbacks: list[object] = []
+
+    def register_motion_result_callback(self, callback) -> None:
+        self.registered_callbacks.append(callback)
+
+    def unregister_motion_result_callback(self, callback) -> None:
+        self.unregistered_callbacks.append(callback)
 
 
 class _DisconnectClient:
@@ -53,6 +67,21 @@ class _FailingApp:
             self.calls += 1
             raise RuntimeError(f'boom: {fn}')
         return _decorator
+
+
+class _TrackingLock:
+    def __init__(self, enter_calls: list[str]) -> None:
+        self.enter_calls = enter_calls
+        self._lock = threading.RLock()
+
+    def __enter__(self):
+        self.enter_calls.append('enter')
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._lock.release()
+        return None
 
 
 def test_register_combined_motion_listener_tolerates_client_without_on_disconnect() -> None:
@@ -120,6 +149,40 @@ def test_register_combined_motion_listener_stores_disconnect_attr_after_successf
     assert camera.disabled_callbacks == [camera.enabled_callbacks[0]]
     assert not hasattr(client, 'cleanup_attr')
     assert not hasattr(client, 'disconnect_attr')
+
+
+def test_register_combined_motion_listener_uses_lock_for_deduped_state(monkeypatch) -> None:
+    enter_calls: list[str] = []
+    camera = _ResultCameraStub()
+    client = _DisconnectClient()
+    emitted: list[tuple[bool, datetime]] = []
+    changed_at = datetime(2026, 4, 11, 12, 0, 0)
+
+    monkeypatch.setattr(motion_runtime, '_api_motion_listeners', [])
+    monkeypatch.setattr(motion_runtime.threading, 'Lock', lambda: _TrackingLock(enter_calls))
+
+    result = motion_runtime.register_combined_motion_listener(
+        camera,
+        client=client,
+        callback=lambda motion, ts: emitted.append((motion, ts)),
+        cleanup_attr_name='cleanup_attr',
+        disconnect_attr_name='disconnect_attr',
+        logger=logging.getLogger('test.motion_runtime'),
+    )
+
+    assert result is True
+    assert len(camera.registered_callbacks) == 1
+    assert len(motion_runtime._api_motion_listeners) == 1
+
+    camera.registered_callbacks[0](SimpleNamespace(motion_detected=True, timestamp=changed_at.timestamp()))
+    motion_runtime._api_motion_listeners[0](True, changed_at)
+
+    assert emitted == [(True, changed_at)]
+    assert enter_calls == ['enter', 'enter']
+
+    getattr(client, 'cleanup_attr')()
+    assert camera.unregistered_callbacks == [camera.registered_callbacks[0]]
+    assert motion_runtime._api_motion_listeners == []
 
 
 def test_motion_update_authorization_accepts_valid_bearer_and_api_key(monkeypatch) -> None:
