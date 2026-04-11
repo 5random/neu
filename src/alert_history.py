@@ -4,13 +4,21 @@ import json
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable, Protocol, TypeAlias
 from urllib.parse import quote
 
 from src.config import get_global_config, get_logger
 
-if TYPE_CHECKING:
-    from src.config import AppConfig, MeasurementConfig
+
+class _HistoryMeasurementConfig(Protocol):
+    history_path: str
+
+
+class _HistoryAppConfig(Protocol):
+    measurement: _HistoryMeasurementConfig
+
+
+HistoryConfig: TypeAlias = _HistoryAppConfig | _HistoryMeasurementConfig
 
 logger = get_logger('alert_history')
 
@@ -83,7 +91,7 @@ def _notify_history_listeners(history_file: Path, revision: int) -> None:
             logger.exception('Failed to notify history listener')
 
 
-def get_history_dir(config: AppConfig | MeasurementConfig | None = None) -> Path:
+def get_history_dir(config: HistoryConfig | None = None) -> Path:
     """Return the configured alert history directory."""
     history_path: str | None = None
 
@@ -96,13 +104,13 @@ def get_history_dir(config: AppConfig | MeasurementConfig | None = None) -> Path
 
     if not history_path:
         global_config = get_global_config()
-        if global_config is not None:
+        if global_config is not None and getattr(global_config, 'measurement', None) is not None:
             history_path = str(getattr(global_config.measurement, 'history_path', '') or '')
 
     return Path(history_path) if history_path else DEFAULT_HISTORY_DIR
 
 
-def get_history_file(config: AppConfig | MeasurementConfig | None = None) -> Path:
+def get_history_file(config: HistoryConfig | None = None) -> Path:
     """Return the history.json path for the configured alert history directory."""
     return get_history_dir(config) / HISTORY_FILE_NAME
 

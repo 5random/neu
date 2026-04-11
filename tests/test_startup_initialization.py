@@ -90,6 +90,7 @@ def _make_camera_runtime_stub(name: str = "test.camera.runtime") -> Camera:
     camera._capture_ready = threading.Event()
     camera._capture_runtime_error = None
     camera.current_frame = None
+    camera._current_jpeg_frame = None
     camera.frame_count = 0
     camera.motion_skip_frames = 1
     camera.motion_detector = None
@@ -137,9 +138,16 @@ def _restore_config_registry_state(
     monkeypatch,
     previous_config: object | None,
     previous_config_path: str,
+    previous_config_warnings: list[str],
 ) -> None:
     monkeypatch.setattr(config_module, "_global_config", previous_config, raising=False)
     monkeypatch.setattr(config_module, "_config_path", previous_config_path, raising=False)
+    monkeypatch.setattr(
+        config_module,
+        "_global_config_warnings",
+        list(previous_config_warnings),
+        raising=False,
+    )
 
 
 def test_get_logger_without_global_config_does_not_load_config(monkeypatch) -> None:
@@ -163,7 +171,11 @@ def test_main_uses_requested_config_path_before_gui_init(monkeypatch) -> None:
     monkeypatch.setattr(config_module, "_global_config", None, raising=False)
     monkeypatch.setattr(config_module, "_config_path", "config/config.yaml", raising=False)
     monkeypatch.setattr(app_main, "parse_args", lambda: args)
-    monkeypatch.setattr(app_main, "load_config", lambda path: calls.append(("load_config", path)) or cfg)
+    monkeypatch.setattr(
+        app_main,
+        "load_config",
+        lambda path, **kwargs: calls.append(("load_config", path, kwargs.get("startup_fallback"))) or cfg,
+    )
 
     def fake_set_global_config(loaded_cfg, path: str) -> None:
         resolved_path = str(config_module._resolve_config_path(path))
@@ -202,7 +214,7 @@ def test_main_uses_requested_config_path_before_gui_init(monkeypatch) -> None:
 
     expected_path = str(config_module._resolve_config_path("custom/config.yaml"))
     assert app_main.main() == 0
-    assert calls[0] == ("load_config", "custom/config.yaml")
+    assert calls[0] == ("load_config", "custom/config.yaml", True)
     assert ("set_global_config", "custom/config.yaml", expected_path) in calls
     create_gui_call = next(item for item in calls if item[0] == "create_gui")
     assert create_gui_call[1] == "custom/config.yaml"
@@ -215,13 +227,132 @@ def test_main_returns_error_for_invalid_requested_config(monkeypatch) -> None:
     calls: list[tuple] = []
 
     monkeypatch.setattr(app_main, "parse_args", lambda: args)
-    monkeypatch.setattr(app_main, "load_config", lambda path: (_ for _ in ()).throw(ConfigLoadError("invalid config")))
+    monkeypatch.setattr(
+        app_main,
+        "load_config",
+        lambda path, **kwargs: (_ for _ in ()).throw(ConfigLoadError("invalid config")),
+    )
     monkeypatch.setattr(app_main, "create_gui", lambda **kwargs: calls.append(("create_gui",)))
     monkeypatch.setattr(app_main.ui, "run", lambda **kwargs: calls.append(("ui.run",)))
 
     assert app_main.main() == 1
     assert ("create_gui",) not in calls
     assert ("ui.run",) not in calls
+
+
+def test_main_restores_previous_config_registry_when_create_gui_fails_after_publish(monkeypatch) -> None:
+    previous_cfg = _create_default_config()
+    new_cfg = _create_default_config()
+    previous_path = str(config_module._resolve_config_path("config/previous_runtime.yaml"))
+    previous_warnings = ["actual previous startup warning"]
+    args = SimpleNamespace(config="custom/config.yaml", host=None, port=None, open_browser=None)
+
+    config_module._attach_startup_config_warnings(previous_cfg, ["attached warning on previous config"])
+    monkeypatch.setattr(config_module, "_global_config", previous_cfg, raising=False)
+    monkeypatch.setattr(config_module, "_config_path", previous_path, raising=False)
+    monkeypatch.setattr(config_module, "_global_config_warnings", list(previous_warnings), raising=False)
+    monkeypatch.setattr(app_main, "parse_args", lambda: args)
+    monkeypatch.setattr(app_main, "load_config", lambda path, **kwargs: new_cfg)
+    monkeypatch.setattr(app_main, "set_global_config", config_module.set_global_config)
+    monkeypatch.setattr(app_main, "get_logger", lambda name: _DummyLogger())
+    monkeypatch.setattr(app_main, "setup_exception_handlers", lambda logger: None)
+    monkeypatch.setattr(app_main, "install_asyncio_exception_handler", lambda logger: None)
+    monkeypatch.setattr(app_main, "install_nicegui_timer_patch", lambda logger: None)
+    monkeypatch.setattr(
+        app_main,
+        "create_gui",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom after set_global_config")),
+    )
+    monkeypatch.setattr(app_main.ui, "run", lambda **kwargs: None)
+
+    assert app_main.main() == 1
+    assert config_module.get_global_config() is previous_cfg
+    assert config_module.get_global_config_path() == previous_path
+    assert config_module.get_global_config_warnings() == previous_warnings
+    assert config_module._get_attached_startup_config_warnings(previous_cfg) == [
+        "attached warning on previous config"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "warning_fragment"),
+    [
+        ("missing.yaml", None, "Config file not found"),
+        ("empty.yaml", "", "is empty; using default config."),
+        ("invalid.yaml", "email: [broken\n", "could not be parsed as YAML"),
+    ],
+)
+def test_main_starts_with_recoverable_config_fallback(
+    monkeypatch,
+    filename: str,
+    contents: str | None,
+    warning_fragment: str,
+) -> None:
+    temp_path = Path(f".pytest_startup_runtime_main_fallback_{Path(filename).stem}")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / filename
+    log_path = temp_path / f"{Path(filename).stem}.log"
+    seen_warnings: list[str] = []
+    calls: list[tuple] = []
+    real_create_default_config = config_module._create_default_config
+
+    if contents is not None:
+        config_path.write_text(contents, encoding="utf-8")
+
+    def isolated_default_config(*, log_creation: bool = True):
+        cfg = real_create_default_config(log_creation=log_creation)
+        cfg.logging.file = str(log_path)
+        cfg.logging.console_output = False
+        return cfg
+
+    args = SimpleNamespace(config=str(config_path), host=None, port=None, open_browser=None)
+
+    _reset_configured_logger("cvd_tracker")
+    monkeypatch.setattr(config_module, "_create_default_config", isolated_default_config)
+    monkeypatch.setattr(config_module, "_global_config", None, raising=False)
+    monkeypatch.setattr(
+        config_module,
+        "_config_path",
+        str(config_module._resolve_config_path("config/config.yaml")),
+        raising=False,
+    )
+    monkeypatch.setattr(config_module, "_global_config_warnings", [], raising=False)
+    monkeypatch.setattr(app_main, "parse_args", lambda: args)
+    monkeypatch.setattr(app_main, "setup_exception_handlers", lambda logger: None)
+    monkeypatch.setattr(app_main, "install_asyncio_exception_handler", lambda logger: None)
+    monkeypatch.setattr(app_main, "install_nicegui_timer_patch", lambda logger: None)
+    monkeypatch.setattr(
+        app_main,
+        "create_gui",
+        lambda *, config_path: calls.append(("create_gui", config_path, list(config_module.get_global_config_warnings())))
+        or seen_warnings.extend(config_module.get_global_config_warnings()),
+    )
+    monkeypatch.setattr(app_main, "resolve_storage_secret", lambda logger: "secret")
+    monkeypatch.setattr(
+        app_main,
+        "resolve_ui_run_settings",
+        lambda cfg, args, logger: {
+            "host": "127.0.0.1",
+            "port": 8080,
+            "show": False,
+            "headless_linux": False,
+            "reverse_proxy_enabled": False,
+            "forwarded_allow_ips": "127.0.0.1",
+            "root_path": "",
+            "session_middleware_kwargs": None,
+        },
+    )
+    monkeypatch.setattr(app_main, "compute_gui_title", lambda cfg: "CVD-Tracker")
+    monkeypatch.setattr(app_main, "app", SimpleNamespace(storage=SimpleNamespace(general={})))
+    monkeypatch.setattr(app_main.ui, "run", lambda **kwargs: calls.append(("ui.run", kwargs["host"], kwargs["port"])))
+
+    try:
+        assert app_main.main() == 0
+        assert any(call[0] == "create_gui" for call in calls)
+        assert any(call[0] == "ui.run" for call in calls)
+        assert any(warning_fragment in warning for warning in seen_warnings)
+    finally:
+        _cleanup_local_temp_dir(temp_path, config_path, log_path)
 
 
 def test_main_uses_fallback_logger_before_app_logger_is_available(monkeypatch) -> None:
@@ -237,7 +368,11 @@ def test_main_uses_fallback_logger_before_app_logger_is_available(monkeypatch) -
         raising=False,
     )
     monkeypatch.setattr(app_main, "parse_args", lambda: args)
-    monkeypatch.setattr(app_main, "load_config", lambda path: (_ for _ in ()).throw(ConfigLoadError("invalid config")))
+    monkeypatch.setattr(
+        app_main,
+        "load_config",
+        lambda path, **kwargs: (_ for _ in ()).throw(ConfigLoadError("invalid config")),
+    )
     monkeypatch.setattr(
         app_main,
         "create_fallback_logger",
@@ -267,7 +402,7 @@ def test_main_logs_fatal_create_gui_failure_with_active_logger(monkeypatch) -> N
         raising=False,
     )
     monkeypatch.setattr(app_main, "parse_args", lambda: args)
-    monkeypatch.setattr(app_main, "load_config", lambda path: cfg)
+    monkeypatch.setattr(app_main, "load_config", lambda path, **kwargs: cfg)
     monkeypatch.setattr(app_main, "setup_exception_handlers", lambda logger: None)
     monkeypatch.setattr(app_main, "install_asyncio_exception_handler", lambda logger: None)
     monkeypatch.setattr(app_main, "install_nicegui_timer_patch", lambda logger: None)
@@ -346,7 +481,43 @@ def test_save_global_config_round_trips_relative_config_path_from_non_project_cw
         _cleanup_local_temp_dir(temp_path, unexpected_path, cwd_path, resolved_config_path, log_path)
 
 
-def test_load_effective_config_reloads_same_path_for_relative_path_from_non_project_cwd(monkeypatch) -> None:
+def test_save_global_config_clears_startup_config_warnings_but_keeps_other_report_state() -> None:
+    temp_path = Path(".pytest_startup_runtime_save_warning_cleanup")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "empty.yaml"
+    config_path.write_text("", encoding="utf-8")
+
+    try:
+        cfg = load_config(str(config_path), startup_fallback=True)
+        set_global_config(cfg, str(config_path))
+        cfg.gui.title = "Saved After Startup Fallback"
+        report = instances.InitializationReport(
+            config_ok=True,
+            camera_ok=False,
+            camera_error="camera unavailable",
+            email_ok=True,
+            measurement_ok=True,
+            config_warnings=list(config_module.get_global_config_warnings()),
+        )
+        instances.set_startup_report(report)
+
+        assert config_module.get_global_config_warnings()
+        assert report.config_warnings
+
+        assert save_global_config() is True
+
+        persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert persisted["gui"]["title"] == "Saved After Startup Fallback"
+        assert config_module.get_global_config_warnings() == []
+        assert report.config_warnings == []
+        assert report.camera_error == "camera unavailable"
+        assert instances.get_startup_warnings() == ["Camera: camera unavailable"]
+    finally:
+        instances.set_startup_report(None)
+        _cleanup_local_temp_dir(temp_path, config_path)
+
+
+def test_load_effective_config_reuses_same_path_for_relative_path_from_non_project_cwd(monkeypatch) -> None:
     cfg = _create_default_config()
     temp_path = Path(".pytest_startup_runtime_effective_config")
     temp_path.mkdir(exist_ok=True)
@@ -356,10 +527,14 @@ def test_load_effective_config_reloads_same_path_for_relative_path_from_non_proj
 
     try:
         monkeypatch.chdir(cwd_path.resolve())
+        resolved_path = str(config_module._resolve_config_path("custom/config.yaml"))
+        monkeypatch.setattr(config_module, "_global_config", cfg, raising=False)
+        monkeypatch.setattr(config_module, "_config_path", resolved_path, raising=False)
+        monkeypatch.setattr(config_module, "_global_config_warnings", [], raising=False)
         monkeypatch.setattr(
             gui_init,
             "load_config",
-            lambda path: calls.append(("load_config", path)) or cfg,
+            lambda path, **kwargs: calls.append(("load_config", path, kwargs.get("startup_fallback"))) or cfg,
         )
         monkeypatch.setattr(
             gui_init,
@@ -368,11 +543,69 @@ def test_load_effective_config_reloads_same_path_for_relative_path_from_non_proj
         )
 
         assert gui_init._load_effective_config("custom/config.yaml") is cfg
+        assert calls == []
+    finally:
+        monkeypatch.setattr(config_module, "_global_config", None, raising=False)
+        monkeypatch.setattr(
+            config_module,
+            "_config_path",
+            str(config_module._resolve_config_path("config/config.yaml")),
+            raising=False,
+        )
+        monkeypatch.setattr(config_module, "_global_config_warnings", [], raising=False)
+        _cleanup_local_temp_dir(temp_path, cwd_path)
+
+
+def test_load_effective_config_reloads_same_path_when_startup_fallback_warnings_exist(monkeypatch) -> None:
+    fallback_cfg = _create_default_config()
+    repaired_cfg = _create_default_config()
+    repaired_cfg.metadata.cvd_name = "Repaired_Config"
+    temp_path = Path(".pytest_startup_runtime_effective_config_repaired")
+    temp_path.mkdir(exist_ok=True)
+    cwd_path = temp_path / "cwd"
+    cwd_path.mkdir(exist_ok=True)
+    calls: list[tuple[str, object]] = []
+
+    try:
+        monkeypatch.chdir(cwd_path.resolve())
+        resolved_path = str(config_module._resolve_config_path("custom/config.yaml"))
+        config_module._attach_startup_config_warnings(
+            fallback_cfg,
+            ["Config file custom/config.yaml could not be parsed as YAML; using default config."],
+        )
+        monkeypatch.setattr(config_module, "_global_config", fallback_cfg, raising=False)
+        monkeypatch.setattr(config_module, "_config_path", resolved_path, raising=False)
+        monkeypatch.setattr(
+            config_module,
+            "_global_config_warnings",
+            config_module._get_attached_startup_config_warnings(fallback_cfg),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            gui_init,
+            "load_config",
+            lambda path, **kwargs: calls.append(("load_config", path, kwargs.get("startup_fallback"))) or repaired_cfg,
+        )
+        monkeypatch.setattr(
+            gui_init,
+            "set_global_config",
+            lambda config, path: calls.append(("set_global_config", path, config.metadata.cvd_name)),
+        )
+
+        assert gui_init._load_effective_config("custom/config.yaml") is repaired_cfg
         assert calls == [
-            ("load_config", "custom/config.yaml"),
-            ("set_global_config", "custom/config.yaml"),
+            ("load_config", "custom/config.yaml", True),
+            ("set_global_config", "custom/config.yaml", "Repaired_Config"),
         ]
     finally:
+        monkeypatch.setattr(config_module, "_global_config", None, raising=False)
+        monkeypatch.setattr(
+            config_module,
+            "_config_path",
+            str(config_module._resolve_config_path("config/config.yaml")),
+            raising=False,
+        )
+        monkeypatch.setattr(config_module, "_global_config_warnings", [], raising=False)
         _cleanup_local_temp_dir(temp_path, cwd_path)
 
 
@@ -717,6 +950,40 @@ def test_camera_cleanup_does_not_mark_cleaned_or_clear_motion_resources_while_fr
     assert list(camera._frame_pool) == [1, 2, 3]
 
 
+def test_camera_cleanup_marks_partial_when_video_capture_release_fails() -> None:
+    class _BrokenCapture:
+        def __init__(self) -> None:
+            self.release_calls = 0
+
+        def release(self) -> None:
+            self.release_calls += 1
+            raise RuntimeError("release failed")
+
+    camera = _prepare_camera_cleanup_stub(_initialize_camera_test_state(Camera.__new__(Camera)))
+    camera.logger = logging.getLogger("test.camera.cleanup_release_failure")
+    camera.is_running = True
+    camera._capture_ready = threading.Event()
+    cleaned_motion: list[str] = []
+    camera.motion_detector = SimpleNamespace(cleanup=lambda: cleaned_motion.append("cleanup"))
+    camera._motion_callbacks = {"cb": object()}
+    camera.motion_enabled = True
+    camera._frame_pool = collections.deque([1, 2, 3])
+    broken_capture = _BrokenCapture()
+    camera.video_capture = broken_capture
+    camera._try_release_video_capture = Camera._try_release_video_capture.__get__(camera, Camera)
+
+    camera.cleanup()
+
+    assert camera.cleaned is False
+    assert cleaned_motion == ["cleanup"]
+    assert camera.motion_detector is None
+    assert camera._motion_callbacks == {}
+    assert camera.motion_enabled is False
+    assert list(camera._frame_pool) == []
+    assert camera.video_capture is None
+    assert broken_capture.release_calls == 1
+
+
 def test_camera_cleanup_retry_clears_resources_after_frame_thread_stops() -> None:
     camera = _initialize_camera_test_state(Camera.__new__(Camera))
     camera.logger = logging.getLogger("test.camera.cleanup_retry")
@@ -868,6 +1135,18 @@ def test_camera_defaults_to_sync_initialization(monkeypatch) -> None:
 
     assert ("initialize_sync",) in calls
     assert ("start_async_init",) not in calls
+
+
+def test_camera_can_defer_initialization(monkeypatch) -> None:
+    cfg = _create_default_config()
+    calls: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(Camera, "initialize_sync", lambda self: calls.append(("initialize_sync",)) or False)
+    monkeypatch.setattr(Camera, "_start_async_init", lambda self: calls.append(("start_async_init",)))
+
+    Camera(cfg, logger=logging.getLogger("test.camera.defer_init"), initialize=False)
+
+    assert calls == []
 
 
 def test_camera_async_worker_starts_frame_capture_before_success() -> None:
@@ -1221,6 +1500,59 @@ def test_restore_video_runtime_accepts_non_camera_video_source_stub(monkeypatch)
     assert bytes(response.body) == b"stub-camera"
 
 
+def test_build_video_frame_response_prefers_cached_jpeg_frame(monkeypatch) -> None:
+    video_source = SimpleNamespace(
+        placeholder=SimpleNamespace(body=b"stub-camera"),
+        get_current_jpeg_frame=lambda: b"cached-jpeg",
+        get_current_frame=lambda copy_frame=False: (_ for _ in ()).throw(AssertionError("frame fallback not expected")),
+        logger=logging.getLogger("test.camera.cached_jpeg"),
+    )
+
+    def _fail_encode(*args, **kwargs):
+        raise AssertionError("cv2.imencode should not be called when cached jpeg bytes exist")
+
+    monkeypatch.setattr(camera_module.cv2, "imencode", _fail_encode)
+
+    response = camera_module._build_video_frame_response(video_source)
+
+    assert response.media_type == "image/jpeg"
+    assert bytes(response.body) == b"cached-jpeg"
+
+
+def test_build_video_frame_response_ignores_cached_jpeg_without_current_frame() -> None:
+    camera = _make_camera_runtime_stub("test.camera.cached_jpeg_stale")
+    camera._current_jpeg_frame = b"cached-jpeg"
+
+    response = camera_module._build_video_frame_response(camera)
+
+    assert response.media_type == "image/png"
+    assert bytes(response.body) == camera_module._DEFAULT_VIDEO_PLACEHOLDER_BODY
+
+
+def test_camera_capture_loop_clears_published_frames_after_fatal_runtime_error() -> None:
+    class _BrokenCapture:
+        def isOpened(self) -> bool:
+            return True
+
+        def read(self):
+            raise RuntimeError("usb read blocked")
+
+    camera = _make_camera_runtime_stub("test.camera.capture_loop_stale_frame")
+    camera.video_capture = _BrokenCapture()
+    camera.is_running = True
+    camera.current_frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    camera._current_jpeg_frame = b"cached-jpeg"
+    camera._handle_cam_disconnect = lambda: False
+    camera._process_motion_detection = lambda original_frame, frame_copy: None
+
+    Camera._capture_loop(camera)
+
+    assert camera.current_frame is None
+    assert camera.get_current_jpeg_frame() is None
+    assert isinstance(camera._capture_runtime_error, RuntimeError)
+    assert camera.is_running is False
+
+
 def test_init_application_uses_synchronous_camera_startup(monkeypatch) -> None:
     cfg = _create_default_config()
     calls: list[tuple] = []
@@ -1228,9 +1560,9 @@ def test_init_application_uses_synchronous_camera_startup(monkeypatch) -> None:
     email_system = SimpleNamespace()
 
     class _FakeCamera:
-        def __init__(self, config, logger=None, async_init: bool = True, auto_initialize: bool = True):
+        def __init__(self, config, logger=None, async_init: bool = True, initialize: bool = True):
             self.initialization_error = None
-            calls.append(("camera_init", async_init, auto_initialize))
+            calls.append(("camera_init", async_init, initialize))
 
         def initialize_sync(self) -> bool:
             calls.append(("initialize_sync",))
@@ -1270,10 +1602,10 @@ def test_init_application_keeps_measurement_available_without_camera_or_email(mo
     captured_calls: list[tuple] = []
 
     class _FakeCamera:
-        def __init__(self, config, logger=None, async_init: bool = True, auto_initialize: bool = True):
+        def __init__(self, config, logger=None, async_init: bool = True, initialize: bool = True):
             self.initialization_error = RuntimeError("camera unavailable")
             self.cleaned = False
-            captured_calls.append(("camera_init", async_init, auto_initialize))
+            captured_calls.append(("camera_init", async_init, initialize))
 
         def initialize_sync(self) -> bool:
             captured_calls.append(("initialize_sync",))
@@ -1328,11 +1660,84 @@ def test_init_application_keeps_measurement_available_without_camera_or_email(mo
     assert instances.get_measurement_controller() is measurement_controller
 
 
+def test_init_application_surfaces_recoverable_config_warnings(monkeypatch) -> None:
+    temp_path = Path(".pytest_startup_runtime_recoverable_config_warning")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "invalid.yaml"
+    log_path = temp_path / "recoverable.log"
+    config_path.write_text("email: [broken\n", encoding="utf-8")
+    measurement_controller = SimpleNamespace(email_system=None, camera=None)
+    email_system = SimpleNamespace()
+    real_create_default_config = config_module._create_default_config
+
+    def isolated_default_config(*, log_creation: bool = True):
+        cfg = real_create_default_config(log_creation=log_creation)
+        cfg.logging.file = str(log_path)
+        cfg.logging.console_output = False
+        return cfg
+
+    class _FakeCamera:
+        def __init__(self, config, logger=None, async_init: bool = True, initialize: bool = True):
+            self.initialization_error = None
+
+        def initialize_sync(self) -> bool:
+            return True
+
+        def initialize_routes(self) -> None:
+            return None
+
+        def start_frame_capture(self) -> None:
+            return None
+
+    def fake_create_measurement_controller_from_config(*, config, email_system, camera, logger=None):
+        measurement_controller.email_system = email_system
+        measurement_controller.camera = camera
+        return measurement_controller
+
+    _reset_configured_logger("cvd_tracker")
+    monkeypatch.setattr(config_module, "_create_default_config", isolated_default_config)
+    monkeypatch.setattr(config_module, "_global_config", None, raising=False)
+    monkeypatch.setattr(
+        config_module,
+        "_config_path",
+        str(config_module._resolve_config_path("config/config.yaml")),
+        raising=False,
+    )
+    monkeypatch.setattr(config_module, "_global_config_warnings", [], raising=False)
+    monkeypatch.setattr(gui_init, "Camera", _FakeCamera)
+    monkeypatch.setattr(gui_init, "create_email_system_from_config", lambda config, logger=None: email_system)
+    monkeypatch.setattr(
+        gui_init,
+        "create_measurement_controller_from_config",
+        fake_create_measurement_controller_from_config,
+    )
+    instances.set_instances(None, None, None)
+    instances.set_startup_report(None)
+
+    try:
+        report = gui_init.init_application(str(config_path))
+
+        assert report.config_ok is True
+        assert report.camera_ok is True
+        assert report.email_ok is True
+        assert report.measurement_ok is True
+        assert report.fatal is False
+        assert any("could not be parsed as YAML" in warning for warning in report.config_warnings)
+        assert instances.get_startup_warnings() == [
+            f"Configuration: {warning}" for warning in report.config_warnings
+        ]
+    finally:
+        instances.set_instances(None, None, None)
+        instances.set_startup_report(None)
+        _cleanup_local_temp_dir(temp_path, config_path, log_path)
+
+
 def test_init_application_preserves_existing_runtime_on_reinit_failure(monkeypatch) -> None:
     old_cfg = _create_default_config()
     new_cfg = _create_default_config()
     previous_config = config_module._global_config
     previous_config_path = config_module._config_path
+    previous_config_warnings = list(config_module._global_config_warnings)
     old_report = instances.InitializationReport(
         config_ok=True,
         camera_ok=True,
@@ -1342,16 +1747,18 @@ def test_init_application_preserves_existing_runtime_on_reinit_failure(monkeypat
     cleanup_calls: list[str] = []
     call_log: list[tuple[str, object | None]] = []
     old_camera = SimpleNamespace(
+        suspend_runtime=lambda: call_log.append(("suspend_old_camera", None)) or True,
+        initialize_sync=lambda: call_log.append(("resume_old_camera", None)) or True,
         cleanup=lambda: cleanup_calls.append("old_camera"),
-        initialize_routes=lambda: None,
+        initialize_routes=lambda: call_log.append(("restore_old_routes", None)),
     )
     old_email = SimpleNamespace(cleanup=lambda: cleanup_calls.append("old_email"))
     old_measurement = SimpleNamespace(cleanup=lambda: cleanup_calls.append("old_measurement"))
 
     class _ReplacementCamera:
-        def __init__(self, config, logger=None, async_init: bool = True, auto_initialize: bool = True):
+        def __init__(self, config, logger=None, async_init: bool = True, initialize: bool = True):
             self.initialization_error = None
-            call_log.append(("camera_init", async_init, auto_initialize))
+            call_log.append(("camera_init", async_init, initialize))
 
         def initialize_sync(self) -> bool:
             call_log.append(("initialize_sync", None))
@@ -1376,7 +1783,7 @@ def test_init_application_preserves_existing_runtime_on_reinit_failure(monkeypat
         instances.set_startup_report(old_report)
         set_global_config(old_cfg, "config/old_runtime.yaml")
         monkeypatch.setattr(gui_init, "Camera", _ReplacementCamera)
-        monkeypatch.setattr(gui_init, "load_config", lambda path: new_cfg)
+        monkeypatch.setattr(gui_init, "load_config", lambda path, **kwargs: new_cfg)
         monkeypatch.setattr(gui_init, "create_email_system_from_config", lambda config, logger=None: new_email)
         monkeypatch.setattr(gui_init, "create_measurement_controller_from_config", fail_measurement)
 
@@ -1388,6 +1795,9 @@ def test_init_application_preserves_existing_runtime_on_reinit_failure(monkeypat
         assert instances.get_measurement_controller() is old_measurement
         assert instances.get_startup_report() is old_report
         assert cleanup_calls == ["new_email", "new_camera"]
+        assert ("suspend_old_camera", None) in call_log
+        assert ("resume_old_camera", None) in call_log
+        assert ("restore_old_routes", None) in call_log
         assert ("initialize_routes", None) not in call_log
         assert ("start_frame_capture", None) not in call_log
         assert config_module.get_global_config() is old_cfg
@@ -1395,7 +1805,7 @@ def test_init_application_preserves_existing_runtime_on_reinit_failure(monkeypat
     finally:
         instances.set_instances(None, None, None)
         instances.set_startup_report(None)
-        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path)
+        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path, previous_config_warnings)
 
 
 def test_init_application_suspends_existing_camera_before_replacement_camera_initializes(monkeypatch) -> None:
@@ -1403,6 +1813,7 @@ def test_init_application_suspends_existing_camera_before_replacement_camera_ini
     new_cfg = _create_default_config()
     previous_config = config_module._global_config
     previous_config_path = config_module._config_path
+    previous_config_warnings = list(config_module._global_config_warnings)
     old_report = instances.InitializationReport(
         config_ok=True,
         camera_ok=True,
@@ -1421,9 +1832,9 @@ def test_init_application_suspends_existing_camera_before_replacement_camera_ini
     old_measurement = SimpleNamespace(cleanup=lambda: cleanup_calls.append("old_measurement"))
 
     class _ReplacementCamera:
-        def __init__(self, config, logger=None, async_init: bool = True, auto_initialize: bool = True):
+        def __init__(self, config, logger=None, async_init: bool = True, initialize: bool = True):
             self.initialization_error = None
-            call_log.append(("camera_init", async_init, auto_initialize))
+            call_log.append(("camera_init", async_init, initialize))
 
         def initialize_sync(self) -> bool:
             call_log.append(("initialize_new_camera", None))
@@ -1446,7 +1857,7 @@ def test_init_application_suspends_existing_camera_before_replacement_camera_ini
         instances.set_startup_report(old_report)
         set_global_config(old_cfg, "config/old_handover_runtime.yaml")
         monkeypatch.setattr(gui_init, "Camera", _ReplacementCamera)
-        monkeypatch.setattr(gui_init, "load_config", lambda path: new_cfg)
+        monkeypatch.setattr(gui_init, "load_config", lambda path, **kwargs: new_cfg)
         monkeypatch.setattr(gui_init, "create_email_system_from_config", lambda config, logger=None: new_email)
         monkeypatch.setattr(
             gui_init,
@@ -1463,13 +1874,157 @@ def test_init_application_suspends_existing_camera_before_replacement_camera_ini
     finally:
         instances.set_instances(None, None, None)
         instances.set_startup_report(None)
-        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path)
+        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path, previous_config_warnings)
+
+
+def test_init_application_restores_previous_camera_when_suspend_returns_false(monkeypatch) -> None:
+    old_cfg = _create_default_config()
+    new_cfg = _create_default_config()
+    previous_config = config_module._global_config
+    previous_config_path = config_module._config_path
+    previous_config_warnings = list(config_module._global_config_warnings)
+    old_report = instances.InitializationReport(
+        config_ok=True,
+        camera_ok=True,
+        email_ok=True,
+        measurement_ok=True,
+    )
+    cleanup_calls: list[str] = []
+    call_log: list[tuple[str, object | None]] = []
+    old_camera = SimpleNamespace(
+        suspend_runtime=lambda: call_log.append(("suspend_old_camera", None)) or False,
+        initialize_sync=lambda: call_log.append(("resume_old_camera", None)) or True,
+        initialize_routes=lambda: call_log.append(("restore_old_routes", None)),
+        cleanup=lambda: cleanup_calls.append("old_camera"),
+    )
+    old_email = SimpleNamespace(cleanup=lambda: cleanup_calls.append("old_email"))
+    old_measurement = SimpleNamespace(cleanup=lambda: cleanup_calls.append("old_measurement"))
+
+    class _ReplacementCamera:
+        def __init__(self, config, logger=None, async_init: bool = True, initialize: bool = True):
+            self.initialization_error = None
+            call_log.append(("camera_init", async_init, initialize))
+
+        def initialize_sync(self) -> bool:
+            call_log.append(("initialize_new_camera", None))
+            return True
+
+        def cleanup(self) -> None:
+            cleanup_calls.append("new_camera")
+
+    try:
+        instances.set_instances(old_camera, old_measurement, old_email)
+        instances.set_startup_report(old_report)
+        set_global_config(old_cfg, "config/old_suspend_false.yaml")
+        monkeypatch.setattr(gui_init, "Camera", _ReplacementCamera)
+        monkeypatch.setattr(gui_init, "load_config", lambda path, **kwargs: new_cfg)
+        monkeypatch.setattr(
+            gui_init,
+            "create_email_system_from_config",
+            lambda config, logger=None: call_log.append(("email_init", None)) or SimpleNamespace(),
+        )
+        monkeypatch.setattr(
+            gui_init,
+            "create_measurement_controller_from_config",
+            lambda *, config, email_system, camera, logger=None: call_log.append(("measurement_init", None)) or SimpleNamespace(),
+        )
+
+        report = gui_init.init_application("config/new_suspend_false.yaml")
+
+        assert report.camera_error == "Failed to suspend existing camera runtime before replacement"
+        assert instances.get_camera() is old_camera
+        assert instances.get_email_system() is old_email
+        assert instances.get_measurement_controller() is old_measurement
+        assert instances.get_startup_report() is old_report
+        assert ("suspend_old_camera", None) in call_log
+        assert ("resume_old_camera", None) in call_log
+        assert ("restore_old_routes", None) in call_log
+        assert ("initialize_new_camera", None) not in call_log
+        assert ("email_init", None) not in call_log
+        assert ("measurement_init", None) not in call_log
+        assert cleanup_calls == ["new_camera"]
+    finally:
+        instances.set_instances(None, None, None)
+        instances.set_startup_report(None)
+        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path, previous_config_warnings)
+
+
+def test_init_application_restores_previous_camera_when_suspend_raises(monkeypatch) -> None:
+    old_cfg = _create_default_config()
+    new_cfg = _create_default_config()
+    previous_config = config_module._global_config
+    previous_config_path = config_module._config_path
+    previous_config_warnings = list(config_module._global_config_warnings)
+    old_report = instances.InitializationReport(
+        config_ok=True,
+        camera_ok=True,
+        email_ok=True,
+        measurement_ok=True,
+    )
+    cleanup_calls: list[str] = []
+    call_log: list[tuple[str, object | None]] = []
+
+    def fail_suspend_runtime() -> bool:
+        call_log.append(("suspend_old_camera", None))
+        raise RuntimeError("suspend failed")
+
+    old_camera = SimpleNamespace(
+        suspend_runtime=fail_suspend_runtime,
+        initialize_sync=lambda: call_log.append(("resume_old_camera", None)) or True,
+        initialize_routes=lambda: call_log.append(("restore_old_routes", None)),
+        cleanup=lambda: cleanup_calls.append("old_camera"),
+    )
+    old_email = SimpleNamespace(cleanup=lambda: cleanup_calls.append("old_email"))
+    old_measurement = SimpleNamespace(cleanup=lambda: cleanup_calls.append("old_measurement"))
+
+    class _ReplacementCamera:
+        def __init__(self, config, logger=None, async_init: bool = True, initialize: bool = True):
+            self.initialization_error = None
+            call_log.append(("camera_init", async_init, initialize))
+
+        def initialize_sync(self) -> bool:
+            call_log.append(("initialize_new_camera", None))
+            return True
+
+        def cleanup(self) -> None:
+            cleanup_calls.append("new_camera")
+
+    try:
+        instances.set_instances(old_camera, old_measurement, old_email)
+        instances.set_startup_report(old_report)
+        set_global_config(old_cfg, "config/old_suspend_exception.yaml")
+        monkeypatch.setattr(gui_init, "Camera", _ReplacementCamera)
+        monkeypatch.setattr(gui_init, "load_config", lambda path, **kwargs: new_cfg)
+        monkeypatch.setattr(
+            gui_init,
+            "create_email_system_from_config",
+            lambda config, logger=None: call_log.append(("email_init", None)) or SimpleNamespace(),
+        )
+
+        report = gui_init.init_application("config/new_suspend_exception.yaml")
+
+        assert report.camera_error == "Failed to suspend existing camera runtime before replacement"
+        assert instances.get_camera() is old_camera
+        assert instances.get_email_system() is old_email
+        assert instances.get_measurement_controller() is old_measurement
+        assert instances.get_startup_report() is old_report
+        assert ("suspend_old_camera", None) in call_log
+        assert ("resume_old_camera", None) in call_log
+        assert ("restore_old_routes", None) in call_log
+        assert ("initialize_new_camera", None) not in call_log
+        assert ("email_init", None) not in call_log
+        assert cleanup_calls == ["new_camera"]
+    finally:
+        instances.set_instances(None, None, None)
+        instances.set_startup_report(None)
+        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path, previous_config_warnings)
 
 
 def test_init_application_resumes_suspended_camera_when_replacement_camera_fails(monkeypatch) -> None:
     cfg = _create_default_config()
     previous_config = config_module._global_config
     previous_config_path = config_module._config_path
+    previous_config_warnings = list(config_module._global_config_warnings)
     old_report = instances.InitializationReport(
         config_ok=True,
         camera_ok=True,
@@ -1491,9 +2046,9 @@ def test_init_application_resumes_suspended_camera_when_replacement_camera_fails
     old_measurement = SimpleNamespace(cleanup=lambda: cleanup_calls.append("old_measurement"))
 
     class _FailingCamera:
-        def __init__(self, config, logger=None, async_init: bool = True, auto_initialize: bool = True):
+        def __init__(self, config, logger=None, async_init: bool = True, initialize: bool = True):
             self.initialization_error = RuntimeError("camera unavailable")
-            call_log.append(("camera_init", async_init, auto_initialize))
+            call_log.append(("camera_init", async_init, initialize))
 
         def initialize_sync(self) -> bool:
             call_log.append(("initialize_new_camera", None))
@@ -1507,7 +2062,7 @@ def test_init_application_resumes_suspended_camera_when_replacement_camera_fails
         instances.set_startup_report(old_report)
         set_global_config(cfg, "config/old_resume_runtime.yaml")
         monkeypatch.setattr(gui_init, "Camera", _FailingCamera)
-        monkeypatch.setattr(gui_init, "load_config", lambda path: cfg)
+        monkeypatch.setattr(gui_init, "load_config", lambda path, **kwargs: cfg)
         monkeypatch.setattr(gui_init, "create_email_system_from_config", lambda config, logger=None: old_email)
         monkeypatch.setattr(camera_module, "_ACTIVE_VIDEO_CAMERA", old_camera, raising=False)
 
@@ -1525,14 +2080,14 @@ def test_init_application_resumes_suspended_camera_when_replacement_camera_fails
         instances.set_instances(None, None, None)
         instances.set_startup_report(None)
         monkeypatch.setattr(camera_module, "_ACTIVE_VIDEO_CAMERA", None, raising=False)
-        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path)
+        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path, previous_config_warnings)
 
 
-def test_init_application_commits_replacement_runtime_when_email_init_fails(monkeypatch) -> None:
-    old_cfg = _create_default_config()
-    new_cfg = _create_default_config()
+def test_init_application_degrades_without_camera_when_previous_camera_restore_fails(monkeypatch) -> None:
+    cfg = _create_default_config()
     previous_config = config_module._global_config
     previous_config_path = config_module._config_path
+    previous_config_warnings = list(config_module._global_config_warnings)
     old_report = instances.InitializationReport(
         config_ok=True,
         camera_ok=True,
@@ -1541,14 +2096,106 @@ def test_init_application_commits_replacement_runtime_when_email_init_fails(monk
     )
     cleanup_calls: list[str] = []
     call_log: list[tuple[str, object | None]] = []
-    old_camera = SimpleNamespace(cleanup=lambda: cleanup_calls.append("old_camera"))
+    old_camera = SimpleNamespace(
+        placeholder=SimpleNamespace(body=b"old-camera"),
+        get_current_frame=lambda copy_frame=False: None,
+        logger=logging.getLogger("test.camera.old_restore_failure"),
+        suspend_runtime=lambda: call_log.append(("suspend_old_camera", None)) or True,
+        initialize_sync=lambda: call_log.append(("resume_old_camera", None)) or False,
+        initialize_routes=lambda: call_log.append(("restore_old_routes", None)),
+        cleanup=lambda: cleanup_calls.append("old_camera"),
+    )
+    old_email = SimpleNamespace(cleanup=lambda: cleanup_calls.append("old_email"))
+
+    class _MeasurementStub:
+        def __init__(self, camera) -> None:
+            self.camera = camera
+            self.set_camera_calls: list[object | None] = []
+
+        def set_camera(self, camera) -> None:
+            self.set_camera_calls.append(camera)
+            self.camera = camera
+
+        def cleanup(self) -> None:
+            cleanup_calls.append("old_measurement")
+
+    old_measurement = _MeasurementStub(old_camera)
+
+    class _FailingCamera:
+        def __init__(self, config, logger=None, async_init: bool = True, initialize: bool = True):
+            self.initialization_error = RuntimeError("camera unavailable")
+            call_log.append(("camera_init", async_init, initialize))
+
+        def initialize_sync(self) -> bool:
+            call_log.append(("initialize_new_camera", None))
+            return False
+
+        def cleanup(self) -> None:
+            cleanup_calls.append("new_camera")
+
+    try:
+        instances.set_instances(old_camera, old_measurement, old_email)
+        instances.set_startup_report(old_report)
+        set_global_config(cfg, "config/old_restore_failure.yaml")
+        monkeypatch.setattr(gui_init, "Camera", _FailingCamera)
+        monkeypatch.setattr(gui_init, "load_config", lambda path, **kwargs: cfg)
+        monkeypatch.setattr(
+            gui_init,
+            "create_email_system_from_config",
+            lambda config, logger=None: call_log.append(("email_init", None)) or SimpleNamespace(),
+        )
+        monkeypatch.setattr(camera_module, "_ACTIVE_VIDEO_CAMERA", old_camera, raising=False)
+
+        report = gui_init.init_application("config/restore_failure.yaml")
+        response = camera_module._build_video_frame_response(camera_module._get_active_video_camera())
+
+        assert "camera unavailable" in (report.camera_error or "").lower()
+        assert "previous camera could not be restored" in (report.camera_error or "").lower()
+        assert instances.get_camera() is None
+        assert instances.get_measurement_controller() is old_measurement
+        assert instances.get_email_system() is old_email
+        assert instances.get_startup_report() is report
+        assert camera_module._get_active_video_camera() is None
+        assert bytes(response.body) == camera_module._DEFAULT_VIDEO_PLACEHOLDER_BODY
+        assert call_log.index(("suspend_old_camera", None)) < call_log.index(("initialize_new_camera", None))
+        assert call_log.index(("initialize_new_camera", None)) < call_log.index(("resume_old_camera", None))
+        assert ("restore_old_routes", None) not in call_log
+        assert ("email_init", None) not in call_log
+        assert old_measurement.set_camera_calls == [None]
+        assert old_measurement.camera is None
+        assert cleanup_calls == ["new_camera", "old_camera"]
+    finally:
+        instances.set_instances(None, None, None)
+        instances.set_startup_report(None)
+        monkeypatch.setattr(camera_module, "_ACTIVE_VIDEO_CAMERA", None, raising=False)
+        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path, previous_config_warnings)
+
+
+def test_init_application_commits_replacement_runtime_when_email_init_fails(monkeypatch) -> None:
+    old_cfg = _create_default_config()
+    new_cfg = _create_default_config()
+    previous_config = config_module._global_config
+    previous_config_path = config_module._config_path
+    previous_config_warnings = list(config_module._global_config_warnings)
+    old_report = instances.InitializationReport(
+        config_ok=True,
+        camera_ok=True,
+        email_ok=True,
+        measurement_ok=True,
+    )
+    cleanup_calls: list[str] = []
+    call_log: list[tuple[str, object | None]] = []
+    old_camera = SimpleNamespace(
+        suspend_runtime=lambda: call_log.append(("suspend_old_camera", None)) or True,
+        cleanup=lambda: cleanup_calls.append("old_camera"),
+    )
     old_email = SimpleNamespace(cleanup=lambda: cleanup_calls.append("old_email"))
     old_measurement = SimpleNamespace(cleanup=lambda: cleanup_calls.append("old_measurement"))
 
     class _ReplacementCamera:
-        def __init__(self, config, logger=None, async_init: bool = True, auto_initialize: bool = True):
+        def __init__(self, config, logger=None, async_init: bool = True, initialize: bool = True):
             self.initialization_error = None
-            call_log.append(("camera_init", async_init, auto_initialize))
+            call_log.append(("camera_init", async_init, initialize))
 
         def initialize_sync(self) -> bool:
             call_log.append(("initialize_sync", None))
@@ -1574,7 +2221,7 @@ def test_init_application_commits_replacement_runtime_when_email_init_fails(monk
         instances.set_startup_report(old_report)
         set_global_config(old_cfg, "config/old_email_runtime.yaml")
         monkeypatch.setattr(gui_init, "Camera", _ReplacementCamera)
-        monkeypatch.setattr(gui_init, "load_config", lambda path: new_cfg)
+        monkeypatch.setattr(gui_init, "load_config", lambda path, **kwargs: new_cfg)
         monkeypatch.setattr(
             gui_init,
             "create_email_system_from_config",
@@ -1595,6 +2242,7 @@ def test_init_application_commits_replacement_runtime_when_email_init_fails(monk
         assert instances.get_startup_report() is report
         assert config_module.get_global_config() is new_cfg
         assert config_module.get_global_config_path() == str(config_module._resolve_config_path("config/new_email_runtime.yaml"))
+        assert ("suspend_old_camera", None) in call_log
         assert ("measurement_init", None) in call_log
         assert ("initialize_routes", None) in call_log
         assert ("start_frame_capture", None) in call_log
@@ -1602,13 +2250,14 @@ def test_init_application_commits_replacement_runtime_when_email_init_fails(monk
     finally:
         instances.set_instances(None, None, None)
         instances.set_startup_report(None)
-        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path)
+        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path, previous_config_warnings)
 
 
 def test_init_application_preserves_active_video_camera_on_failed_reinit(monkeypatch) -> None:
     cfg = _create_default_config()
     previous_config = config_module._global_config
     previous_config_path = config_module._config_path
+    previous_config_warnings = list(config_module._global_config_warnings)
     old_report = instances.InitializationReport(
         config_ok=True,
         camera_ok=True,
@@ -1620,6 +2269,8 @@ def test_init_application_preserves_active_video_camera_on_failed_reinit(monkeyp
         placeholder=SimpleNamespace(body=b"old-camera"),
         get_current_frame=lambda copy_frame=False: None,
         logger=logging.getLogger("test.camera.old_active"),
+        suspend_runtime=lambda: True,
+        initialize_sync=lambda: True,
         cleanup=lambda: cleanup_calls.append("old_camera"),
         initialize_routes=lambda: None,
     )
@@ -1627,7 +2278,7 @@ def test_init_application_preserves_active_video_camera_on_failed_reinit(monkeyp
     old_measurement = SimpleNamespace(cleanup=lambda: cleanup_calls.append("old_measurement"))
 
     class _FailingCamera:
-        def __init__(self, config, logger=None, async_init: bool = True, auto_initialize: bool = True):
+        def __init__(self, config, logger=None, async_init: bool = True, initialize: bool = True):
             self.initialization_error = RuntimeError("camera unavailable")
 
         def initialize_sync(self) -> bool:
@@ -1656,7 +2307,7 @@ def test_init_application_preserves_active_video_camera_on_failed_reinit(monkeyp
         instances.set_instances(None, None, None)
         instances.set_startup_report(None)
         monkeypatch.setattr(camera_module, "_ACTIVE_VIDEO_CAMERA", None, raising=False)
-        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path)
+        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path, previous_config_warnings)
 
 
 def test_init_application_commits_new_runtime_and_cleans_previous_runtime_in_order(monkeypatch) -> None:
@@ -1664,6 +2315,7 @@ def test_init_application_commits_new_runtime_and_cleans_previous_runtime_in_ord
     new_cfg = _create_default_config()
     previous_config = config_module._global_config
     previous_config_path = config_module._config_path
+    previous_config_warnings = list(config_module._global_config_warnings)
     old_report = instances.InitializationReport(
         config_ok=True,
         camera_ok=True,
@@ -1671,14 +2323,17 @@ def test_init_application_commits_new_runtime_and_cleans_previous_runtime_in_ord
         measurement_ok=True,
     )
     call_log: list[tuple[str, object | None]] = []
-    old_camera = SimpleNamespace(cleanup=lambda: call_log.append(("cleanup_old_camera", None)))
+    old_camera = SimpleNamespace(
+        suspend_runtime=lambda: call_log.append(("suspend_old_camera", None)) or True,
+        cleanup=lambda: call_log.append(("cleanup_old_camera", None)),
+    )
     old_email = SimpleNamespace(cleanup=lambda: call_log.append(("cleanup_old_email", None)))
     old_measurement = SimpleNamespace(cleanup=lambda: call_log.append(("cleanup_old_measurement", None)))
 
     class _ReplacementCamera:
-        def __init__(self, config, logger=None, async_init: bool = True, auto_initialize: bool = True):
+        def __init__(self, config, logger=None, async_init: bool = True, initialize: bool = True):
             self.initialization_error = None
-            call_log.append(("camera_init", async_init, auto_initialize))
+            call_log.append(("camera_init", async_init, initialize))
 
         def initialize_sync(self) -> bool:
             call_log.append(("initialize_sync", None))
@@ -1701,12 +2356,16 @@ def test_init_application_commits_new_runtime_and_cleans_previous_runtime_in_ord
         instances.set_startup_report(old_report)
         set_global_config(old_cfg, "config/old_success.yaml")
         monkeypatch.setattr(gui_init, "Camera", _ReplacementCamera)
-        monkeypatch.setattr(gui_init, "load_config", lambda path: new_cfg)
-        monkeypatch.setattr(gui_init, "create_email_system_from_config", lambda config, logger=None: new_email)
+        monkeypatch.setattr(gui_init, "load_config", lambda path, **kwargs: new_cfg)
+        monkeypatch.setattr(
+            gui_init,
+            "create_email_system_from_config",
+            lambda config, logger=None: call_log.append(("email_init", None)) or new_email,
+        )
         monkeypatch.setattr(
             gui_init,
             "create_measurement_controller_from_config",
-            lambda *, config, email_system, camera, logger=None: new_measurement,
+            lambda *, config, email_system, camera, logger=None: call_log.append(("measurement_init", None)) or new_measurement,
         )
 
         report = gui_init.init_application("config/new_success.yaml")
@@ -1720,7 +2379,10 @@ def test_init_application_commits_new_runtime_and_cleans_previous_runtime_in_ord
         assert config_module.get_global_config_path() == str(config_module._resolve_config_path("config/new_success.yaml"))
         assert call_log == [
             ("camera_init", False, False),
+            ("suspend_old_camera", None),
             ("initialize_sync", None),
+            ("email_init", None),
+            ("measurement_init", None),
             ("initialize_routes", None),
             ("start_frame_capture", None),
             ("cleanup_old_measurement", None),
@@ -1730,7 +2392,7 @@ def test_init_application_commits_new_runtime_and_cleans_previous_runtime_in_ord
     finally:
         instances.set_instances(None, None, None)
         instances.set_startup_report(None)
-        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path)
+        _restore_config_registry_state(monkeypatch, previous_config, previous_config_path, previous_config_warnings)
 
 
 def test_init_application_cold_start_camera_failure_clears_active_video_camera(monkeypatch) -> None:
@@ -1743,7 +2405,7 @@ def test_init_application_cold_start_camera_failure_clears_active_video_camera(m
     cleanup_calls: list[str] = []
 
     class _FailingCamera:
-        def __init__(self, config, logger=None, async_init: bool = True, auto_initialize: bool = True):
+        def __init__(self, config, logger=None, async_init: bool = True, initialize: bool = True):
             self.initialization_error = RuntimeError("camera unavailable")
 
         def initialize_sync(self) -> bool:
@@ -1784,6 +2446,76 @@ def test_init_application_cold_start_camera_failure_clears_active_video_camera(m
         monkeypatch.setattr(camera_module, "_ACTIVE_VIDEO_CAMERA", None, raising=False)
 
 
+def test_camera_suspend_runtime_stops_runtime_without_marking_instance_cleaned(monkeypatch) -> None:
+    camera = _make_camera_runtime_stub("test.camera.suspend_runtime")
+    camera._timer_lock = threading.Lock()
+    cancel_calls: list[str] = []
+    stop_calls: list[float] = []
+    release_calls: list[float] = []
+    camera.current_frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    camera._current_jpeg_frame = b"cached-jpeg"
+    camera._config_save_timer = SimpleNamespace(cancel=lambda: cancel_calls.append("cancel_timer"))
+    camera._stop_frame_capture_and_wait = lambda timeout=2.0: stop_calls.append(timeout) or True
+    camera._try_release_video_capture = lambda timeout=0.05: release_calls.append(timeout) or True
+    camera.video_capture = object()
+    camera.is_running = True
+    camera.frame_thread = SimpleNamespace(is_alive=lambda: True)
+    camera._capture_ready.set()
+    camera._init_complete.set()
+    camera._init_cancel.set()
+    camera.initialization_error = RuntimeError("previous init error")
+    camera._initialization_succeeded = True
+    camera._init_terminal_failure = True
+
+    monkeypatch.setattr(camera_module, "_ACTIVE_VIDEO_CAMERA", camera, raising=False)
+
+    assert Camera.suspend_runtime(camera) is True
+    assert camera.is_running is False
+    assert camera._capture_ready.is_set() is False
+    assert camera._init_complete.is_set() is False
+    assert camera._init_cancel.is_set() is False
+    assert camera.initialization_error is None
+    assert camera._initialization_succeeded is False
+    assert camera._init_terminal_failure is False
+    assert camera.cleaned is False
+    assert camera.current_frame is None
+    assert camera.get_current_jpeg_frame() is None
+    assert camera_module._get_active_video_camera() is camera
+    assert cancel_calls == ["cancel_timer"]
+    assert stop_calls == [2.0]
+    assert release_calls == [0.05]
+
+
+def test_camera_cleanup_clears_published_frames_on_success() -> None:
+    camera = _make_camera_runtime_stub("test.camera.cleanup_clears_frames")
+    camera._timer_lock = threading.Lock()
+    camera._config_save_timer = None
+    camera._frame_pool = collections.deque()
+    camera._stop_frame_capture_and_wait = lambda timeout=2.0: True
+    camera._try_release_video_capture = lambda timeout=0.05: True
+    camera.current_frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    camera._current_jpeg_frame = b"cached-jpeg"
+
+    camera.cleanup()
+
+    assert camera.cleaned is True
+    assert camera.current_frame is None
+    assert camera.get_current_jpeg_frame() is None
+
+
+def test_camera_cleanup_after_failed_initialization_clears_published_frames() -> None:
+    camera = _make_camera_runtime_stub("test.camera.failed_init_clears_frames")
+    camera.current_frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    camera._current_jpeg_frame = b"cached-jpeg"
+    camera._stop_frame_capture_and_wait = lambda timeout=0.1: True
+    camera._try_release_video_capture = lambda timeout=0.0: True
+
+    Camera._cleanup_after_failed_initialization(camera)
+
+    assert camera.current_frame is None
+    assert camera.get_current_jpeg_frame() is None
+
+
 def test_load_config_uses_default_config_when_file_is_missing() -> None:
     temp_path = Path(".pytest_startup_runtime_missing")
     temp_path.mkdir(exist_ok=True)
@@ -1797,7 +2529,20 @@ def test_load_config_uses_default_config_when_file_is_missing() -> None:
         _cleanup_local_temp_dir(temp_path, missing_path)
 
 
-def test_load_config_raises_for_invalid_yaml() -> None:
+def test_load_config_raises_for_empty_file_without_startup_fallback() -> None:
+    temp_path = Path(".pytest_startup_runtime_empty_yaml")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "empty.yaml"
+    config_path.write_text("", encoding="utf-8")
+
+    try:
+        with pytest.raises(ConfigLoadError, match="Empty configuration file"):
+            load_config(str(config_path))
+    finally:
+        _cleanup_local_temp_dir(temp_path, config_path)
+
+
+def test_load_config_raises_for_invalid_yaml_without_startup_fallback() -> None:
     temp_path = Path(".pytest_startup_runtime_invalid_yaml")
     temp_path.mkdir(exist_ok=True)
     config_path = temp_path / "invalid.yaml"

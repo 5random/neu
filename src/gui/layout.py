@@ -1,6 +1,7 @@
 import logging
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
+from datetime import datetime
 
 from nicegui import ui, app
 from src.config import AppConfig, get_global_config, save_global_config
@@ -18,6 +19,42 @@ _OVERLAY_HEAD_HTML = """
 .q-notification {
     z-index: 12000 !important;
 }
+
+#cvd-header-title-wrap {
+    min-width: 0;
+}
+
+#cvd-header-title {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#cvd-header-title-icon.cvd-measurement-active.cvd-measurement-motion-detected,
+#cvd-header-title-icon.cvd-measurement-active.cvd-measurement-pending {
+    animation: cvd-measurement-pulse 1.5s ease-in-out infinite;
+}
+
+#cvd-header-title-icon.cvd-measurement-motion-detected {
+    color: #22c55e;
+}
+
+#cvd-header-title-icon.cvd-measurement-no-motion {
+    color: #f59e0b;
+    opacity: 0.96;
+}
+
+#cvd-header-title-icon.cvd-measurement-pending {
+    color: #f8fafc;
+    opacity: 0.92;
+}
+
+@keyframes cvd-measurement-pulse {
+    0% { opacity: 0.65; transform: scale(0.92); }
+    50% { opacity: 1; transform: scale(1); }
+    100% { opacity: 0.65; transform: scale(0.92); }
+}
+
 </style>
 """
 
@@ -191,6 +228,67 @@ def _resolve_header_route(explicit_route: str | None = None) -> str | None:
         return None
 
 
+def _build_power_menu_dialogs() -> Callable[[], None]:
+    action_state: dict[str, str | None] = {'key': None}
+    power_menu_dialog = ui.dialog().classes('items-center justify-center')
+    power_confirm_dialog = ui.dialog().classes('items-center justify-center')
+
+    async def execute_selected_power_action() -> None:
+        action_key = action_state.get('key')
+        if not action_key:
+            return
+
+        power_confirm_dialog.close()
+        spec = get_power_action_spec(action_key)
+        try:
+            await trigger_power_action(action_key)
+        except Exception as exc:
+            logger.exception('Failed to execute power action %s', action_key)
+            ui.notify(
+                f'"{spec.label}" could not be executed: {exc}',
+                type='negative',
+                position='bottom-right',
+            )
+
+    with power_confirm_dialog:
+        with ui.card().classes('w-[440px] max-w-full'):
+            confirm_title = ui.label('').classes('text-h6')
+            confirm_message = ui.label('').classes('text-body1')
+            with ui.row().classes('w-full justify-end gap-2'):
+                ui.button('Back', on_click=lambda: (power_confirm_dialog.close(), power_menu_dialog.open())).props('flat')
+                confirm_button = ui.button('Confirm', on_click=execute_selected_power_action).props('color=negative')
+
+    def open_confirmation_dialog(action_key: str) -> None:
+        spec = get_power_action_spec(action_key)
+        action_state['key'] = action_key
+        confirm_title.text = spec.confirmation_title
+        confirm_message.text = spec.confirmation_message
+        confirm_button.set_text(spec.confirm_label)
+        power_menu_dialog.close()
+        power_confirm_dialog.open()
+
+    with power_menu_dialog:
+        with ui.card().classes('w-[520px] max-w-full'):
+            ui.label('What would you like to do?').classes('text-h6')
+            ui.label('Please select the desired action.').classes('text-body2')
+            with ui.column().classes('w-full gap-2'):
+                for spec in list_power_actions():
+                    with ui.column().classes('w-full gap-1'):
+                        ui.button(
+                            spec.label,
+                            icon=spec.icon,
+                            on_click=lambda _event=None, action_key=spec.key: open_confirmation_dialog(action_key),
+                        ).props('outline align=left').classes('w-full justify-start')
+                        ui.label(spec.description).classes('text-caption text-gray-500')
+            with ui.row().classes('w-full justify-end'):
+                ui.button('Cancel', on_click=power_menu_dialog.close).props('flat')
+
+    def show_power_menu_dialog() -> None:
+        power_menu_dialog.open()
+
+    return show_power_menu_dialog
+
+
 def build_header(current_route: str | None = None) -> None:
     install_overlay_styles()
     sync_runtime_website_url(persist=True)
@@ -207,85 +305,32 @@ def build_header(current_route: str | None = None) -> None:
     with ui.header().classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
         apply_dark_mode_preference()
 
-        # Refresh the shared title on each page build so config changes are reflected.
+        # Refresh the persisted base title on each page build so config changes are reflected.
         set_ui_pref(StorageKeys.GUI_TITLE, current_title)
 
         # --- Linke Seite -------------------------------------------
         with ui.row().classes('items-center gap-3'):
-            action_state: dict[str, str | None] = {'key': None}
-            power_menu_dialog = ui.dialog().classes('items-center justify-center')
-            power_confirm_dialog = ui.dialog().classes('items-center justify-center')
+            def _go_home() -> None:
+                set_ui_pref(StorageKeys.LAST_ROUTE, '/')
+                ui.navigate.to('/', new_tab=False)
 
-            async def execute_selected_power_action() -> None:
-                action_key = action_state.get('key')
-                if not action_key:
-                    return
+            show_power_menu_dialog = _build_power_menu_dialogs()
+            ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=_go_home).props('flat').style(
+                'max-height:72px; width:auto'
+            ).tooltip('Go to Home')
 
-                power_confirm_dialog.close()
-                spec = get_power_action_spec(action_key)
-                try:
-                    await trigger_power_action(action_key)
-                except Exception as exc:
-                    logger.exception('Failed to execute power action %s', action_key)
-                    ui.notify(
-                        f'"{spec.label}" could not be executed: {exc}',
-                        type='negative',
-                        position='bottom-right',
-                    )
-
-            with power_confirm_dialog:
-                with ui.card().classes('w-[440px] max-w-full'):
-                    confirm_title = ui.label('').classes('text-h6')
-                    confirm_message = ui.label('').classes('text-body1')
-                    with ui.row().classes('w-full justify-end gap-2'):
-                        ui.button('Back', on_click=lambda: (power_confirm_dialog.close(), power_menu_dialog.open())).props('flat')
-                        confirm_button = ui.button('Confirm', on_click=execute_selected_power_action).props('color=negative')
-
-            def open_confirmation_dialog(action_key: str) -> None:
-                spec = get_power_action_spec(action_key)
-                action_state['key'] = action_key
-                confirm_title.text = spec.confirmation_title
-                confirm_message.text = spec.confirmation_message
-                confirm_button.set_text(spec.confirm_label)
-                power_menu_dialog.close()
-                power_confirm_dialog.open()
-
-            with power_menu_dialog:
-                with ui.card().classes('w-[520px] max-w-full'):
-                    ui.label('What would you like to do?').classes('text-h6')
-                    ui.label('Please select the desired action.').classes('text-body2')
-                    with ui.column().classes('w-full gap-2'):
-                        for spec in list_power_actions():
-                            with ui.column().classes('w-full gap-1'):
-                                ui.button(
-                                    spec.label,
-                                    icon=spec.icon,
-                                    on_click=lambda _event=None, action_key=spec.key: open_confirmation_dialog(action_key),
-                                ).props('outline align=left').classes('w-full justify-start')
-                                ui.label(spec.description).classes('text-caption text-gray-500')
-                    with ui.row().classes('w-full justify-end'):
-                        ui.button('Cancel', on_click=power_menu_dialog.close).props('flat')
-
-            def show_power_menu_dialog() -> None:
-                power_menu_dialog.open()
-
-            ui.button(icon='img:/pics/logo_ipc_short.svg', on_click=show_power_menu_dialog).props('flat').style('max-height:72px; width:auto').tooltip('Shut down or restart the application or Raspberry Pi')
-
-            title_label = ui.label().props('id=cvd-header-title').classes(
-                'text-xl font-semibold tracking-wider text-gray-100')
-            try:
-                title_label.bind_text_from(get_ui_storage(), StorageKeys.GUI_TITLE)
-            except Exception:
-                title_label.text = current_title
+            with ui.row().props('id=cvd-header-title-wrap').classes('items-center gap-2 min-w-0'):
+                ui.icon('radio_button_checked').props('id=cvd-header-title-icon').classes(
+                    'text-slate-100 text-base shrink-0'
+                ).style('display:none;')
+                title_label = ui.label(current_title).props('id=cvd-header-title').classes(
+                    'text-xl font-semibold tracking-wider text-gray-100'
+                )
 
         # --- Rechte Seite ------------------------------------------
         with ui.row().classes('items-center gap-4'):
             ui.button(icon='help', on_click=lambda: ui.navigate.to('/help'))\
                 .props('flat round dense').classes('text-xl').tooltip('Help')
-
-            def _go_home() -> None:
-                set_ui_pref(StorageKeys.LAST_ROUTE, '/')
-                ui.navigate.to('/', new_tab=False)
 
             def _go_settings() -> None:
                 set_ui_pref(StorageKeys.LAST_ROUTE, '/settings')
@@ -299,6 +344,22 @@ def build_header(current_route: str | None = None) -> None:
                 ui.button(icon='settings', on_click=_go_settings)\
                   .props('flat round dense id=cvd-header-settings').classes('text-xl').tooltip('Open settings')
 
+            ui.button(icon='power_settings_new', on_click=show_power_menu_dialog)\
+                .props('flat round dense id=cvd-header-power').classes('text-xl').tooltip(
+                    'Shut down or restart the application or Raspberry Pi'
+                )
+
+    try:
+        from .gui_ import register_client_runtime_title_sync
+        from .instances import get_measurement_controller
+
+        register_client_runtime_title_sync(
+            measurement_controller=get_measurement_controller(),
+            client=ui.context.client,
+        )
+    except Exception:
+        logger.debug('Failed to register runtime title sync for header client', exc_info=True)
+
 def build_footer() -> None:
     with ui.footer(fixed=False).classes('items-center justify-between shadow px-4 py-2 bg-[#1C3144] text-white'):
         with ui.row().classes('items-center justify-between px-4 py-2'):
@@ -307,4 +368,4 @@ def build_footer() -> None:
                 footer_label.bind_text_from(get_ui_storage(), StorageKeys.GUI_TITLE)
             except Exception:
                 footer_label.text = compute_gui_title()
-            ui.label('© 2025 TUHH KVWEB').classes('text-white text-sm')
+            ui.label(f'© {datetime.now().year} TUHH KVWEB').classes('text-white text-sm')

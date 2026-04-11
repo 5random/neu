@@ -10,34 +10,203 @@ import collections
 from contextlib import contextmanager
 from functools import lru_cache
 import time
-from typing import Callable, Optional, Iterator, Dict, Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Callable, Optional, Iterator, Dict, Any, Protocol
 
 import cv2
 import numpy as np
 from fastapi import Response
+from fastapi.responses import StreamingResponse
 from nicegui import Client, app, core, run, ui
 import logging
 
-from src.config import (
-    AppConfig,
-    WebcamConfig,
-    UVCConfig,
-    get_global_config,
-    get_logger,
-    load_config,
-    save_config,
-    save_global_config,
-)
+from src.config import get_global_config, get_logger, load_config, save_config, save_global_config
 from .motion import MotionResult, MotionDetector
+
+if TYPE_CHECKING:
+    from src.config import AppConfig, WebcamConfig, UVCConfig
+
+
+class CameraInitializationCancelled(RuntimeError):
+    """Raised when camera initialization is cancelled before completion."""
+
+
+_DEFAULT_VIDEO_PLACEHOLDER_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAA"
+    "AANJREFUGFdjYGBg+A8AAQQBAHAgZQsAAAAASUVORK5CYII="
+)
+_DEFAULT_VIDEO_PLACEHOLDER_BODY = base64.b64decode(_DEFAULT_VIDEO_PLACEHOLDER_BASE64)
+_VIDEO_ROUTE_LOCK = threading.Lock()
+_VIDEO_ROUTES_REGISTERED = False
+_VIDEO_ROUTE_APP: Any | None = None
+_ACTIVE_VIDEO_CAMERA: "_ActiveVideoSource | None" = None
+_VIDEO_ROUTE_LOGGER = logging.getLogger(__name__)
+
+
+class _ActiveVideoSource(Protocol):
+    def get_current_frame(self, copy_frame: bool = True) -> Optional[np.ndarray]:
+        ...
+
+
+def _get_video_route_logger(camera: "_ActiveVideoSource | None") -> logging.Logger:
+    if camera is not None:
+        candidate = getattr(camera, "logger", None)
+        if isinstance(candidate, logging.Logger):
+            return candidate
+    return _VIDEO_ROUTE_LOGGER
+
+
+def _get_video_placeholder_body(camera: "_ActiveVideoSource | None" = None) -> bytes:
+    placeholder = getattr(camera, "placeholder", None)
+    body = getattr(placeholder, "body", None)
+    if isinstance(body, bytes):
+        return body
+    return _DEFAULT_VIDEO_PLACEHOLDER_BODY
+
+
+def _get_cached_video_frame_bytes(camera: "_ActiveVideoSource | None") -> bytes | None:
+    if camera is None:
+        return None
+
+    get_current_jpeg_frame = getattr(camera, "get_current_jpeg_frame", None)
+    if not callable(get_current_jpeg_frame):
+        return None
+
+    try:
+        cached_frame = get_current_jpeg_frame()
+    except Exception as exc:
+        _get_video_route_logger(camera).debug("Error reading cached jpeg frame: %s", exc, exc_info=True)
+        return None
+
+    if isinstance(cached_frame, (bytes, bytearray, memoryview)):
+        return bytes(cached_frame)
+    return None
+
+
+def _get_active_video_camera() -> "_ActiveVideoSource | None":
+    with _VIDEO_ROUTE_LOCK:
+        return _ACTIVE_VIDEO_CAMERA
+
+
+def _set_active_video_camera_locked(camera: "_ActiveVideoSource") -> None:
+    """Set the active video source while the caller already holds _VIDEO_ROUTE_LOCK."""
+    global _ACTIVE_VIDEO_CAMERA
+    _ACTIVE_VIDEO_CAMERA = camera
+
+
+def _clear_active_video_camera(camera: "_ActiveVideoSource | None" = None, *, force: bool = False) -> None:
+    global _ACTIVE_VIDEO_CAMERA
+    with _VIDEO_ROUTE_LOCK:
+        if force or _ACTIVE_VIDEO_CAMERA is camera:
+            _ACTIVE_VIDEO_CAMERA = None
+
+
+def _video_routes_exist_in_app(target_app: Any | None = None) -> bool:
+    route_app = app if target_app is None else target_app
+    try:
+        routes = list(getattr(route_app, "routes", []))
+    except Exception:
+        return False
+
+    registered_paths = {getattr(route, "path", None) for route in routes}
+    return "/video_feed" in registered_paths and "/video/frame" in registered_paths
+
+
+def _build_video_frame_response(camera: "_ActiveVideoSource | None") -> Response:
+    if camera is None:
+        return Response(content=_get_video_placeholder_body(), media_type="image/png")
+
+    cached_frame = _get_cached_video_frame_bytes(camera)
+    if cached_frame is not None:
+        return Response(content=cached_frame, media_type="image/jpeg")
+
+    try:
+        frame = camera.get_current_frame(copy_frame=False)
+    except Exception as exc:
+        _get_video_route_logger(camera).error("Error reading current frame: %s", exc)
+        return Response(content=_get_video_placeholder_body(camera), media_type="image/png")
+
+    if frame is None:
+        return Response(content=_get_video_placeholder_body(camera), media_type="image/png")
+
+    try:
+        ret, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if not ret:
+            return Response(content=_get_video_placeholder_body(camera), media_type="image/png")
+        return Response(content=buffer.tobytes(), media_type="image/jpeg")
+    except Exception as exc:
+        _get_video_route_logger(camera).error("Error encoding frame: %s", exc)
+        return Response(content=_get_video_placeholder_body(camera), media_type="image/png")
+
+
+def _build_video_stream_chunk(camera: "_ActiveVideoSource | None") -> bytes:
+    response = _build_video_frame_response(camera)
+    media_type = response.media_type or "image/png"
+    return (
+        b"--frame\r\nContent-Type: "
+        + media_type.encode("ascii", errors="ignore")
+        + b"\r\n\r\n"
+        + bytes(response.body)
+        + b"\r\n"
+    )
+
+
+def _generate_active_video_frames() -> Iterator[bytes]:
+    try:
+        while True:
+            current_camera = _get_active_video_camera()
+            yield _build_video_stream_chunk(current_camera)
+            time.sleep(0.03 if current_camera is not None else 0.1)
+    except GeneratorExit:
+        _get_video_route_logger(_get_active_video_camera()).debug("Video stream generator closed")
+        raise
+
+
+def _ensure_video_routes_registered_locked(route_app: Any) -> None:
+    global _VIDEO_ROUTES_REGISTERED, _VIDEO_ROUTE_APP
+    if _VIDEO_ROUTE_APP is route_app and _video_routes_exist_in_app(route_app):
+        _VIDEO_ROUTES_REGISTERED = True
+        return
+    if _video_routes_exist_in_app(route_app):
+        _VIDEO_ROUTE_APP = route_app
+        _VIDEO_ROUTES_REGISTERED = True
+        return
+
+    @route_app.get("/video_feed")
+    def video_feed() -> StreamingResponse:
+        return StreamingResponse(
+            _generate_active_video_frames(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+        )
+
+    @route_app.get("/video/frame")
+    def video_frame() -> Response:
+        return _build_video_frame_response(_get_active_video_camera())
+
+    _VIDEO_ROUTE_APP = route_app
+    _VIDEO_ROUTES_REGISTERED = True
+
+
+def _ensure_video_routes_registered(target_app: Any | None = None) -> None:
+    route_app = app if target_app is None else target_app
+    with _VIDEO_ROUTE_LOCK:
+        _ensure_video_routes_registered_locked(route_app)
+
+
+def _activate_video_camera(camera: "_ActiveVideoSource", target_app: Any | None = None) -> None:
+    route_app = app if target_app is None else target_app
+    with _VIDEO_ROUTE_LOCK:
+        _ensure_video_routes_registered_locked(route_app)
+        _set_active_video_camera_locked(camera)
 
 
 class Camera:
     """
     Kameraklasse mit vollständiger (und funktionierender) UVC‑Steuerung.
     
-    WARNUNG: Die Initialisierung erfolgt asynchron!
-    Nach der Instanziierung MUSS `await camera.wait_for_init()` (oder die synchrone Variante)
-    aufgerufen werden, bevor auf `video_capture` oder andere Eigenschaften zugegriffen wird.
+    Standardverhalten: Die Initialisierung erfolgt synchron waehrend der Instanziierung.
+    Asynchrone Initialisierung ist nur noch ueber `async_init=True` verfuegbar und
+    sollte nicht fuer startup-kritische Pfade verwendet werden.
     """
     
     # Konstanten für Kamera-Initialisierung (Issue #13)
@@ -45,6 +214,7 @@ class Camera:
     FRAME_WAIT_SECONDS = 0.03
     RECONNECT_INTERVAL_SECONDS = 5
     MAX_RECONNECT_ATTEMPTS = 5
+    CAPTURE_READY_TIMEOUT_SECONDS = 2.0
     UVC_DEFAULTS: Dict[str, Any] = {
         "brightness": 0,
         "contrast": 16,
@@ -60,11 +230,18 @@ class Camera:
 
     # ------------------------- Initialisierung ------------------------- #
 
-    def __init__(self, config: AppConfig, logger: Optional[logging.Logger] = None) -> None:
+    def __init__(
+        self,
+        config: "AppConfig",
+        logger: Optional[logging.Logger] = None,
+        *,
+        async_init: bool = False,
+        initialize: bool = True,
+    ) -> None:
         # -- Config & Logger --
-        self.app_config: AppConfig = config
-        self.webcam_config: WebcamConfig = self.app_config.webcam
-        self.uvc_config: UVCConfig = self.app_config.uvc_controls
+        self.app_config: "AppConfig" = config
+        self.webcam_config: "WebcamConfig" = self.app_config.webcam
+        self.uvc_config: "UVCConfig" = self.app_config.uvc_controls
         self.logger = logger or get_logger('camera')
         self.logger.info("Initializing Camera")
 
@@ -79,11 +256,20 @@ class Camera:
         # -- Interne State‑Variablen --
         self.video_capture: Optional[cv2.VideoCapture] = None
         self.current_frame: Optional[np.ndarray] = None
+        self._current_jpeg_frame: Optional[bytes] = None
         self.frame_lock = threading.Lock()
         self.capture_lock = threading.RLock()  # Protects video_capture access
         self._init_complete = threading.Event()  # Signals when async init is done
+        self._init_cancel = threading.Event()
+        self._init_state_lock = threading.Lock()
+        self._init_thread: Optional[threading.Thread] = None
+        self.initialization_error: Exception | None = None
+        self._initialization_succeeded = False
+        self._init_terminal_failure = False
         self.is_running = False
         self.frame_thread: Optional[threading.Thread] = None  # Initialize before use
+        self._capture_ready = threading.Event()
+        self._capture_runtime_error: Exception | None = None
         self._motion_callbacks: Dict[
             Callable[[np.ndarray, MotionResult], None],
             Callable[[np.ndarray, MotionResult], None],
@@ -107,20 +293,17 @@ class Camera:
         self.motion_skip_frames = 2  # Run motion detection only every 2nd frame
         
         # -- Platzhalterbild für fehlende Kamera --
-        black_1px = (
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAAXNSR0IArs4c6QAA"
-            "AANJREFUGFdjYGBg+A8AAQQBAHAgZQsAAAAASUVORK5CYII="
-        )
         self._uvc_cache_time: float = 0.0
 
         self._max_pool_size = 3
         self._frame_pool: collections.deque = collections.deque(maxlen=self._max_pool_size)
 
         self.cleaned = False
+        self._cleanup_lock = threading.Lock()
+        self._cleanup_in_progress = False
         
         # Placeholder object with body attribute
-        from types import SimpleNamespace
-        self.placeholder = SimpleNamespace(body=base64.b64decode(black_1px))
+        self.placeholder = SimpleNamespace(body=_DEFAULT_VIDEO_PLACEHOLDER_BODY)
 
         self._jpeg_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         self._config_dirty = False
@@ -141,31 +324,251 @@ class Camera:
             self.backend = 0
             self.logger.warning("Unknown OS - use standard backend (can restrict controllers)")
 
-        # -- Kamera initialisieren (Asynchron) --
-        self._start_async_init()
+        # -- Kamera initialisieren --
+        if initialize:
+            if async_init:
+                self._start_async_init()
+            else:
+                self.initialize_sync()
 
     def _start_async_init(self) -> None:
         """Startet die Kamera-Initialisierung im Hintergrund."""
+        self._init_cancel.clear()
+        self._init_complete.clear()
+        self._reset_initialization_state()
         self.logger.info("Starting async camera initialization...")
         self._init_thread = threading.Thread(target=self._init_worker, daemon=True)
         self._init_thread.start()
+
+    def _get_init_state_lock(self) -> threading.Lock:
+        return self._init_state_lock
+
+    def _reset_initialization_state(self) -> None:
+        with self._get_init_state_lock():
+            self._init_terminal_failure = False
+            self.initialization_error = None
+            self._initialization_succeeded = False
+
+    def _get_initialization_snapshot(self) -> tuple[Exception | None, bool, bool]:
+        with self._get_init_state_lock():
+            return (
+                self.initialization_error,
+                self._initialization_succeeded,
+                self._init_terminal_failure,
+            )
+
+    def _request_init_cancel(self, reason: Exception | None = None) -> None:
+        with self._get_init_state_lock():
+            self._init_cancel.set()
+            if reason is not None and (
+                self.initialization_error is None or isinstance(reason, TimeoutError)
+            ):
+                self.initialization_error = reason
+            self._initialization_succeeded = False
+
+    def _join_init_thread(self, timeout: float) -> bool:
+        if self._init_thread is None or not self._init_thread.is_alive():
+            return True
+        self._init_thread.join(timeout=timeout)
+        return not self._init_thread.is_alive()
+
+    def _check_init_cancelled(self) -> None:
+        if self._init_cancel.is_set():
+            raise CameraInitializationCancelled("Camera initialization was cancelled")
+
+    def _mark_initialization_success(self) -> bool:
+        late_success_reason: str | None = None
+        with self._get_init_state_lock():
+            terminal_failure = self._init_terminal_failure
+            init_cancelled = self._init_cancel.is_set()
+            if terminal_failure or init_cancelled:
+                self._initialization_succeeded = False
+                if init_cancelled and self.initialization_error is None:
+                    self.initialization_error = CameraInitializationCancelled(
+                        "Camera initialization was cancelled before completion"
+                    )
+                if terminal_failure and init_cancelled:
+                    late_success_reason = "cancellation and terminal failure"
+                elif init_cancelled:
+                    late_success_reason = "cancellation"
+                else:
+                    late_success_reason = "terminal failure"
+            else:
+                self.initialization_error = None
+                self._initialization_succeeded = True
+        if late_success_reason is not None:
+            self.logger.error(
+                "Ignoring late camera init success after %s",
+                late_success_reason,
+            )
+            try:
+                self._cleanup_after_failed_initialization()
+            except Exception:
+                self.logger.debug(
+                    "Failed to clean up late camera init success after %s",
+                    late_success_reason,
+                    exc_info=True,
+                )
+            self._init_complete.set()
+            return False
+        self._init_complete.set()
+        return True
+
+    def _mark_initialization_failure(self, exc: Exception) -> None:
+        with self._get_init_state_lock():
+            if self.initialization_error is None or not isinstance(exc, CameraInitializationCancelled):
+                self.initialization_error = exc
+            self._initialization_succeeded = False
+        self._init_complete.set()
+
+    def _mark_terminal_init_failure(self, message: str) -> RuntimeError:
+        error = RuntimeError(message)
+        with self._get_init_state_lock():
+            self.initialization_error = error
+            self._initialization_succeeded = False
+            self._init_terminal_failure = True
+        self._init_complete.set()
+        return error
+
+    def _is_camera_ready(self) -> bool:
+        with self.capture_lock:
+            return self.video_capture is not None and self.video_capture.isOpened()
+
+    def _is_capture_thread_alive(self) -> bool:
+        frame_thread = self.frame_thread
+        return frame_thread is not None and frame_thread.is_alive()
+
+    def _is_runtime_ready(self) -> bool:
+        return (
+            self._is_camera_ready()
+            and self.is_running
+            and self._capture_ready.is_set()
+            and self._is_capture_thread_alive()
+            and self._capture_runtime_error is None
+        )
+
+    def _wait_for_runtime_ready(self, timeout: float | None = None) -> None:
+        ready_timeout = (
+            self.CAPTURE_READY_TIMEOUT_SECONDS
+            if timeout is None
+            else max(0.0, float(timeout))
+        )
+        deadline = time.monotonic() + ready_timeout
+
+        while True:
+            self._check_init_cancelled()
+            if self._is_runtime_ready():
+                return
+
+            capture_error = self._capture_runtime_error
+            if capture_error is not None:
+                raise RuntimeError(
+                    "Camera frame capture stopped before the runtime became ready"
+                ) from capture_error
+
+            if self.frame_thread is not None and not self._is_capture_thread_alive():
+                raise RuntimeError(
+                    "Camera frame capture stopped before the first runtime frame was processed"
+                )
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._stop_frame_capture_and_wait(timeout=0.0)
+                raise TimeoutError(
+                    f"Camera frame capture did not become ready after {ready_timeout}s"
+                )
+
+            self._capture_ready.wait(timeout=min(0.05, remaining))
+
+    def _cleanup_after_failed_initialization(self) -> None:
+        frame_thread_stopped = True
+        try:
+            frame_thread_stopped = self._stop_frame_capture_and_wait(timeout=0.1)
+            if not frame_thread_stopped:
+                self.logger.warning(
+                    "Frame capture thread did not stop during failed initialization cleanup"
+                )
+        except Exception:
+            frame_thread_stopped = False
+            self.logger.debug(
+                "Failed to stop frame capture after initialization failure",
+                exc_info=True,
+            )
+
+        self._capture_ready.clear()
+        if frame_thread_stopped:
+            if not self._try_release_video_capture(timeout=0.0):
+                self.logger.warning(
+                    "Camera cleanup after initialization failure remained partial because video capture could not be released"
+                )
+        else:
+            self.logger.warning(
+                "Skipping video capture release during failed initialization cleanup because frame capture thread is still alive"
+            )
+        self._clear_published_frame()
+
+    def initialize_sync(self) -> bool:
+        """Initialize the camera in the current thread and return readiness."""
+        if self._init_thread is not None and self._init_thread.is_alive():
+            return self.wait_for_init()
+        if self._init_thread is not None and not self._init_thread.is_alive():
+            self._init_thread = None
+        if self._init_complete.is_set():
+            _, initialization_succeeded, _ = self._get_initialization_snapshot()
+            if initialization_succeeded and self._is_runtime_ready():
+                return True
+            self.logger.info("Camera runtime is not ready; restarting synchronous initialization")
+
+        self._init_cancel.clear()
+        self._init_complete.clear()
+        self._reset_initialization_state()
+        self._capture_runtime_error = None
+        self._capture_ready.clear()
+        self.logger.info("Starting synchronous camera initialization...")
+        try:
+            self._initialize_camera()
+            self.start_frame_capture()
+            self._wait_for_runtime_ready()
+        except Exception as exc:
+            self.logger.error("Synchronous camera initialization failed: %s", exc)
+            self._cleanup_after_failed_initialization()
+            self._mark_initialization_failure(exc)
+            return False
+
+        if not self._mark_initialization_success():
+            self.logger.warning(
+                "Synchronous camera initialization completed work but success commit was rejected"
+            )
+            return False
+
+        self.logger.info("Synchronous camera initialization completed successfully")
+        return True
 
     def _init_worker(self) -> None:
         """Worker-Thread für die Initialisierung."""
         try:
             self._initialize_camera()
-            self.logger.info("Async camera initialization completed successfully")
-            self._init_complete.set()  # Signal erfolgreiche Initialisierung
-            # Automatisch Frame-Capture starten, wenn Init erfolgreich
             self.start_frame_capture()
+            self._wait_for_runtime_ready()
+            if self._mark_initialization_success():
+                self.logger.info("Async camera initialization completed successfully")
+            else:
+                self.logger.warning(
+                    "Async camera initialization completed work but success commit was rejected"
+                )
+        except CameraInitializationCancelled as exc:
+            self.logger.info("Async camera initialization cancelled: %s", exc)
+            self._cleanup_after_failed_initialization()
+            self._mark_initialization_failure(exc)
         except Exception as exc:
             self.logger.error(f"Async camera initialization failed: {exc}")
-            self.video_capture = None
-            self._init_complete.set()  # Signal auch bei Fehler setzen
+            self._cleanup_after_failed_initialization()
+            self._mark_initialization_failure(exc)
 
     def _initialize_camera(self) -> None:
         video_capture: Optional[cv2.VideoCapture] = None
         try:
+            self._check_init_cancelled()
             self.logger.info(
                 f"Open camera index {self.webcam_config.camera_index} with backend {self.backend}"
             )
@@ -203,6 +606,7 @@ class Camera:
                         # Warmup
                         ok = False
                         for i in range(self.WARMUP_FRAMES):
+                            self._check_init_cancelled()
                             ret, _ = video_capture.read()
                             if ret:
                                 ok = True
@@ -220,12 +624,13 @@ class Camera:
                                         video_capture = tmp
                                         self._set_camera_properties(video_capture)
                                         # noch einmal warmup
-                                        for _ in range(30):
+                                        for _ in range(self.WARMUP_FRAMES):
+                                            self._check_init_cancelled()
                                             ret, _ = video_capture.read()
                                             if ret:
                                                 ok = True
                                                 break
-                                            time.sleep(0.03)
+                                            time.sleep(self.FRAME_WAIT_SECONDS)
                                 except Exception:
                                     self.logger.exception("Default backend attempt failed")
                             if not ok:
@@ -233,8 +638,10 @@ class Camera:
                                     video_capture.release()
                                 raise RuntimeError("No frame received from camera during initialization (all backends)")
 
+                self._check_init_cancelled()
                 self.video_capture = video_capture
 
+            self._check_init_cancelled()
             if self.video_capture:
                 self._apply_uvc_controls()
                 self.logger.info("Camera successfully initialized")
@@ -263,15 +670,49 @@ class Camera:
         Wartet bis die Kamera-Initialisierung abgeschlossen ist.
         
         Args:
-            timeout: Maximale Wartezeit in Sekunden
+            timeout: Maximale Gesamtwartezeit in Sekunden inklusive Join-Versuch
             
         Returns:
-            True wenn Initialisierung abgeschlossen (erfolgreich oder nicht), False bei Timeout
+            True nur wenn die Kamera innerhalb des Timeouts betriebsbereit ist.
         """
-        result = self._init_complete.wait(timeout=timeout)
+        timeout_budget = max(0.0, float(timeout))
+        deadline = time.monotonic() + timeout_budget
+        result = self._init_complete.wait(timeout=timeout_budget)
         if not result:
-            self.logger.error(f"Camera initialization timeout after {timeout}s")
-        return result
+            timeout_error = TimeoutError(f"Camera initialization timed out after {timeout_budget}s")
+            self.logger.error("Camera initialization timeout after %ss", timeout_budget)
+            self._request_init_cancel(reason=timeout_error)
+            remaining_timeout = max(0.0, deadline - time.monotonic())
+            if not self._join_init_thread(timeout=remaining_timeout):
+                self.logger.error("Camera initialization thread did not stop after timeout")
+                self._mark_terminal_init_failure("Camera initialization thread did not stop after timeout")
+            return False
+        initialization_error, initialization_succeeded, _ = self._get_initialization_snapshot()
+        if not initialization_succeeded:
+            if initialization_error is not None:
+                self.logger.error("Camera initialization completed with error: %s", initialization_error)
+            return False
+        return self._is_runtime_ready()
+
+    def _try_release_video_capture(self, *, timeout: float = 0.0) -> bool:
+        acquired = self.capture_lock.acquire(timeout=timeout)
+        if not acquired:
+            self.logger.warning(
+                "Skipping video capture release because capture_lock could not be acquired during cleanup"
+            )
+            return False
+        try:
+            if self.video_capture:
+                try:
+                    self.video_capture.release()
+                except Exception as exc:
+                    self.logger.error("Error releasing video capture: %s", exc)
+                    return False
+                finally:
+                    self.video_capture = None
+            return True
+        finally:
+            self.capture_lock.release()
 
     def _set_camera_properties(self, capture: cv2.VideoCapture) -> None:
         """Grundlegende Auflösung / FPS etc. setzen."""
@@ -604,42 +1045,57 @@ class Camera:
     # ------------------ Laufende Bilderfassung ------------------------ #
 
     def start_frame_capture(self) -> None:
-        if self.is_running:
+        if self.is_running and self._is_capture_thread_alive():
             return
-        
-        # Check if video_capture is ready (or wait/retry logic could be here)
-        # For async init, we might be called before init is done.
-        # But _init_worker calls us after success.
-        # If called manually from outside, we should check.
-        
+        with self.capture_lock:
+            if self.video_capture is None or not self.video_capture.isOpened():
+                raise RuntimeError("Camera frame capture cannot start before initialization succeeds")
+        self._capture_ready.clear()
+        self._capture_runtime_error = None
         self.is_running = True
         self.frame_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.frame_thread.start()
 
+    def _stop_frame_capture_and_wait(self, timeout: float = 2.0) -> bool:
+        """Request frame capture stop and return whether the thread fully stopped."""
+        self.is_running = False
+        self._capture_ready.clear()
+        frame_thread = self.frame_thread
+        if frame_thread and frame_thread.is_alive():
+            if threading.current_thread() is frame_thread:
+                return False
+            join = getattr(frame_thread, "join", None)
+            if callable(join):
+                join(timeout=max(0.0, float(timeout)))
+        if self.frame_thread is not None and not self.frame_thread.is_alive():
+            self.frame_thread = None
+            return True
+        return self.frame_thread is None
+
     def stop_frame_capture(self) -> None:
         """Stop the frame grabbing thread."""
-        self.is_running = False
-        if (
-            self.frame_thread
-            and self.frame_thread.is_alive()
-            and threading.current_thread() is not self.frame_thread
-        ):
-            self.frame_thread.join(timeout=2)
+        self._stop_frame_capture_and_wait(timeout=2.0)
 
     def _capture_loop(self) -> None:
         """Vereinfachte Capture-Loop ohne Retry-Logik"""
         consecutive_failures = 0
         max_consecutive_failures = 5
-        
-        while self.is_running:
-            with self.capture_lock:
-                video_capture_ref = self.video_capture
-                if not video_capture_ref or not video_capture_ref.isOpened():
+        capture_error: Exception | None = None
+        current_thread = threading.current_thread()
+
+        try:
+            while self.is_running:
+                with self.capture_lock:
+                    video_capture_ref = self.video_capture
+                    if not video_capture_ref or not video_capture_ref.isOpened():
+                        video_capture_ref = None
+
+                if video_capture_ref is None:
                     # Camera not ready yet or disconnected
                     time.sleep(0.1)
                     continue
 
-                # Frame lesen
+                # Frame lesen ausserhalb des capture_lock, damit UVC-Operationen nicht blockieren
                 try:
                     ret, frame = video_capture_ref.read()
                 except cv2.error as e:
@@ -648,35 +1104,48 @@ class Camera:
                 except Exception as e:
                     self.logger.error(f"Frame read error: {e}")
                     ret, frame = False, None
-                
-            if not ret or frame is None:
-                consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
-                    self.logger.debug(f'Framegrab failed {consecutive_failures} times in a row')
-                    rec = self._handle_cam_disconnect()
-                    if rec:
-                        self.logger.info("Reconnection successful, resuming frame capture")
-                        consecutive_failures = 0
-                        continue
-                    else:
+
+                if not ret or frame is None:
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_consecutive_failures:
+                        self.logger.debug(f'Framegrab failed {consecutive_failures} times in a row')
+                        rec = self._handle_cam_disconnect()
+                        if rec:
+                            self.logger.info("Reconnection successful, resuming frame capture")
+                            consecutive_failures = 0
+                            continue
+                        capture_error = RuntimeError(
+                            "Camera frame capture stopped after repeated read and reconnect failures"
+                        )
                         self.logger.error("Reconnection failed")
                         break
-                continue
-                
-            # Erfolgreicher Frame
-            consecutive_failures = 0
-            self._reconnect_attempts = 0
+                    continue
 
-            frame_copy = frame.copy()
-            
-            with self.frame_lock:
-                self.current_frame = frame_copy
-                self.frame_count += 1
-                
-            # Motion Detection
-            self._process_motion_detection(frame, frame_copy)
-            
-        self.logger.info("Frame capture loop stopped")
+                # Erfolgreicher Frame
+                consecutive_failures = 0
+                self._reconnect_attempts = 0
+
+                frame_copy = frame.copy()
+
+                self._publish_current_frame(frame_copy)
+
+                self._capture_runtime_error = None
+                self._capture_ready.set()
+
+                # Motion Detection
+                self._process_motion_detection(frame, frame_copy)
+        except Exception as exc:
+            capture_error = exc
+            self.logger.error("Unhandled error in frame capture loop: %s", exc, exc_info=True)
+        finally:
+            if capture_error is not None:
+                self._capture_runtime_error = capture_error
+            self._capture_ready.clear()
+            self.is_running = False
+            self._clear_published_frame()
+            if self.frame_thread is current_thread:
+                self.frame_thread = None
+            self.logger.info("Frame capture loop stopped")
     
     def _process_motion_detection(self, original_frame: np.ndarray, frame_copy: np.ndarray) -> None:
         # Frame skipping optimization
@@ -1079,11 +1548,47 @@ class Camera:
 
     # ----------------- Snapshot & Cleanup ----------------------- #
 
+    def _clear_published_frame(self) -> None:
+        frame_lock = getattr(self, 'frame_lock', None)
+        if frame_lock is None:
+            self.current_frame = None
+            self._current_jpeg_frame = None
+            return
+        with frame_lock:
+            self.current_frame = None
+            self._current_jpeg_frame = None
+
+    def _encode_frame_to_jpeg_bytes(self, frame: np.ndarray) -> Optional[bytes]:
+        try:
+            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        except Exception as exc:
+            self.logger.debug('Error encoding cached frame: %s', exc, exc_info=True)
+            return None
+        if not ret:
+            return None
+        return buffer.tobytes()
+
+    def _publish_current_frame(self, frame: np.ndarray) -> None:
+        jpeg_bytes = self._encode_frame_to_jpeg_bytes(frame)
+        with self.frame_lock:
+            self.current_frame = frame
+            self._current_jpeg_frame = jpeg_bytes
+            self.frame_count += 1
+
     def take_snapshot(self) -> Optional[np.ndarray]:
         """Erstellt einen Snapshot (Thread-sicher)."""
         with self.frame_lock:
             if self.current_frame is not None:
                 return self.current_frame.copy()
+        return None
+
+    def get_current_jpeg_frame(self) -> Optional[bytes]:
+        with self.frame_lock:
+            if self.current_frame is None:
+                return None
+            current_jpeg_frame = getattr(self, '_current_jpeg_frame', None)
+            if current_jpeg_frame is not None:
+                return bytes(current_jpeg_frame)
         return None
     
     def get_current_frame(self, copy_frame: bool = True) -> Optional[np.ndarray]:
@@ -1100,33 +1605,13 @@ class Camera:
             return None
 
     def initialize_routes(self) -> None:
-        """Initialisiert die API-Routen für den Videostream."""
-        # Warne wenn Routes vor Kamera-Initialisierung registriert werden
+        """Initialize the API routes for the video stream."""
         if not self._init_complete.is_set():
             self.logger.warning("initialize_routes called before camera initialization complete")
-        
-        @app.get('/video_feed')
-        def video_feed() -> Response:
-            return Response(content=self._gen_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
-
-        @app.get('/video/frame')
-        def video_frame() -> Response:
-            """Gibt einen einzelnen Frame zurück (für statische Updates oder MJPEG-Fallback)."""
-            frame = self.get_current_frame(copy_frame=False)
-            if frame is None:
-                # Placeholder zurückgeben
-                return Response(content=self.placeholder.body, media_type="image/png")
+        _activate_video_camera(self)
             
-            try:
-                ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                if not ret:
-                    return Response(content=self.placeholder.body, media_type="image/png")
-                return Response(content=buffer.tobytes(), media_type="image/jpeg")
-            except Exception as e:
-                self.logger.error(f"Error encoding frame: {e}")
-                return Response(content=self.placeholder.body, media_type="image/png")
-            
-    def _gen_frames(self) -> Iterator[bytes]:
+    def _deprecated_stream_frames(self) -> Iterator[bytes]:
+        """Deprecated legacy instance stream helper; the route stack uses global video streaming now."""
         """Generator für den Videostream."""
         while True:
             # Für Streaming keine Kopie nötig, da Encoding nicht mutiert
@@ -1151,15 +1636,7 @@ class Camera:
             
             time.sleep(0.03) # Limit FPS slightly for stream
 
-    def cleanup(self) -> None:  # Entfernt 'async' - keine await-Statements
-        """Cleanup method."""
-        if self.cleaned:
-            return
-        self.cleaned = True
-        self.logger.info("Starting Camera cleanup...")
-        self.is_running = False
-        
-        # Cancel config save timer if running
+    def _cancel_config_save_timer(self) -> None:
         with self._timer_lock:
             if self._config_save_timer is not None:
                 try:
@@ -1167,42 +1644,125 @@ class Camera:
                 except Exception:
                     pass
                 self._config_save_timer = None
-        
-        # Stop init thread if running
-        if self._init_thread and self._init_thread.is_alive():
-            self.logger.info("Waiting for init thread to complete...")
-            self._init_thread.join(timeout=2.0)
-            if self._init_thread.is_alive():
-                self.logger.warning("Init thread did not complete in time")
-        
-        # Stop frame capture thread
-        if self.frame_thread and self.frame_thread.is_alive():
-            self.logger.info("Stopping frame capture...")
-            self.stop_frame_capture()
-        
-        # Cleanup motion detector
-        if self.motion_detector is not None:
-            try:
-                self.motion_detector.cleanup()
-            except Exception as e:
-                self.logger.debug(f"Error cleaning up motion detector: {e}")
-            self.motion_detector = None
-        with self._motion_callbacks_lock:
-            self._motion_callbacks.clear()
-            self.motion_enabled = False
-        
-        # Clear frame pool (Issue #5)
-        if hasattr(self, '_frame_pool'):
-            self._frame_pool.clear()
-        
-        # Release camera
-        with self.capture_lock:
-            if self.video_capture:
-                try:
-                    self.video_capture.release()
-                except Exception as e:
-                    self.logger.error(f"Error releasing video capture: {e}")
-                finally:
-                    self.video_capture = None
-        
-        self.logger.info("Camera cleanup completed")
+
+    def suspend_runtime(self) -> bool:
+        """Suspend the active runtime so this instance can be resumed later."""
+        with self._cleanup_lock:
+            if self.cleaned or self._cleanup_in_progress:
+                return False
+            self._cleanup_in_progress = True
+
+        suspended = False
+        self.logger.info("Suspending Camera runtime...")
+        try:
+            self.is_running = False
+            self._capture_ready.clear()
+            self._capture_runtime_error = None
+            self._cancel_config_save_timer()
+
+            if self._init_thread and self._init_thread.is_alive():
+                self.logger.info("Cancelling init thread during runtime suspension...")
+                self._request_init_cancel(RuntimeError("Camera initialization cancelled during runtime suspension"))
+                if not self._join_init_thread(timeout=2.0):
+                    self.logger.error("Init thread did not stop during runtime suspension")
+                    return False
+                self._init_thread = None
+
+            frame_thread_stopped = True
+            if self.frame_thread and self.frame_thread.is_alive():
+                self.logger.info("Stopping frame capture for runtime suspension...")
+                frame_thread_stopped = self._stop_frame_capture_and_wait(timeout=2.0)
+                if not frame_thread_stopped:
+                    self.logger.error("Frame capture thread did not stop during runtime suspension")
+                    return False
+
+            if frame_thread_stopped and not self._try_release_video_capture(timeout=0.05):
+                self.logger.error("Failed to release video capture during runtime suspension")
+                return False
+
+            self._clear_published_frame()
+            self._init_complete.clear()
+            self._init_cancel.clear()
+            with self._get_init_state_lock():
+                self.initialization_error = None
+                self._initialization_succeeded = False
+                self._init_terminal_failure = False
+
+            suspended = True
+            return True
+        finally:
+            with self._cleanup_lock:
+                self._cleanup_in_progress = False
+            if suspended:
+                self.logger.info("Camera runtime suspended")
+            else:
+                self.logger.warning("Camera runtime suspension completed partially")
+
+    def cleanup(self) -> None:  # Entfernt 'async' - keine await-Statements
+        """Cleanup method."""
+        with self._cleanup_lock:
+            if self.cleaned or self._cleanup_in_progress:
+                return
+            self._cleanup_in_progress = True
+
+        self.logger.info("Starting Camera cleanup...")
+        _clear_active_video_camera(self)
+        cleanup_complete = False
+        try:
+            self.is_running = False
+            self._capture_ready.clear()
+            cleanup_complete = True
+
+            self._cancel_config_save_timer()
+
+            # Stop init thread if running
+            if self._init_thread and self._init_thread.is_alive():
+                self.logger.info("Cancelling init thread...")
+                self._request_init_cancel(RuntimeError("Camera initialization cancelled during cleanup"))
+                if not self._join_init_thread(timeout=2.0):
+                    self.logger.error("Init thread did not stop during cleanup")
+                    self._mark_terminal_init_failure("Camera initialization thread did not stop during cleanup")
+                    cleanup_complete = False
+            
+            # Stop frame capture thread
+            frame_thread_stopped = True
+            if self.frame_thread and self.frame_thread.is_alive():
+                self.logger.info("Stopping frame capture...")
+                frame_thread_stopped = self._stop_frame_capture_and_wait(timeout=2.0)
+                if not frame_thread_stopped:
+                    self.logger.error("Frame capture thread did not stop during cleanup")
+                    cleanup_complete = False
+            
+            if frame_thread_stopped:
+                # Cleanup motion detector
+                if self.motion_detector is not None:
+                    try:
+                        self.motion_detector.cleanup()
+                    except Exception as e:
+                        self.logger.debug(f"Error cleaning up motion detector: {e}")
+                    self.motion_detector = None
+                with self._motion_callbacks_lock:
+                    self._motion_callbacks.clear()
+                    self.motion_enabled = False
+                
+                # Clear frame pool (Issue #5)
+                if hasattr(self, '_frame_pool'):
+                    self._frame_pool.clear()
+                
+                # Release camera
+                if not self._try_release_video_capture(timeout=0.05):
+                    cleanup_complete = False
+                self._clear_published_frame()
+            else:
+                self.logger.warning(
+                    "Skipping cleanup of motion resources and video capture because frame capture thread is still alive"
+                )
+        finally:
+            with self._cleanup_lock:
+                self.cleaned = cleanup_complete
+                self._cleanup_in_progress = False
+
+        if cleanup_complete:
+            self.logger.info("Camera cleanup completed")
+        else:
+            self.logger.warning("Camera cleanup completed partially; object remains not fully cleaned")

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, asdict, field, fields, is_dataclass
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional, Callable, cast
+from typing import Iterator, List, Dict, Any, Tuple, Optional, Callable, cast
 import re
 import yaml
 import logging
@@ -17,8 +18,211 @@ logger.propagate = False  # Verhindert, dass Logs an die Root-Logger propagiert 
 
 from enum import Enum
 
-_configured_loggers: set[str] = set()
+_configured_loggers: dict[str, Tuple[str, str, int, int, bool]] = {}
 _configured_loggers_lock = threading.Lock()
+_fallback_logger_lock = threading.Lock()
+_retired_handler_batches_lock = threading.Lock()
+_FALLBACK_HANDLER_MARKER_ATTR = "_cvd_tracker_fallback_handler"
+_STARTUP_CONFIG_WARNINGS_ATTR = "_cvd_tracker_startup_config_warnings"
+_LOGGER_HANDLER_RETIRE_GRACE_SECONDS = 0.25
+_retired_handler_batches: dict[str, list[tuple[tuple[logging.Handler, ...], threading.Timer | None]]] = {}
+
+
+class ConfigLoadError(RuntimeError):
+    """Raised when a present configuration file cannot be loaded safely."""
+
+
+@dataclass
+class _LoggerConfigurationSnapshot:
+    handlers: List[logging.Handler]
+    level: int
+    propagate: bool
+    signature: Tuple[str, str, int, int, bool] | None
+    had_signature: bool
+
+
+def _is_fallback_main_handler(handler: logging.Handler) -> bool:
+    return bool(getattr(handler, _FALLBACK_HANDLER_MARKER_ATTR, False))
+
+
+def _is_console_stream_handler(handler: logging.Handler) -> bool:
+    return isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler)
+
+
+def _clear_logger_handlers(target_logger: logging.Logger) -> None:
+    for handler in target_logger.handlers[:]:
+        target_logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+
+def _close_handlers(handlers: List[logging.Handler]) -> None:
+    for handler in handlers:
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+
+@contextmanager
+def _logging_module_lock() -> Iterator[None]:
+    acquire = getattr(logging, "_acquireLock", None)
+    release = getattr(logging, "_releaseLock", None)
+    if callable(acquire) and callable(release):
+        acquire()
+        try:
+            yield
+        finally:
+            release()
+        return
+    yield
+
+
+def _capture_logger_configuration(name: str, target_logger: logging.Logger) -> _LoggerConfigurationSnapshot:
+    return _LoggerConfigurationSnapshot(
+        handlers=list(target_logger.handlers),
+        level=int(target_logger.level),
+        propagate=bool(target_logger.propagate),
+        signature=_configured_loggers.get(name),
+        had_signature=name in _configured_loggers,
+    )
+
+
+def _restore_logger_configuration(
+    name: str,
+    target_logger: logging.Logger,
+    snapshot: _LoggerConfigurationSnapshot,
+) -> None:
+    with _logging_module_lock():
+        target_logger.setLevel(snapshot.level)
+        target_logger.propagate = snapshot.propagate
+        target_logger.handlers = list(snapshot.handlers)
+        if snapshot.had_signature and snapshot.signature is not None:
+            _configured_loggers[name] = snapshot.signature
+        else:
+            _configured_loggers.pop(name, None)
+
+
+def _close_retired_handler_batch(name: str, handlers: tuple[logging.Handler, ...]) -> None:
+    with _retired_handler_batches_lock:
+        batches = _retired_handler_batches.get(name, [])
+        remaining_batches = [
+            (batch_handlers, batch_timer)
+            for batch_handlers, batch_timer in batches
+            if batch_handlers is not handlers
+        ]
+        if remaining_batches:
+            _retired_handler_batches[name] = remaining_batches
+        else:
+            _retired_handler_batches.pop(name, None)
+    _close_handlers(list(handlers))
+
+
+def _retire_logger_handlers(name: str, handlers: List[logging.Handler]) -> None:
+    if not handlers:
+        return
+
+    retired_handlers = tuple(handlers)
+    delay_seconds = max(0.0, float(_LOGGER_HANDLER_RETIRE_GRACE_SECONDS))
+    if delay_seconds <= 0:
+        _close_handlers(list(retired_handlers))
+        return
+
+    retirement_timer = threading.Timer(
+        delay_seconds,
+        _close_retired_handler_batch,
+        args=(name, retired_handlers),
+    )
+    retirement_timer.daemon = True
+    with _retired_handler_batches_lock:
+        _retired_handler_batches.setdefault(name, []).append((retired_handlers, retirement_timer))
+    retirement_timer.start()
+
+
+def _drain_retired_logger_handlers(name: str) -> None:
+    with _retired_handler_batches_lock:
+        retired_batches = _retired_handler_batches.pop(name, [])
+
+    for handlers, retirement_timer in retired_batches:
+        if retirement_timer is not None:
+            try:
+                retirement_timer.cancel()
+            except Exception:
+                pass
+        _close_handlers(list(handlers))
+
+
+def _logger_has_output_handlers(target_logger: logging.Logger | None) -> bool:
+    current_logger = target_logger
+    visited: set[int] = set()
+    while isinstance(current_logger, logging.Logger):
+        logger_id = id(current_logger)
+        if logger_id in visited:
+            return False
+        visited.add(logger_id)
+        if current_logger.handlers:
+            return True
+        if not current_logger.propagate:
+            return False
+        current_logger = current_logger.parent
+    return False
+
+
+def _get_bootstrap_config_logger() -> logging.Logger:
+    main_logger = logging.getLogger("cvd_tracker")
+    if _logger_has_output_handlers(main_logger):
+        return main_logger.getChild("config")
+    return _get_fallback_main_logger().getChild("config")
+
+
+def _get_fallback_main_logger() -> logging.Logger:
+    """Return a minimal logger that never triggers config loading."""
+    fallback_logger = logging.getLogger("cvd_tracker")
+    with _configured_loggers_lock:
+        with _fallback_logger_lock:
+            marked_handlers = [
+                handler for handler in fallback_logger.handlers
+                if _is_fallback_main_handler(handler)
+            ]
+            if not marked_handlers:
+                console_handler = logging.StreamHandler()
+                setattr(console_handler, _FALLBACK_HANDLER_MARKER_ATTR, True)
+                console_handler.setFormatter(
+                    logging.Formatter(
+                        fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                        datefmt="%d.%m.%Y %H:%M:%S",
+                    )
+                )
+                fallback_logger.addHandler(console_handler)
+            elif len(marked_handlers) > 1:
+                for duplicate_handler in marked_handlers[1:]:
+                    fallback_logger.removeHandler(duplicate_handler)
+                    try:
+                        duplicate_handler.close()
+                    except Exception:
+                        pass
+            fallback_logger.setLevel(logging.INFO)
+            fallback_logger.propagate = False
+    return fallback_logger
+
+
+def _reset_configured_logger(name: str) -> None:
+    target_logger = logging.getLogger(name)
+    with _configured_loggers_lock:
+        _configured_loggers.pop(name, None)
+        _clear_logger_handlers(target_logger)
+    _drain_retired_logger_handlers(name)
+
+
+def _resolve_config_path(path: str) -> Path:
+    """Resolve a config path relative to the project root."""
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate.resolve(strict=False)
+    project_root = Path(__file__).parents[1]
+    return (project_root / candidate).resolve(strict=False)
 
 
 def _is_absolute_http_url(value: object | None) -> bool:
@@ -915,58 +1119,124 @@ class LoggingConfig:
             errors.append("backup_count must not be greater than 20")
 
         return errors
+
+    def _has_desired_logger_configuration(
+        self,
+        target_logger: logging.Logger,
+        desired_signature: Tuple[str, str, int, int, bool],
+    ) -> bool:
+        expected_level, expected_file, expected_max_size_mb, expected_backup_count, expected_console = desired_signature
+        rotating_handlers = [
+            handler
+            for handler in target_logger.handlers
+            if isinstance(handler, logging.handlers.RotatingFileHandler)
+        ]
+        console_handlers = [
+            handler
+            for handler in target_logger.handlers
+            if _is_console_stream_handler(handler)
+        ]
+        expected_total_handlers = 1 + int(expected_console)
+        if (
+            len(rotating_handlers) != 1
+            or len(console_handlers) != int(expected_console)
+            or len(target_logger.handlers) != expected_total_handlers
+        ):
+            return False
+
+        file_handler = rotating_handlers[0]
+        configured_path = _resolve_config_path(str(expected_file))
+        actual_path = Path(str(getattr(file_handler, "baseFilename", ""))).resolve(strict=False)
+        return (
+            actual_path == configured_path
+            and int(getattr(file_handler, "maxBytes", -1)) == int(expected_max_size_mb) * 1024 * 1024
+            and int(getattr(file_handler, "backupCount", -1)) == int(expected_backup_count)
+            and target_logger.level == getattr(logging, str(expected_level).upper())
+            and target_logger.propagate is False
+        )
+
+    def _build_handlers(self) -> List[logging.Handler]:
+        log_path = _resolve_config_path(self.file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        handlers: List[logging.Handler] = []
+        try:
+            file_handler = logging.handlers.RotatingFileHandler(
+                filename=str(log_path),
+                maxBytes=self.max_file_size_mb * 1024 * 1024,
+                backupCount=self.backup_count,
+                encoding='utf-8'
+            )
+            handlers.append(file_handler)
+            if self.console_output:
+                handlers.append(logging.StreamHandler())
+
+            formatter = logging.Formatter(
+                fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                datefmt='%d.%m.%Y %H:%M:%S'
+            )
+            for handler in handlers:
+                handler.setFormatter(formatter)
+            return handlers
+        except Exception:
+            _close_handlers(handlers)
+            raise
+
+    def _activate_logger_configuration(
+        self,
+        target_logger: logging.Logger,
+        *,
+        handlers: List[logging.Handler],
+    ) -> None:
+        target_logger.setLevel(getattr(logging, self.level.upper()))
+        target_logger.propagate = False  # Verhindert, dass Logs an die Root-Logger propagiert werden
+        target_logger.handlers = list(handlers)
+
+    def _commit_logger_configuration(
+        self,
+        name: str,
+        target_logger: logging.Logger,
+        *,
+        handlers: List[logging.Handler],
+        signature: Tuple[str, str, int, int, bool],
+    ) -> None:
+        with _logging_module_lock():
+            self._activate_logger_configuration(target_logger, handlers=handlers)
+            _configured_loggers[name] = signature
     
     def setup_logger(self, name: str = "cvd_tracker") -> logging.Logger:
         """RotatingFileHandler-Logger einrichten"""
-        global _initialized_logger
         logger = logging.getLogger(name)
-
-        with _configured_loggers_lock:
-            if name in _configured_loggers:
-                return logger
-            # Prevent duplicate setup - check if already configured
-            if logger.handlers and any(isinstance(h, logging.handlers.RotatingFileHandler) for h in logger.handlers):
-                _configured_loggers.add(name)
-                return logger
-              
-        logger.setLevel(getattr(logging, self.level.upper()))
-
-        for handler in logger.handlers[:]:
-            logger.removeHandler(handler)
-        
-        logger.propagate = False  # Verhindert, dass Logs an die Root-Logger propagiert werden
-        
-        # Log-Verzeichnis erstellen
-        log_path = Path(self.file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # RotatingFileHandler einrichten
-        file_handler = logging.handlers.RotatingFileHandler(
-            filename=self.file,
-            maxBytes=self.max_file_size_mb * 1024 * 1024,
-            backupCount=self.backup_count,
-            encoding='utf-8'
+        desired_signature = (
+            str(self.level).upper(),
+            str(_resolve_config_path(self.file)),
+            int(self.max_file_size_mb),
+            int(self.backup_count),
+            bool(self.console_output),
         )
-        
-        # Handler-Liste erstellen
-        handlers: List[logging.Handler] = [file_handler]
-        if self.console_output:
-            console_handler = logging.StreamHandler()
-            handlers.append(console_handler)
-        
-        # Formatter für alle Handler
-        formatter = logging.Formatter(
-            fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%d.%m.%Y %H:%M:%S'
-        )
-        
-        for handler in handlers:
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-        
-        with _configured_loggers_lock:
-            _configured_loggers.add(name)  # Logger als konfiguriert markieren
 
+        previous_snapshot: _LoggerConfigurationSnapshot | None = None
+        with _configured_loggers_lock:
+            if (
+                _configured_loggers.get(name) == desired_signature
+                and self._has_desired_logger_configuration(logger, desired_signature)
+            ):
+                return logger
+            previous_snapshot = _capture_logger_configuration(name, logger)
+            new_handlers = self._build_handlers()
+            try:
+                self._commit_logger_configuration(
+                    name,
+                    logger,
+                    handlers=new_handlers,
+                    signature=desired_signature,
+                )
+            except Exception:
+                _restore_logger_configuration(name, logger, previous_snapshot)
+                _close_handlers(new_handlers)
+                raise
+        if previous_snapshot is not None:
+            _retire_logger_handlers(name, previous_snapshot.handlers)
         logger.info(
             f"🚀 Logging initialized: {self.file} (max: {self.max_file_size_mb}MB, backups: {self.backup_count})"
         )
@@ -988,6 +1258,26 @@ class AppConfig:
     gui: GUIConfig
     logging: LoggingConfig
 
+    def __init__(
+        self,
+        metadata: Metadata,
+        webcam: WebcamConfig,
+        uvc_controls: UVCConfig,
+        motion_detection: MotionDetectionConfig,
+        measurement: MeasurementConfig,
+        email: EmailConfig,
+        gui: GUIConfig,
+        logging: LoggingConfig,
+    ) -> None:
+        self.metadata = metadata
+        self.webcam = webcam
+        self.uvc_controls = uvc_controls
+        self.motion_detection = motion_detection
+        self.measurement = measurement
+        self.email = email
+        self.gui = gui
+        self.logging = logging
+
     def validate_all(self) -> Dict[str, List[str]]:
         res: Dict[str, List[str]] = {}
         if (e := self.uvc_controls.validate()):
@@ -1007,6 +1297,58 @@ class AppConfig:
         if (e := self.logging.validate()):
             res["logging"] = e
         return res
+
+
+def _attach_startup_config_warnings(config: AppConfig, warnings: List[str]) -> None:
+    setattr(config, _STARTUP_CONFIG_WARNINGS_ATTR, [str(item) for item in warnings if str(item).strip()])
+
+
+def _get_attached_startup_config_warnings(config: Optional[AppConfig]) -> List[str]:
+    if config is None:
+        return []
+    raw_warnings = getattr(config, _STARTUP_CONFIG_WARNINGS_ATTR, [])
+    if not isinstance(raw_warnings, list):
+        return []
+    return [str(item) for item in raw_warnings if str(item).strip()]
+
+
+def _clear_attached_startup_config_warnings(config: Optional[AppConfig]) -> None:
+    if config is None:
+        return
+    setattr(config, _STARTUP_CONFIG_WARNINGS_ATTR, [])
+
+
+def _finalize_loaded_config(
+    cfg: AppConfig,
+    *,
+    config_path: Path,
+    defaulting_warnings: List[str],
+    startup_warnings: List[str],
+) -> AppConfig:
+    global logger
+
+    _attach_startup_config_warnings(cfg, startup_warnings)
+    try:
+        app_logger = cfg.logging.setup_logger("cvd_tracker")
+    except Exception as exc:
+        raise ConfigLoadError(f"Failed to initialize logging from {config_path}: {exc}") from exc
+
+    logger = app_logger.getChild("config")
+    if startup_warnings:
+        logger.info("Default config activated for %s after recoverable config fallback", config_path)
+    else:
+        logger.info("Config loaded: %s", config_path)
+    for warning in startup_warnings:
+        logger.warning(warning)
+    for warning in defaulting_warnings:
+        logger.warning(warning)
+
+    cfg.measurement.ensure_save_path()
+    return cfg
+
+
+def _app_config_asdict(config: AppConfig) -> Dict[str, Any]:
+    return cast(Dict[str, Any], asdict(cast(Any, config)))
 
 
 @dataclass
@@ -1378,21 +1720,18 @@ def _normalize_loaded_scalar(
 ) -> Any:
     try:
         normalized = converter(value)
-    except ValueError as exc:
-        logger.warning("Invalid %s value %r, using default %r (%s)", label, value, default, exc)
-        return default
+    except Exception as exc:
+        raise ValueError(f"{label}: {exc}") from exc
     if validator is not None:
         validation_error = validator(normalized)
         if validation_error:
-            logger.warning("Invalid %s value %r, using default %r (%s)", label, value, default, validation_error)
-            return default
+            raise ValueError(f"{label}: {validation_error}")
     return normalized
 
 
 def _normalize_loaded_gui_data(gui_data: Any, logger: logging.Logger) -> Dict[str, Any]:
     if not isinstance(gui_data, dict):
-        logger.warning("Invalid gui section %r, using GUI defaults", gui_data)
-        gui_data = {}
+        raise ValueError(f"gui section must be a mapping, got {type(gui_data).__name__}")
     return {
         "title": _normalize_loaded_scalar(
             gui_data.get("title", "CVD-Tracker"),
@@ -1471,15 +1810,14 @@ def _normalize_loaded_email_data(
     if default_email_data is None:
         resolved_default_email_data = cast(
             Dict[str, Any],
-            asdict(_create_default_config(log_creation=False))["email"],
+            _app_config_asdict(_create_default_config(log_creation=False))["email"],
         )
     else:
         resolved_default_email_data = default_email_data
     if isinstance(email_data, dict):
         normalized_source_email_data = email_data
     else:
-        logger.warning("Invalid email section %r, using email defaults", email_data)
-        normalized_source_email_data = deepcopy(resolved_default_email_data)
+        raise ValueError(f"email section must be a mapping, got {type(email_data).__name__}")
     normalized_email_data = deepcopy(resolved_default_email_data)
     normalized_email_data.update(normalized_source_email_data)
     normalized_email_data["website_url"] = _normalize_loaded_scalar(
@@ -1657,7 +1995,7 @@ def _normalize_image_format(value: Any) -> str:
 
 class _ConfigImportCollector:
     def __init__(self, current_config: AppConfig) -> None:
-        self.current_raw = asdict(current_config)
+        self.current_raw = _app_config_asdict(current_config)
         self.entries: List[ConfigImportEntry] = []
         self.ready_updates: Dict[str, Any] = {}
 
@@ -2769,106 +3107,129 @@ def apply_imported_config_preview(
 # Laden / Speichern
 # ---------------------------------------------------------------------------
 
-def load_config(path: str = "config/config.yaml") -> AppConfig:
+def load_config(path: str = "config/config.yaml", *, startup_fallback: bool = False) -> AppConfig:
     """Konfiguration mit RotatingFileHandler-Support laden"""
-    global logger
     defaulting_warnings: List[str] = []
+    startup_warnings: List[str] = []
+    bootstrap_logger = _get_bootstrap_config_logger()
+    config_path = _resolve_config_path(path)
+    cfg: AppConfig | None = None
+    data: Any = None
     try:
-        # Absoluten Pfad konstruieren falls nötig
-        if not Path(path).is_absolute():
-            project_root = Path(__file__).parents[1]
-            config_path = project_root / path
-        else:
-            config_path = Path(path)
-
         with open(config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
-
     except FileNotFoundError:
-        print(f"❌ Config file not found: {path}")  # Fallback print statt logger
-        print("🔧 Using default config")
-        return _create_default_config()
+        if not startup_fallback:
+            bootstrap_logger.warning("Config file not found: %s", path)
+            bootstrap_logger.warning("Using default config")
+            return _create_default_config()
+        startup_warnings.append(f"Config file not found at {path}; using default config.")
+        cfg = _create_default_config(log_creation=False)
+    except yaml.YAMLError as exc:
+        if not startup_fallback:
+            raise ConfigLoadError(f"YAML parsing error in {config_path}: {exc}") from exc
+        bootstrap_logger.warning("YAML parsing failed for %s: %s", config_path, exc)
+        startup_warnings.append(f"Config file {path} could not be parsed as YAML; using default config.")
+        cfg = _create_default_config(log_creation=False)
+    except Exception as exc:
+        raise ConfigLoadError(f"Unexpected error loading config {config_path}: {exc}") from exc
 
-    except yaml.YAMLError as e:
-        print(f"❌ YAML parsing error: {e}")  # Fallback print statt logger
-        print("🔧 Using default config")
-        return _create_default_config()
-
-    except Exception as e:
-        print(f"❌ Unexpected error loading config: {e}")  # Fallback print statt logger
-        print("🔧 Using default config")
-        return _create_default_config()
-    
-    # Defaults für Logging anwenden
-    data = _apply_defaults(data, warnings=defaulting_warnings)
-
-    # LoggingConfig mit erweiterten Parametern
-    logging_data = data.get("logging", {})
-    logging_config = LoggingConfig(
-        level=logging_data.get("level", "INFO"),
-        file=logging_data.get("file", "logs/cvd_tracker.log"),
-        max_file_size_mb=logging_data.get("max_file_size_mb", 10),
-        backup_count=logging_data.get("backup_count", 5),
-        console_output=logging_data.get("console_output", True)
-    )
-
-    # Jetzt den finalen Logger initialisieren
-    app_logger = logging_config.setup_logger("cvd_tracker")
-    logger = app_logger.getChild("config")
-    logger.info("✅ Config loaded: %s", config_path)
-    for warning in defaulting_warnings:
-        logger.warning(warning)
-    data["email"] = _normalize_loaded_email_data(data.get("email", {}), logger)
-    data["gui"] = _normalize_loaded_gui_data(data.get("gui", {}), logger)
-    cfg = AppConfig(
-        metadata=Metadata(**data.get("metadata", {
-            "version": 1.0,
-            "description": "CVD-Tracker",
-            "cvd_id": 0,
-            "cvd_name": "Default_CVD",
-            "released_at": "2023-01-01",
-        })),
-        webcam=WebcamConfig(**data["webcam"]),
-        uvc_controls=UVCConfig(
-            brightness=data["uvc_controls"]["brightness"],
-            hue=data["uvc_controls"]["hue"],
-            contrast=data["uvc_controls"]["contrast"],
-            saturation=data["uvc_controls"]["saturation"],
-            sharpness=data["uvc_controls"]["sharpness"],
-            gamma=data["uvc_controls"]["gamma"],
-            white_balance=WhiteBalance(**data["uvc_controls"]["white_balance"]),
-            gain=data["uvc_controls"]["gain"],
-            backlight_compensation=data["uvc_controls"]["backlight_compensation"],
-            exposure=Exposure(**data["uvc_controls"]["exposure"]),
-        ),
-        motion_detection=MotionDetectionConfig(**data["motion_detection"]),
-        measurement=MeasurementConfig(**data["measurement"]),
-        email=EmailConfig(**data["email"]),
-        gui=GUIConfig(**data["gui"]),
-        logging=logging_config,  # Erweiterte Logging-Config
-    )
-    errs = cfg.validate_all()
-    fatal_email_errors = [msg for msg in errs.get("email", []) if "unknown event key" in msg]
-    if fatal_email_errors:
-        logger.error(
-            "Fatal email config validation errors in %s: %s. Using default config.",
-            config_path,
-            "; ".join(fatal_email_errors),
+    if cfg is not None:
+        return _finalize_loaded_config(
+            cfg,
+            config_path=config_path,
+            defaulting_warnings=defaulting_warnings,
+            startup_warnings=startup_warnings,
         )
-        return _create_default_config()
+
+    if data is None:
+        if not startup_fallback:
+            raise ConfigLoadError(f"Empty configuration file in {config_path}")
+        startup_warnings.append(f"Config file {path} is empty; using default config.")
+        cfg = _create_default_config(log_creation=False)
+        return _finalize_loaded_config(
+            cfg,
+            config_path=config_path,
+            defaulting_warnings=defaulting_warnings,
+            startup_warnings=startup_warnings,
+        )
+
+    try:
+        data = _apply_defaults(data, warnings=defaulting_warnings)
+    except Exception as exc:
+        if isinstance(exc, ConfigLoadError):
+            raise
+        raise ConfigLoadError(f"Invalid configuration structure in {config_path}: {exc}") from exc
+
+    try:
+        logging_data = data.get("logging", {})
+        if not isinstance(logging_data, dict):
+            raise ConfigLoadError(
+                f"Config section 'logging' must be a mapping, got {type(logging_data).__name__}"
+            )
+        logging_config = LoggingConfig(
+            level=logging_data.get("level", "INFO"),
+            file=logging_data.get("file", "logs/cvd_tracker.log"),
+            max_file_size_mb=logging_data.get("max_file_size_mb", 10),
+            backup_count=logging_data.get("backup_count", 5),
+            console_output=logging_data.get("console_output", True),
+        )
+        data["email"] = _normalize_loaded_email_data(data.get("email", {}), bootstrap_logger)
+        data["gui"] = _normalize_loaded_gui_data(data.get("gui", {}), bootstrap_logger)
+        cfg = AppConfig(
+            metadata=Metadata(**data.get("metadata", {
+                "version": 1.0,
+                "description": "CVD-Tracker",
+                "cvd_id": 0,
+                "cvd_name": "Default_CVD",
+                "released_at": "2023-01-01",
+            })),
+            webcam=WebcamConfig(**data["webcam"]),
+            uvc_controls=UVCConfig(
+                brightness=data["uvc_controls"]["brightness"],
+                hue=data["uvc_controls"]["hue"],
+                contrast=data["uvc_controls"]["contrast"],
+                saturation=data["uvc_controls"]["saturation"],
+                sharpness=data["uvc_controls"]["sharpness"],
+                gamma=data["uvc_controls"]["gamma"],
+                white_balance=WhiteBalance(**data["uvc_controls"]["white_balance"]),
+                gain=data["uvc_controls"]["gain"],
+                backlight_compensation=data["uvc_controls"]["backlight_compensation"],
+                exposure=Exposure(**data["uvc_controls"]["exposure"]),
+            ),
+            motion_detection=MotionDetectionConfig(**data["motion_detection"]),
+            measurement=MeasurementConfig(**data["measurement"]),
+            email=EmailConfig(**data["email"]),
+            gui=GUIConfig(**data["gui"]),
+            logging=logging_config,
+        )
+    except Exception as exc:
+        if isinstance(exc, ConfigLoadError):
+            raise
+        raise ConfigLoadError(f"Invalid configuration structure in {config_path}: {exc}") from exc
+
+    errs = cfg.validate_all()
     if errs:
-        logger.warning("⚠️ Config warnings:")
-        for section, err_list in errs.items():
-            for msg in err_list:
-                logger.warning("  %s: %s", section, msg)
-    cfg.measurement.ensure_save_path()
-    return cfg
+        formatted_errors = "; ".join(
+            f"{section}: {msg}"
+            for section, err_list in errs.items()
+            for msg in err_list
+        )
+        bootstrap_logger.error("Fatal config validation errors in %s: %s", config_path, formatted_errors)
+        raise ConfigLoadError(f"Invalid configuration in {config_path}: {formatted_errors}")
+
+    return _finalize_loaded_config(
+        cfg,
+        config_path=config_path,
+        defaulting_warnings=defaulting_warnings,
+        startup_warnings=startup_warnings,
+    )
 
 def _apply_defaults(data: Any, warnings: Optional[List[str]] = None) -> Dict[str, Any]:
     """Smart Defaults für fehlende Config-Abschnitte"""
     if warnings is None:
         warnings = []
-    default_cfg = asdict(_create_default_config(log_creation=False))
+    default_cfg = _app_config_asdict(_create_default_config(log_creation=False))
     defaults = {
         "email": deepcopy(default_cfg["email"]),
         "gui": deepcopy(default_cfg["gui"]),
@@ -2876,25 +3237,29 @@ def _apply_defaults(data: Any, warnings: Optional[List[str]] = None) -> Dict[str
     }
 
     if not isinstance(data, dict):
-        warnings.append(
-            f"Top-level config document must be a mapping, got {type(data).__name__}; using default configuration."
+        raise ConfigLoadError(
+            f"Top-level config document must be a mapping, got {type(data).__name__}"
         )
-        return default_cfg
 
     for section, default_values in defaults.items():
         current_section = data.get(section)
         if current_section is None:
             data[section] = deepcopy(default_values)
+            warnings.append(f"Config section '{section}' missing; using defaults.")
             continue
         if not isinstance(current_section, dict):
-            warnings.append(
-                f"Config section '{section}' must be a mapping, got {type(current_section).__name__}; using section defaults."
+            raise ConfigLoadError(
+                f"Config section '{section}' must be a mapping, got {type(current_section).__name__}"
             )
-            data[section] = deepcopy(default_values)
-            continue
+        missing_keys: List[str] = []
         for key, value in default_values.items():
             if key not in current_section:
+                missing_keys.append(key)
                 current_section[key] = deepcopy(value)
+        if missing_keys:
+            warnings.append(
+                f"Config section '{section}' missing keys {missing_keys}; using defaults."
+            )
 
     return data
 
@@ -3037,17 +3402,63 @@ def _create_default_config(*, log_creation: bool = True) -> AppConfig:
     )
 
 _global_config: Optional[AppConfig] = None
-_config_path: str = "config/config.yaml"
+_config_path: str = str(_resolve_config_path("config/config.yaml"))
+_global_config_warnings: List[str] = []
+
+
+@dataclass(frozen=True)
+class _GlobalConfigRegistrySnapshot:
+    config: Optional[AppConfig]
+    path: str
+    warnings: List[str]
+
+
+def _snapshot_global_config_registry() -> _GlobalConfigRegistrySnapshot:
+    """Capture the exact active config registry state for later restoration."""
+    return _GlobalConfigRegistrySnapshot(
+        config=_global_config,
+        path=_config_path,
+        warnings=list(_global_config_warnings),
+    )
+
+
+def _restore_global_config_registry(snapshot: _GlobalConfigRegistrySnapshot) -> None:
+    """Restore a previously captured config registry snapshot verbatim."""
+    global _global_config, _config_path, _global_config_warnings
+    _global_config = snapshot.config
+    _config_path = str(snapshot.path)
+    _global_config_warnings = list(snapshot.warnings)
 
 def set_global_config(config: AppConfig, path: str = "config/config.yaml") -> None:
     """Setzt die globale Config-Instanz"""
-    global _global_config, _config_path
+    global _global_config, _config_path, _global_config_warnings
     _global_config = config
-    _config_path = path
+    _config_path = str(_resolve_config_path(path))
+    _global_config_warnings = _get_attached_startup_config_warnings(config)
 
 def get_global_config() -> Optional[AppConfig]:
     """Holt die globale Config-Instanz"""
     return _global_config
+
+def get_global_config_path() -> Optional[str]:
+    """Return the path that was used to load the active global configuration."""
+    if _global_config is None:
+        return None
+    return _config_path
+
+
+def get_global_config_warnings() -> List[str]:
+    """Return non-fatal startup warnings associated with the active config."""
+    if _global_config is None:
+        return []
+    return list(_global_config_warnings)
+
+
+def clear_global_config_warnings() -> None:
+    """Clear non-fatal startup warnings associated with the active config."""
+    global _global_config_warnings
+    _clear_attached_startup_config_warnings(_global_config)
+    _global_config_warnings = []
 
 def save_global_config() -> bool:
     """Speichert die globale Config"""
@@ -3055,6 +3466,12 @@ def save_global_config() -> bool:
     if _global_config:
         try:
             _write_config_file(_global_config, _config_path)
+            clear_global_config_warnings()
+            try:
+                from src.gui import instances as gui_instances
+                gui_instances.clear_startup_config_warnings()
+            except Exception:
+                pass
             logger.info(f"Global config saved to {_config_path}")
             return True
         except Exception as e:
@@ -3073,17 +3490,18 @@ def get_logger(name: str = "cvd_tracker") -> logging.Logger:
         Konfigurierter Logger
     """
     global _global_config
-    
+
     if _global_config is None:
-        # Fallback falls Config noch nicht geladen
-        _global_config = load_config()
-    
-    main_logger = _global_config.logging.setup_logger("cvd_tracker")
-    
-    if name == "cvd_tracker":
-        return main_logger
+        main_logger = _get_fallback_main_logger()
     else:
-        return main_logger.getChild(name)
+        main_logger = _global_config.logging.setup_logger("cvd_tracker")
+
+    normalized_name = str(name or "cvd_tracker")
+    if normalized_name == "cvd_tracker":
+        return main_logger
+    if normalized_name.startswith("cvd_tracker."):
+        return logging.getLogger(normalized_name)
+    return main_logger.getChild(normalized_name)
     
 class ReadableDumper(yaml.SafeDumper):
     # Keine YAML‑Anker (&id001) bei wiederverwendeten Werten
@@ -3218,10 +3636,10 @@ def _dump_section(key: str, value: dict) -> str:
     return str(result) if result is not None else ""
 
 def _write_config_file(cfg: AppConfig, path: str = "config/config.yaml") -> None:
-    p = Path(path)
+    p = _resolve_config_path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
 
-    raw = asdict(cfg)
+    raw = _app_config_asdict(cfg)
     data = _prepare_for_yaml(raw)
 
     sections = [
@@ -3265,7 +3683,7 @@ def save_config(cfg: AppConfig, path: str = "config/config.yaml") -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
 
         # Dataclasses -> dict und für Ausgabe aufbereiten
-        raw = asdict(cfg)
+        raw = _app_config_asdict(cfg)
         data = _prepare_for_yaml(raw)
 
         # Reihenfolge und sichtbare Abschnittstitel festlegen

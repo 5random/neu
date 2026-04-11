@@ -30,6 +30,11 @@ def _build_camera() -> tuple[Camera, object]:
     camera = Camera.__new__(Camera)
     camera.app_config = cfg
     camera.uvc_config = cfg.uvc_controls
+    camera.capture_lock = threading.RLock()
+    camera._init_state_lock = threading.Lock()
+    camera._cleanup_lock = threading.Lock()
+    camera._cleanup_in_progress = False
+    camera.cleaned = False
     camera.logger = _LoggerStub()
     camera._config_dirty = False
     camera._config_dirty_generation = 0

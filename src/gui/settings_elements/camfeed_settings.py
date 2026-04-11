@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Any, cast
+from typing import Optional, Tuple, Any, Callable, cast
 import time
 
 from nicegui import ui
@@ -7,12 +7,14 @@ from src.cam.camera import Camera
 from src.config import get_logger, save_global_config, get_global_config
 from src.cam.motion import MotionDetector
 from src.gui.settings_elements.ui_helpers import create_action_button, create_heading_row
+from src.gui.util import register_client_disconnect_handler
 
 logger = get_logger('gui.camfeed')
+_SETTINGS_CAMFEED_TIMER_ATTR = 'cvd_camfeed_timer_settings'
 
 
 def _resolve_capture_dimensions(camera: Optional[Camera]) -> Tuple[int, int]:
-    """Resolve editor dimensions from the static config and fall back to live status if available."""
+    """Resolve editor dimensions, preferring live camera status over static config."""
     configured_dimensions: Optional[Tuple[int, int]] = None
 
     if camera is not None:
@@ -39,6 +41,92 @@ def _resolve_capture_dimensions(camera: Optional[Camera]) -> Tuple[int, int]:
     if configured_dimensions is not None:
         return configured_dimensions
     return 720, 405
+
+
+def _start_settings_camfeed_refresh_timer(refresh_callback: Callable[[], None]) -> Any:
+    """Start exactly one refresh timer for the settings camfeed."""
+    timer: Any | None = None
+
+    try:
+        client = ui.context.client
+    except Exception:
+        client = None
+
+    if client is None:
+        logger.debug('Starting unmanaged settings camfeed refresh timer without client context')
+        return ui.timer(0.2, refresh_callback)
+
+    try:
+        previous_timer = None
+        try:
+            previous_timer = getattr(client, _SETTINGS_CAMFEED_TIMER_ATTR, None)
+        except Exception:
+            previous_timer = None
+
+        if previous_timer:
+            try:
+                previous_timer.cancel()
+            except Exception:
+                logger.warning(
+                    'Could not cancel previous settings camfeed timer; reusing it to avoid duplicate timers',
+                    exc_info=True,
+                )
+                return previous_timer
+
+        try:
+            if getattr(client, _SETTINGS_CAMFEED_TIMER_ATTR, None) is previous_timer and previous_timer is not None:
+                delattr(client, _SETTINGS_CAMFEED_TIMER_ATTR)
+        except Exception:
+            pass
+
+        timer_holder: dict[str, Any | None] = {'timer': None}
+
+        def _cleanup() -> None:
+            current_timer = timer_holder['timer']
+            if current_timer is not None:
+                try:
+                    current_timer.cancel()
+                except Exception:
+                    pass
+            try:
+                if getattr(client, _SETTINGS_CAMFEED_TIMER_ATTR, None) is current_timer:
+                    delattr(client, _SETTINGS_CAMFEED_TIMER_ATTR)
+            except Exception:
+                pass
+
+        def _guarded_refresh() -> None:
+            try:
+                if not bool(getattr(client, 'has_socket_connection', True)):
+                    _cleanup()
+                    return
+            except Exception:
+                logger.debug('Failed to inspect client connection state for settings camfeed timer', exc_info=True)
+            refresh_callback()
+
+        timer = ui.timer(0.2, _guarded_refresh)
+        timer_holder['timer'] = timer
+        try:
+            setattr(client, _SETTINGS_CAMFEED_TIMER_ATTR, timer)
+        except Exception:
+            logger.debug('Failed to store settings camfeed timer on client', exc_info=True)
+
+        registered = register_client_disconnect_handler(client, _cleanup, logger=logger)
+        if not registered:
+            logger.debug('Settings camfeed timer is active without disconnect auto-cleanup')
+        return timer
+    except Exception:
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+            try:
+                if getattr(client, _SETTINGS_CAMFEED_TIMER_ATTR, None) is timer:
+                    delattr(client, _SETTINGS_CAMFEED_TIMER_ATTR)
+            except Exception:
+                pass
+        logger.warning('Falling back to unmanaged settings camfeed refresh timer', exc_info=True)
+        return ui.timer(0.2, refresh_callback)
 
 
 def create_camfeed_content(camera: Optional[Camera] = None) -> None:
@@ -95,9 +183,11 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
         )
 
     def roi_bounds() -> Optional[Tuple[int, int, int, int]]:
-        if state['p1'] and state['p2']:
-            x0, y0 = map(min, zip(state['p1'], state['p2']))
-            x1, y1 = map(max, zip(state['p1'], state['p2']))
+        p1 = state.get('p1')
+        p2 = state.get('p2')
+        if p1 is not None and p2 is not None:
+            x0, y0 = map(min, zip(p1, p2))
+            x1, y1 = map(max, zip(p1, p2))
             return x0, y0, x1, y1
         return None
 
@@ -113,12 +203,15 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
             enabled = True
 
         # Always visualize current selection; adapt styling based on state
-        if state['p1']:
+        p1 = state.get('p1')
+        p2 = state.get('p2')
+
+        if p1 is not None:
             cross_col = '#19bfd2' if enabled else '#9aa0a6'  # blue vs gray
-            parts.append(svg_cross(state['p1'][0], state['p1'][1], col=cross_col))
-        if state['p2']:
+            parts.append(svg_cross(p1[0], p1[1], col=cross_col))
+        if p2 is not None:
             cross_col = '#19bfd2' if enabled else '#9aa0a6'
-            parts.append(svg_cross(state['p2'][0], state['p2'][1], col=cross_col))
+            parts.append(svg_cross(p2[0], p2[1], col=cross_col))
         if (b := roi_bounds()):
             x0, y0, x1, y1 = b
             w = max(1, x1 - x0)
@@ -172,11 +265,13 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
             x0, y0, x1, y1 = b
             tl_label.text = f'({x0}, {y0})'
             br_label.text = f'({x1}, {y1})'
-        elif state['p1']:
-            tl_label.text = f'({state["p1"][0]}, {state["p1"][1]})'
-            br_label.text = '-'
         else:
-            tl_label.text = br_label.text = '-'
+            p1 = state.get('p1')
+            if p1 is not None:
+                tl_label.text = f'({p1[0]}, {p1[1]})'
+                br_label.text = '-'
+            else:
+                tl_label.text = br_label.text = '-'
 
     def update_roi_hint() -> None:
         """Update the live indicator labeling current ROI size and disabled state."""
@@ -541,40 +636,7 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
                         image.source = src
                     except Exception:
                         pass
-            # Ensure only one refresh timer per client for the settings camfeed
-            try:
-                client = ui.context.client
-                try:
-                    prev = getattr(client, 'cvd_camfeed_timer_settings', None)
-                    if prev:
-                        try:
-                            prev.cancel()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-                timer = ui.timer(0.2, _refresh_stream)
-                try:
-                    setattr(client, 'cvd_camfeed_timer_settings', timer)
-                except Exception:
-                    pass
-
-                def _cleanup() -> None:
-                    try:
-                        timer.cancel()
-                    except Exception:
-                        pass
-                    try:
-                        if getattr(client, 'cvd_camfeed_timer_settings', None) is timer:
-                            delattr(client, 'cvd_camfeed_timer_settings')
-                    except Exception:
-                        pass
-
-                client.on_disconnect(_cleanup)
-            except Exception:
-                # Fallback: create a simple timer without guards
-                ui.timer(0.2, _refresh_stream)
+            _start_settings_camfeed_refresh_timer(_refresh_stream)
 
             
             with ui.column().classes('w-full gap-3'):

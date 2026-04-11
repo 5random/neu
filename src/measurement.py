@@ -14,10 +14,10 @@ import numpy as np
 
 # Type checking imports to avoid circular dependencies at runtime
 if TYPE_CHECKING:
-    from .config import AppConfig, MeasurementConfig
-    from .notify import EMailSystem
-    from .cam.camera import Camera
-    from .cam.motion import MotionResult
+    from src.cam.camera import Camera
+    from src.cam.motion import MotionResult
+    from src.config import AppConfig, MeasurementConfig
+    from src.notify import EMailSystem
 
 from .alert_history import append_history_entry, get_history_file
 from .config import get_logger
@@ -90,7 +90,7 @@ class MeasurementController:
     ) -> None:
         self.config = config
         self.email_system = email_system
-        self.camera = camera
+        self.camera: Optional[Camera] = None
         self.logger = logger or get_logger('measurement')
         
         # -- Session State (Thread-Safe) --
@@ -98,7 +98,7 @@ class MeasurementController:
         self.is_session_active = False
         self.session_id: Optional[str] = None
         self.session_start_time: Optional[datetime] = None
-        self.recent_motion_detected = False
+        self.recent_motion_detected: bool | None = None
         
         # -- Alert State --
         self.last_motion_time: Optional[datetime] = None
@@ -123,6 +123,9 @@ class MeasurementController:
         # -- GUI Motion Callbacks --
         self._motion_callbacks: list[Callable[[Any], None]] = []
         self._callbacks_lock = threading.Lock()
+        self._session_state_callbacks: list[Callable[[dict[str, Any]], None]] = []
+        self._session_callbacks_lock = threading.Lock()
+        self._camera_lock = threading.RLock()
         self._camera_motion_listener: Optional[Callable[[np.ndarray, MotionResult], None]] = None
         self._timeout_stop_event = threading.Event()
         self._timeout_thread = threading.Thread(
@@ -132,11 +135,8 @@ class MeasurementController:
         )
         self._timeout_thread.start()
 
-        # Callbacks registrieren
-        if self.camera:
-            self._camera_motion_listener = self.on_motion_detected
-            self.camera.enable_motion_detection(self._camera_motion_listener)
-            self.logger.info("Motion detection callback registered")
+        self._camera_motion_listener = self.on_motion_detected
+        self.set_camera(camera)
 
         if getattr(self.config, 'auto_start', False):
             try:
@@ -150,6 +150,31 @@ class MeasurementController:
         with self.session_lock:
             self.config = new_config
         self.logger.debug("Measurement config updated")
+
+    def set_camera(self, camera: Optional[Camera]) -> None:
+        """Replace the active camera binding and keep motion listeners in sync."""
+        with self._camera_lock:
+            previous_camera = self.camera
+            motion_listener = self._camera_motion_listener
+
+            if previous_camera is camera:
+                return
+
+            if previous_camera is not None and motion_listener is not None:
+                try:
+                    previous_camera.disable_motion_detection(motion_listener)
+                except Exception as exc:
+                    self.logger.debug(f"Failed to unregister camera motion callback: {exc}")
+
+            self.camera = camera
+
+            if camera is not None and motion_listener is not None:
+                try:
+                    camera.enable_motion_detection(motion_listener)
+                    self.logger.info("Motion detection callback registered")
+                except Exception as exc:
+                    self.logger.error(f"Failed to register camera motion callback: {exc}")
+                    self.camera = None
 
     def _get_config_snapshot(self) -> MeasurementConfig:
         """Return a stable config reference for the duration of an operation."""
@@ -174,6 +199,44 @@ class MeasurementController:
                 self.logger.debug(f"Unregistered motion callback: {callback}")
             except ValueError:
                 return
+
+    def _build_session_state_payload_locked(self) -> dict[str, Any]:
+        return {
+            "is_active": bool(self.is_session_active),
+            "session_id": self.session_id,
+            "session_start_time": self.session_start_time,
+        }
+
+    def register_session_state_callback(self, callback: Callable[[dict[str, Any]], None]) -> None:
+        """Register a callback for measurement session start/stop state changes."""
+        with self._session_callbacks_lock:
+            if callback not in self._session_state_callbacks:
+                self._session_state_callbacks.append(callback)
+                self.logger.debug("Registered session state callback: %s", callback)
+
+    def unregister_session_state_callback(self, callback: Callable[[dict[str, Any]], None]) -> None:
+        """Remove a previously registered measurement session state callback."""
+        with self._session_callbacks_lock:
+            try:
+                self._session_state_callbacks.remove(callback)
+                self.logger.debug("Unregistered session state callback: %s", callback)
+            except ValueError:
+                return
+
+    def _notify_session_state_callbacks(self, payload: Optional[dict[str, Any]] = None) -> None:
+        with self._session_callbacks_lock:
+            callbacks_snapshot = list(self._session_state_callbacks)
+        if payload is None:
+            with self.session_lock:
+                payload = dict(self._build_session_state_payload_locked())
+        else:
+            payload = dict(payload)
+
+        for callback in callbacks_snapshot:
+            try:
+                callback(dict(payload))
+            except Exception as exc:
+                self.logger.debug("Session state callback error: %s", exc)
 
     def _reset_alert_tracking_locked(self) -> None:
         self._alert_generation += 1
@@ -277,6 +340,7 @@ class MeasurementController:
             self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
             self.is_session_active = True
             self.session_start_time = datetime.now()
+            self.recent_motion_detected = None
             self._last_motion_summary_log_monotonic = None
             self._motion_summary_event_count = 0
             self._motion_summary_motion_event_count = 0
@@ -296,7 +360,9 @@ class MeasurementController:
                 session_id=current_session_id,
                 start_time=current_start_time,
             )
+            session_state_payload = dict(self._build_session_state_payload_locked())
 
+        self._notify_session_state_callbacks(session_state_payload)
         self._sync_email_alert_state()
          
         return True
@@ -325,6 +391,7 @@ class MeasurementController:
             self.is_session_active = False
             self.session_id = None
             self.session_start_time = None
+            self.recent_motion_detected = None
             self._submit_measurement_event_locked(
                 event=stop_event,
                 session_id=current_session_id,
@@ -332,7 +399,9 @@ class MeasurementController:
                 end_time=end_time,
                 reason=reason,
             )
+            session_state_payload = dict(self._build_session_state_payload_locked())
 
+        self._notify_session_state_callbacks(session_state_payload)
         self._sync_email_alert_state()
         
         return True
@@ -507,11 +576,14 @@ class MeasurementController:
                 return False
             last_motion_time = self.last_motion_time
 
+        with self._camera_lock:
+            camera = self.camera
+
         frame = None
-        if self.camera:
+        if camera:
             try:
-                if hasattr(self.camera, 'take_snapshot'):
-                    frame = self.camera.take_snapshot()
+                if hasattr(camera, 'take_snapshot'):
+                    frame = camera.take_snapshot()
                     if frame is not None and not isinstance(frame, np.ndarray):
                         self.logger.error(f"take_snapshot returned invalid type: {type(frame)}")
                         frame = None
@@ -750,11 +822,7 @@ class MeasurementController:
         """Cleanup resources."""
         self.logger.info("Cleaning up MeasurementController")
         self._timeout_stop_event.set()
-        if self.camera and self._camera_motion_listener is not None:
-            try:
-                self.camera.disable_motion_detection(self._camera_motion_listener)
-            except Exception as exc:
-                self.logger.debug(f"Failed to unregister camera motion callback: {exc}")
+        self.set_camera(None)
         self.stop_session(reason="shutdown")
         self._timeout_thread.join(timeout=3.0)
         self._event_executor.shutdown(wait=True, cancel_futures=False)

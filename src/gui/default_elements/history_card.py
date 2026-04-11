@@ -18,6 +18,7 @@ from src.alert_history import (
 )
 from src.config import get_logger
 from src.gui.ui_helpers import SECTION_ICONS, create_action_button, create_heading_row
+from src.gui.util import register_client_disconnect_handler
 
 logger = get_logger('gui.history')
 
@@ -301,7 +302,7 @@ def create_history_card(*, max_entries: int = 5) -> None:
                 except Exception:
                     pass
 
-            client.on_disconnect(_cleanup_on_disconnect)
+            register_client_disconnect_handler(client, _cleanup_on_disconnect, logger=logger)
 
         # Initial load
         refresh_display(revision=get_history_revision(history_file=history_file))

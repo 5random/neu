@@ -12,6 +12,7 @@ from src.alert_history import (
 )
 from src.config import get_logger
 from src.gui.ui_helpers import SECTION_ICONS, create_heading_row
+from src.gui.util import register_client_disconnect_handler
 
 logger = get_logger('gui.stats')
 
@@ -71,7 +72,7 @@ def create_stats_card() -> None:
             icon_classes='text-primary text-xl shrink-0',
         )
 
-        ui.label('Showing Alarms per Hour of Last 24 Hours').classes('text-caption text-grey-7')
+        ui.label('Showing Alerts per Hour for the Last 24 Hours').classes('text-caption text-grey-7')
 
         chart = ui.echart({
             'tooltip': {'trigger': 'axis'},
@@ -135,6 +136,6 @@ def create_stats_card() -> None:
                 except Exception:
                     pass
 
-            client.on_disconnect(_cleanup_on_disconnect)
+            register_client_disconnect_handler(client, _cleanup_on_disconnect, logger=logger)
 
         refresh_chart(revision=get_history_revision(history_file=history_file))
