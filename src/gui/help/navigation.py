@@ -13,7 +13,23 @@ except ImportError:  # graceful fallback if PyYAML is not installed
     yaml = None  # type: ignore[assignment]
 
 
-_HELP_YAML_PATH = Path(__file__).with_name("help.yaml")
+def _find_project_root() -> Path:
+    """Resolve the project root via marker files, then fall back to the legacy path depth."""
+
+    module_path = Path(__file__).resolve()
+    candidate_roots = list(module_path.parents)
+
+    for marker in ("pyproject.toml", ".git"):
+        for parent in candidate_roots:
+            if (parent / marker).exists():
+                return parent
+
+    if len(candidate_roots) > 3:
+        return candidate_roots[3]
+    return candidate_roots[-1]
+
+
+_HELP_YAML_PATH = _find_project_root() / "help" / "help.yaml"
 
 
 def _slugify(title: str) -> str:
