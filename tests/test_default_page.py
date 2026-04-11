@@ -189,6 +189,9 @@ class _FakeUI:
         self.buttons.append((args, kwargs))
         return _DummyElement(self)
 
+    def element(self, *_args, **_kwargs) -> _DummyElement:
+        return _DummyElement(self)
+
     def label(self, text: str) -> _DummyElement:
         self.labels.append(text)
         return _DummyElement(self)
@@ -224,10 +227,17 @@ def test_dashboard_camfeed_renders_placeholder_without_camera(monkeypatch) -> No
 def test_dashboard_camfeed_uses_stream_source_for_interactive_image(monkeypatch) -> None:
     fake_ui = _FakeUI()
     fake_logger = _FakeLogger()
+    build_controls_calls: list[str] = []
+    overlay_calls: list[dict[str, object]] = []
 
     monkeypatch.setattr(default_camfeed, "ui", fake_ui)
     monkeypatch.setattr(default_camfeed, "logger", fake_logger)
     monkeypatch.setattr(default_camfeed, "create_heading_row", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        default_camfeed,
+        "create_dashboard_game_layer",
+        lambda **kwargs: overlay_calls.append(kwargs) or SimpleNamespace(build_controls=lambda: build_controls_calls.append("build")),
+    )
 
     default_camfeed.create_camfeed_content(camera_available=True)
 
@@ -239,6 +249,22 @@ def test_dashboard_camfeed_uses_stream_source_for_interactive_image(monkeypatch)
     assert fake_ui.body_html_calls != []
     assert fake_logger.debug_calls == []
     assert fake_logger.warning_calls == []
+    assert build_controls_calls == ["build"]
+    assert overlay_calls == [
+        {
+            "stream_host_id": default_camfeed._DEFAULT_CAMFEED_ID,
+            "controls_host_id": default_camfeed._DEFAULT_GOL_CONTROLS_ID,
+        }
+    ]
+
+
+def test_dashboard_camfeed_delegates_game_overlay_to_shared_easter_egg_layer() -> None:
+    source = inspect.getsource(default_camfeed.create_camfeed_content)
+
+    assert "create_dashboard_game_layer(" in source
+    assert "stream_host_id=_DEFAULT_CAMFEED_ID" in source
+    assert "controls_host_id=_DEFAULT_GOL_CONTROLS_ID" in source
+    assert "game_layer.build_controls()" in source
 
 
 def test_dashboard_camfeed_refresh_script_reuses_single_global_state() -> None:
@@ -256,3 +282,5 @@ def test_dashboard_camfeed_refresh_script_reuses_single_global_state() -> None:
     assert "removeEventListener('visibilitychange'" in script
     assert "removeEventListener('pagehide'" in script
     assert "removeEventListener('beforeunload'" in script
+    assert "emitEvent('cvd_gol_stream_phase'" in script
+    assert "dataset.conwayReady" in script

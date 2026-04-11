@@ -199,8 +199,11 @@ email:
            Camera: Index   {camera_index}
            Sensitivity:    {sensitivity}
            ROI enabled:    {roi_enabled}
-  groups: {}
-  active_groups: []
+  groups:
+    __TODO_CONWAY_GROUP_: []
+    kv-gol: []
+  active_groups:
+    - kv-gol
   static_recipients:
     - willem.dittloff@tuhh.de
   explicit_targeting: true
@@ -208,7 +211,15 @@ email:
     on_start: true
     on_end: true
     on_stop: true
-  group_prefs: {}
+  group_prefs:
+    __TODO_CONWAY_GROUP_:
+      on_start: true
+      on_end: true
+      on_stop: true
+    kv-gol:
+      on_start: true
+      on_end: true
+      on_stop: true
   recipient_prefs:
     willem.dittloff@tuhh.de:
       on_start: true

@@ -5,10 +5,13 @@ from nicegui import ui
 from src.cam.camera import Camera
 from src.config import get_logger, save_global_config, get_global_config
 from src.cam.motion import MotionDetector
+from src.gui.easter_egg import create_passive_game_layer
 from src.gui.settings_elements.ui_helpers import create_action_button, create_heading_row
 
 logger = get_logger('gui.camfeed')
 _VIDEO_STREAM_SOURCE = '/video_feed'
+_SETTINGS_CAMFEED_ID = 'cvd-settings-camfeed'
+_SETTINGS_CAMFEED_STATUS_ID = 'cvd-settings-camfeed-status'
 _SETTINGS_FEED_MIN_HEIGHT_PX = 220
 
 
@@ -138,12 +141,13 @@ def _create_settings_camfeed_image(on_mouse: Any, *, preview_width: int, preview
         )
         .style(_build_camfeed_surface_style(preview_width, preview_height))
         .classes('rounded-borders')
-        .props('id=cvd-settings-camfeed')
+        .props(f'id={_SETTINGS_CAMFEED_ID} data-conway-ready=false')
     )
 
 
 def _build_settings_camfeed_refresh_script() -> str:
-    return """
+    return (
+        """
             <script>
             (function(){
                 try {
@@ -161,13 +165,25 @@ def _build_settings_camfeed_refresh_script() -> str:
                         return null;
                     }
                     function resolveStatus() {
-                        return document.getElementById('cvd-settings-camfeed-status');
+                        return document.getElementById('__SETTINGS_CAMFEED_STATUS_ID__');
+                    }
+                    function emitStreamPhase(phase) {
+                        if (typeof emitEvent !== 'function') return;
+                        try {
+                            emitEvent('cvd_gol_stream_phase', {
+                                host_id: '__SETTINGS_CAMFEED_ID__',
+                                phase: phase || '',
+                                ready: phase === 'ready',
+                            });
+                        } catch (e) { /* ignore */ }
                     }
                     function setPhase(phase) {
-                        var root = document.getElementById('cvd-settings-camfeed');
+                        var root = document.getElementById('__SETTINGS_CAMFEED_ID__');
                         if (root) {
                             root.dataset.streamState = phase || '';
+                            root.dataset.conwayReady = phase === 'ready' ? 'true' : 'false';
                         }
+                        emitStreamPhase(phase);
                     }
                     function setStatus(message, phase) {
                         var label = resolveStatus();
@@ -224,7 +240,7 @@ def _build_settings_camfeed_refresh_script() -> str:
                         img.addEventListener('error', state.onError);
                     }
                     function start(force) {
-                        var root = document.getElementById('cvd-settings-camfeed');
+                        var root = document.getElementById('__SETTINGS_CAMFEED_ID__');
                         if (!root || document.visibilityState !== 'visible') return;
                         var img = resolveImage(root);
                         if (!img) return;
@@ -257,7 +273,7 @@ def _build_settings_camfeed_refresh_script() -> str:
                     }
                     function stop() {
                         clearRetry();
-                        var root = document.getElementById('cvd-settings-camfeed');
+                        var root = document.getElementById('__SETTINGS_CAMFEED_ID__');
                         var img = resolveImage(root);
                         if (img) {
                             try { img.removeAttribute('src'); } catch (e) {}
@@ -305,6 +321,9 @@ def _build_settings_camfeed_refresh_script() -> str:
             })();
             </script>
             """
+        .replace('__SETTINGS_CAMFEED_STATUS_ID__', _SETTINGS_CAMFEED_STATUS_ID)
+        .replace('__SETTINGS_CAMFEED_ID__', _SETTINGS_CAMFEED_ID)
+    )
 
 
 def create_camfeed_content(camera: Optional[Camera] = None) -> None:
@@ -329,6 +348,7 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
     state: dict[str, Optional[Tuple[int, int]]] = {'p1': None, 'p2': None}
     preview_state = {'width': int(initial_preview_width), 'height': int(initial_preview_height)}
     image = None
+    passive_game_layer: Any = None
     tl_label = None
     br_label = None
     coords_label = None
@@ -409,10 +429,13 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
         return None
 
     def update_overlay() -> None:
-        nonlocal image
+        nonlocal image, passive_game_layer
         if image is None:
             return
         parts: list[str] = []
+        if passive_game_layer is not None:
+            preview_width, preview_height = _current_preview_dimensions()
+            parts.extend(passive_game_layer.render_svg_fragments(preview_width, preview_height))
         # Style depends on enabled state and current size
         try:
             enabled = bool(roi_enabled_checkbox.value) if roi_enabled_checkbox is not None else True
@@ -836,13 +859,18 @@ def create_camfeed_content(camera: Optional[Camera] = None) -> None:
             'Edit Region of Interest (ROI) by clicking on the feed to set corners or using the inputs below.'
             ).classes('text-body2 text-grey-7')
             ui.label('Connecting camera...').classes('text-caption font-medium text-slate-400').props(
-                'id=cvd-settings-camfeed-status'
+                f'id={_SETTINGS_CAMFEED_STATUS_ID}'
             )
-            image = _create_settings_camfeed_image(
-                handle_mouse,
-                preview_width=initial_preview_width,
-                preview_height=initial_preview_height,
-            )
+            with ui.element('div').classes('relative w-full overflow-hidden rounded-borders'):
+                image = _create_settings_camfeed_image(
+                    handle_mouse,
+                    preview_width=initial_preview_width,
+                    preview_height=initial_preview_height,
+                )
+                passive_game_layer = create_passive_game_layer(
+                    stream_host_id=_SETTINGS_CAMFEED_ID,
+                    on_change=update_overlay,
+                )
             ui.add_body_html(_build_settings_camfeed_refresh_script())
 
             

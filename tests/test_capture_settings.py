@@ -1,4 +1,5 @@
 import logging
+import inspect
 import threading
 from types import SimpleNamespace
 
@@ -119,6 +120,16 @@ class _DummyUIElement(_DummyInteractiveImage):
         return None
 
 
+class _FakePassiveGameLayer:
+    def __init__(self, fragments: list[str] | None = None) -> None:
+        self.fragments = fragments or []
+        self.render_calls: list[tuple[int, int]] = []
+
+    def render_svg_fragments(self, preview_width: int, preview_height: int) -> list[str]:
+        self.render_calls.append((preview_width, preview_height))
+        return list(self.fragments)
+
+
 class _FakeSettingsUI:
     def __init__(self) -> None:
         self.label_texts: list[str] = []
@@ -136,6 +147,9 @@ class _FakeSettingsUI:
         return _DummyUIElement()
 
     def column(self) -> _DummyUIElement:
+        return _DummyUIElement()
+
+    def element(self, *_args, **_kwargs) -> _DummyUIElement:
         return _DummyUIElement()
 
     def label(self, text: str) -> _DummyUIElement:
@@ -341,6 +355,7 @@ def test_preview_mapping_stays_consistent_after_preview_width_change() -> None:
 def test_camera_settings_feed_does_not_render_performance_controls(monkeypatch) -> None:
     fake_ui = _FakeSettingsUI()
     headings: list[str] = []
+    passive_layer_calls: list[dict[str, object]] = []
     camera = _make_camera_stub()
     camera.motion_detector = SimpleNamespace(
         roi=SimpleNamespace(enabled=False, x=0, y=0, width=0, height=0),
@@ -353,6 +368,11 @@ def test_camera_settings_feed_does_not_render_performance_controls(monkeypatch) 
         camfeed_settings,
         'create_action_button',
         lambda *_args, **_kwargs: _DummyUIElement(),
+    )
+    monkeypatch.setattr(
+        camfeed_settings,
+        'create_passive_game_layer',
+        lambda **kwargs: passive_layer_calls.append(kwargs) or _FakePassiveGameLayer(),
     )
 
     camfeed_settings.create_camfeed_content(camera=camera)
@@ -368,6 +388,12 @@ def test_camera_settings_feed_does_not_render_performance_controls(monkeypatch) 
     assert 'Processing Width' not in fake_ui.number_labels
     assert 'Status Refresh' not in fake_ui.number_labels
     assert 'Connecting camera...' in fake_ui.label_texts
+    assert passive_layer_calls == [
+        {
+            'stream_host_id': camfeed_settings._SETTINGS_CAMFEED_ID,
+            'on_change': passive_layer_calls[0]['on_change'],
+        }
+    ]
 
 
 def test_create_settings_camfeed_image_uses_stream_source(monkeypatch) -> None:
@@ -397,3 +423,44 @@ def test_settings_camfeed_refresh_script_only_starts_stream_when_page_is_visible
     assert "window.__cvdSettingsCamState" in script
     assert "addEventListener('load'" in script
     assert "addEventListener('error'" in script
+    assert "emitEvent('cvd_gol_stream_phase'" in script
+    assert "dataset.conwayReady" in script
+
+
+def test_settings_camfeed_delegates_passive_game_overlay_to_shared_easter_egg_layer() -> None:
+    source = inspect.getsource(camfeed_settings.create_camfeed_content)
+
+    assert "create_passive_game_layer(" in source
+    assert "stream_host_id=_SETTINGS_CAMFEED_ID" in source
+    assert "on_change=update_overlay" in source
+
+
+def test_settings_overlay_composes_passive_game_layer_before_roi_annotations(monkeypatch) -> None:
+    fake_ui = _FakeSettingsUI()
+    camera = _make_camera_stub()
+    camera.motion_detector = SimpleNamespace(
+        roi=SimpleNamespace(enabled=True, x=100, y=120, width=200, height=160),
+        reset_background_model=lambda: None,
+    )
+    passive_layer = _FakePassiveGameLayer(['<rect id="gol-fragment" />'])
+
+    monkeypatch.setattr(camfeed_settings, 'ui', fake_ui)
+    monkeypatch.setattr(camfeed_settings, 'create_heading_row', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        camfeed_settings,
+        'create_action_button',
+        lambda *_args, **_kwargs: _DummyUIElement(),
+    )
+    monkeypatch.setattr(
+        camfeed_settings,
+        'create_passive_game_layer',
+        lambda **_kwargs: passive_layer,
+    )
+
+    camfeed_settings.create_camfeed_content(camera=camera)
+
+    assert fake_ui.last_interactive_image is not None
+    overlay = getattr(fake_ui.last_interactive_image, 'content', '')
+    assert 'id="gol-fragment"' in overlay
+    assert 'stroke="#19bfd2"' in overlay
+    assert overlay.index('id="gol-fragment"') < overlay.index('stroke="#19bfd2"')

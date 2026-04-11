@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -542,6 +543,7 @@ def test_persist_active_groups_selection_skips_refresh_when_email_system_is_omit
     )()
     config = type("Config", (), {"email": email_config})()
     save_calls: list[str] = []
+    sync_calls: list[str] = []
 
     monkeypatch.setattr(measurementcard, "get_global_config", lambda: config)
     monkeypatch.setattr(
@@ -549,11 +551,17 @@ def test_persist_active_groups_selection_skips_refresh_when_email_system_is_omit
         "save_global_config",
         lambda: save_calls.append("save") or True,
     )
+    monkeypatch.setattr(
+        measurementcard,
+        "sync_game_of_life_activation_from_config",
+        lambda: sync_calls.append("sync") or False,
+    )
 
     measurementcard._persist_active_groups_selection(["ops"], None)
 
     assert email_config.active_groups == ["ops"]
     assert save_calls == ["save"]
+    assert sync_calls == ["sync"]
 
 
 def test_persist_active_groups_selection_refreshes_explicit_email_system(monkeypatch) -> None:
@@ -568,6 +576,7 @@ def test_persist_active_groups_selection_refreshes_explicit_email_system(monkeyp
     config = type("Config", (), {"email": email_config})()
     save_calls: list[str] = []
     refresh_calls: list[str] = []
+    sync_calls: list[str] = []
 
     class _EmailSystem:
         def refresh_config(self) -> None:
@@ -579,12 +588,24 @@ def test_persist_active_groups_selection_refreshes_explicit_email_system(monkeyp
         "save_global_config",
         lambda: save_calls.append("save") or True,
     )
+    monkeypatch.setattr(
+        measurementcard,
+        "sync_game_of_life_activation_from_config",
+        lambda: sync_calls.append("sync") or True,
+    )
 
     measurementcard._persist_active_groups_selection(["ops"], _EmailSystem())
 
     assert email_config.active_groups == ["ops"]
     assert save_calls == ["save"]
     assert refresh_calls == ["refresh"]
+    assert sync_calls == ["sync"]
+
+
+def test_measurement_card_refresh_groups_ui_syncs_game_of_life_activation() -> None:
+    source = inspect.getsource(measurementcard.create_measurement_card)
+
+    assert "sync_game_of_life_activation_from_config()" in source
 
 
 def test_persist_active_groups_selection_raises_when_config_is_unavailable(monkeypatch) -> None:

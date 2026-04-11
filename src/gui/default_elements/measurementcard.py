@@ -6,6 +6,7 @@ from nicegui import ui
 from src.notify import EMailSystem
 from src.config import get_global_config, save_global_config, get_logger
 from src.cam.camera import Camera
+from src.gui.easter_egg import sync_game_of_life_activation_from_config
 from src.gui.email_visibility import get_visible_group_names
 from src.gui.util import is_deleted_parent_slot_error
 from src.gui.duration_utils import (
@@ -190,6 +191,7 @@ def _persist_active_groups_selection(
 
     if email_system is not None:
         email_system.refresh_config()
+    sync_game_of_life_activation_from_config()
 
 
 def _measurement_controller_notice_text() -> str:
@@ -948,6 +950,7 @@ def create_measurement_card(
                     conf = get_global_config()
                     if not conf or not getattr(conf, 'email', None):
                         return
+                    sync_game_of_life_activation_from_config()
 
                     new_opts = get_visible_group_names(conf.email)
                     configured_active = list(getattr(conf.email, 'active_groups', []) or [])

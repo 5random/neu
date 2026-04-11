@@ -2,10 +2,14 @@ from nicegui import ui
 
 from src.cam.camera import Camera
 from src.config import get_logger
+from src.gui.easter_egg import create_dashboard_game_layer
 from src.gui.ui_helpers import SECTION_ICONS, create_heading_row
 
 logger = get_logger('gui.camfeed')
 _VIDEO_STREAM_SOURCE = '/video_feed'
+_DEFAULT_CAMFEED_ID = 'cvd-default-cam'
+_DEFAULT_CAMFEED_STATUS_ID = 'cvd-default-cam-status'
+_DEFAULT_GOL_CONTROLS_ID = 'cvd-default-gol-controls'
 _DEFAULT_FEED_WIDTH = 1280
 _DEFAULT_FEED_HEIGHT = 720
 _FEED_MIN_HEIGHT_PX = 240
@@ -46,7 +50,8 @@ def _build_camfeed_surface_style(width: int, height: int) -> str:
     )
 
 def _build_camfeed_refresh_script() -> str:
-    return """
+    return (
+        """
             <script>
             (function(){
                 try {
@@ -77,13 +82,36 @@ def _build_camfeed_refresh_script() -> str:
                         return null;
                     }
                     function resolveStatus() {
-                        return document.getElementById('cvd-default-cam-status');
+                        return document.getElementById('__DEFAULT_CAMFEED_STATUS_ID__');
+                    }
+                    function setConwayReady(isReady) {
+                        var value = isReady ? 'true' : 'false';
+                        var ids = ['__DEFAULT_CAMFEED_ID__-gol-layer', '__DEFAULT_GOL_CONTROLS_ID__'];
+                        ids.forEach(function(id) {
+                            var element = document.getElementById(id);
+                            if (element) {
+                                element.dataset.conwayReady = value;
+                            }
+                        });
+                    }
+                    function emitStreamPhase(phase) {
+                        if (typeof emitEvent !== 'function') return;
+                        try {
+                            emitEvent('cvd_gol_stream_phase', {
+                                host_id: '__DEFAULT_CAMFEED_ID__',
+                                phase: phase || '',
+                                ready: phase === 'ready',
+                            });
+                        } catch (e) { /* ignore */ }
                     }
                     function setPhase(phase) {
-                        var root = document.getElementById('cvd-default-cam');
+                        var root = document.getElementById('__DEFAULT_CAMFEED_ID__');
                         if (root) {
                             root.dataset.streamState = phase || '';
+                            root.dataset.conwayReady = phase === 'ready' ? 'true' : 'false';
                         }
+                        setConwayReady(phase === 'ready');
+                        emitStreamPhase(phase);
                     }
                     function setStatus(message, phase) {
                         var label = resolveStatus();
@@ -141,7 +169,7 @@ def _build_camfeed_refresh_script() -> str:
                     }
 
                     function start(force) {
-                        var root = document.getElementById('cvd-default-cam');
+                        var root = document.getElementById('__DEFAULT_CAMFEED_ID__');
                         if (!root) return;
                         if (document.visibilityState !== 'visible') return;
                         var img = resolveImage(root);
@@ -175,7 +203,7 @@ def _build_camfeed_refresh_script() -> str:
                     }
                     function stop() {
                         clearRetry();
-                        var root = document.getElementById('cvd-default-cam');
+                        var root = document.getElementById('__DEFAULT_CAMFEED_ID__');
                         var img = resolveImage(root);
                         if (img) {
                             try { img.removeAttribute('src'); } catch(e) {}
@@ -214,6 +242,10 @@ def _build_camfeed_refresh_script() -> str:
             })();
             </script>
             """
+        .replace('__DEFAULT_CAMFEED_STATUS_ID__', _DEFAULT_CAMFEED_STATUS_ID)
+        .replace('__DEFAULT_CAMFEED_ID__', _DEFAULT_CAMFEED_ID)
+        .replace('__DEFAULT_GOL_CONTROLS_ID__', _DEFAULT_GOL_CONTROLS_ID)
+    )
 
 
 def create_camfeed_content(camera: Camera | None = None, *, camera_available: bool | None = None) -> None:
@@ -238,14 +270,20 @@ def create_camfeed_content(camera: Camera | None = None, *, camera_available: bo
 
         feed_width, feed_height = _resolve_camfeed_dimensions(camera)
         ui.label('Connecting camera...').classes('text-caption font-medium text-slate-400').props(
-            'id=cvd-default-cam-status'
+            f'id={_DEFAULT_CAMFEED_STATUS_ID}'
         )
-        (
-            # interactive_image keeps its own reactive src state; leaving it empty
-            # makes JS-only img.src changes invisible and fragile on re-renders.
-            ui.interactive_image(_VIDEO_STREAM_SOURCE)
-            .classes('w-full rounded-lg')
-            .style(_build_camfeed_surface_style(feed_width, feed_height))
-            .props('id=cvd-default-cam')
-        )
+        with ui.element('div').classes('relative w-full overflow-hidden rounded-lg'):
+            (
+                # interactive_image keeps its own reactive src state; leaving it empty
+                # makes JS-only img.src changes invisible and fragile on re-renders.
+                ui.interactive_image(_VIDEO_STREAM_SOURCE)
+                .classes('w-full rounded-lg block')
+                .style(_build_camfeed_surface_style(feed_width, feed_height))
+                .props(f'id={_DEFAULT_CAMFEED_ID} data-conway-ready=false')
+            )
+            game_layer = create_dashboard_game_layer(
+                stream_host_id=_DEFAULT_CAMFEED_ID,
+                controls_host_id=_DEFAULT_GOL_CONTROLS_ID,
+            )
+        game_layer.build_controls()
         ui.add_body_html(_build_camfeed_refresh_script())
