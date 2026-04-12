@@ -3304,11 +3304,11 @@ def load_config(path: str = "config/config.yaml", *, startup_fallback: bool = Fa
         data["gui"] = _normalize_loaded_gui_data(data.get("gui", {}), bootstrap_logger)
         cfg = AppConfig(
             metadata=Metadata(**data.get("metadata", {
-                "version": 1.0,
+                "version": 2.0,
                 "description": "CVD-Tracker",
                 "cvd_id": 0,
                 "cvd_name": "Default_CVD",
-                "released_at": "2023-01-01",
+                "released_at": "2026-04-14",
             })),
             webcam=WebcamConfig(**data["webcam"]),
             uvc_controls=UVCConfig(
@@ -3395,11 +3395,11 @@ def _create_default_config(*, log_creation: bool = True) -> AppConfig:
         logger.info("creating default config")
     return AppConfig(
         metadata=Metadata(
-            version="1.0",
+            version="2.0",
             description="CVD-Tracker",
             cvd_id=0,
             cvd_name="Default_CVD",
-            released_at="2023-01-01",
+            released_at="2026-04-14",
         ),
         webcam=WebcamConfig(
             camera_index=0,
@@ -3407,7 +3407,7 @@ def _create_default_config(*, log_creation: bool = True) -> AppConfig:
             fps=30,
             preview_fps=15,
             preview_max_width=1280,
-            preview_jpeg_quality=75,
+            preview_jpeg_quality=70,
             resolution=[{"width": 320, "height": 240},
                         {"width": 352, "height": 288},
                         {"width": 640, "height": 480},
@@ -3428,7 +3428,7 @@ def _create_default_config(*, log_creation: bool = True) -> AppConfig:
         motion_detection=MotionDetectionConfig(
             region_of_interest={"enabled": False, "x": 100, "y": 100, "width": 300, "height": 200},
             sensitivity=0.1, background_learning_rate=0.005, min_contour_area=252,
-            frame_skip=2, processing_max_width=640,
+            frame_skip=1, processing_max_width=800,
         ),
         measurement=MeasurementConfig(
             auto_start=False, session_timeout_minutes=60, session_timeout_seconds=3600, save_alert_images=True,
@@ -3448,7 +3448,7 @@ def _create_default_config(*, log_creation: bool = True) -> AppConfig:
             smtp_server="smtp.example.com",
             smtp_port=25,
             sender_email="sender@example.com",
-            send_as_html=False,
+            send_as_html=True,
             website_url_source=EmailConfig.WEBSITE_URL_SOURCE_RUNTIME_PERSIST,
             templates={
                 "alert": {

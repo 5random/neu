@@ -11,7 +11,7 @@ metadata:
   description: CVD-Tracker
   cvd_id: 0
   cvd_name: Instanz
-  released_at: '2024-04-01'
+  released_at: '2026-04-14'
 
 # ---------------------------------------------------------------------------
 # Webcam
@@ -70,10 +70,10 @@ uvc_controls:
 motion_detection:
   region_of_interest:
     enabled: true
-    x: 94
-    y: 51
-    width: 1091
-    height: 603
+    x: 100
+    y: 100
+    width: 300
+    height: 200
   sensitivity: 0.1
   background_learning_rate: 0.005
   min_contour_area: 252
