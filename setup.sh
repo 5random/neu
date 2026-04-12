@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # -----------------------------------------------------------------------------
 ENV_NAME="${ENV_NAME:-cvd-tracker}"
 CONDA_CHANNEL="${CONDA_CHANNEL:-conda-forge}"
-CLONE_URL="${CLONE_URL:-https://github.com/5random/neu.git}"
+CLONE_URL="${CLONE_URL:-https://collaborating.tuhh.de/cuf3111/cvd_tracker.git}"
 CLONE_DIR="${CLONE_DIR:-$SCRIPT_DIR}"
 PORT="${PORT:-8080}"
 SERVICE_NAME="${SERVICE_NAME:-cvd_tracker}"

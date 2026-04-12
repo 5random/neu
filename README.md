@@ -8,13 +8,13 @@ For further details, see [projektbeschreibung.md](projektbeschreibung.md).
 
 ## Installation
 
-Install [Raspberry Pi OS Lite](https://www.raspberrypi.com/documentation/computers/getting-started.html) on your Raspberry Pi.
+Install [Raspberry Pi OS Lite](https://www.raspberrypi.com/documentation/computers/getting-started.html) on your Raspberry Pi. When installing, activate SSH; you won't need to set up Wi-Fi as it is not needed.
 
 Clone the repository:
 
 ```bash
 sudo apt install git
-git clone https://github.com/5random/neu.git
+git clone https://collaborating.tuhh.de/cuf3111/cvd_tracker.git
 cd neu
 ```
 
@@ -24,10 +24,20 @@ Run the setup script:
 bash setup.sh full
 ```
 
-Follow the prompts. The script installs the required system packages, micromamba, the Python environment, configures the Pi, writes the application settings, and enables the service.
+Alternatively, start the setup script with the following commands:
+
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+Follow the prompts. The script installs the required system packages, micromamba, the Python environment, configures the Pi, writes the application settings, and enables the service. Enter IP-Adress for Proxy HTTPS.
 
 ## Usage
 
 1. Connect the UVC webcam to the Raspberry Pi.
 2. Power on the Pi and wait until the setup has finished.
 3. Open the URL shown by the setup script.
+
+## CAD Files for 3D-Printed Camera Arm
+CAD files are provided via GitLab (CAD-Files.zip).
