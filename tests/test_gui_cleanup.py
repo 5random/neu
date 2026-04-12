@@ -23,6 +23,42 @@ def test_cleanup_application_runs_sync_cleanup_once_and_marks_completion(monkeyp
     assert gui_cleanup._cleanup_completed.is_set() is True
 
 
+def test_cleanup_application_sync_retries_partial_camera_cleanup(monkeypatch) -> None:
+    cleanup_calls: list[str] = []
+    sleep_calls: list[float] = []
+    camera = SimpleNamespace(cleaned=False)
+
+    def cleanup() -> None:
+        cleanup_calls.append("camera_cleanup")
+        if len(cleanup_calls) >= 2:
+            camera.cleaned = True
+
+    camera.cleanup = cleanup
+
+    monkeypatch.setattr(gui_cleanup.instances, "get_instances", lambda: (camera, None, None))
+    monkeypatch.setattr(gui_cleanup.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    gui_cleanup.cleanup_application_sync()
+
+    assert cleanup_calls == ["camera_cleanup", "camera_cleanup"]
+    assert sleep_calls == [gui_cleanup._CAMERA_CLEANUP_RETRY_DELAY_SECONDS]
+    assert camera.cleaned is True
+
+
+def test_cleanup_application_sync_does_not_retry_when_camera_lacks_clean_state(monkeypatch) -> None:
+    cleanup_calls: list[str] = []
+    sleep_calls: list[float] = []
+    camera = SimpleNamespace(cleanup=lambda: cleanup_calls.append("camera_cleanup"))
+
+    monkeypatch.setattr(gui_cleanup.instances, "get_instances", lambda: (camera, None, None))
+    monkeypatch.setattr(gui_cleanup.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    gui_cleanup.cleanup_application_sync()
+
+    assert cleanup_calls == ["camera_cleanup"]
+    assert sleep_calls == []
+
+
 def test_signal_handler_runs_cleanup_before_shutdown(monkeypatch) -> None:
     call_order: list[object] = []
 

@@ -70,10 +70,10 @@ uvc_controls:
 motion_detection:
   region_of_interest:
     enabled: true
-    x: 167
-    y: 67
-    width: 937
-    height: 569
+    x: 94
+    y: 51
+    width: 1091
+    height: 603
   sensitivity: 0.1
   background_learning_rate: 0.005
   min_contour_area: 252

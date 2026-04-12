@@ -98,7 +98,7 @@ class EMailSystem:
         except Exception:
             effective = email_config.recipients
         if not effective:
-            raise ValueError("At least one recipient must be configured (recipients or active groups)")
+            raise ValueError("At least one recipient must be configured (static recipients or active groups)")
 
         if not measurement_config:
             raise ValueError("MeasurementConfig is needed")

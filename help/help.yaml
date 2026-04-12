@@ -64,7 +64,7 @@ help:
         - If the image is too dark or too bright, adjust the exposure and gain settings.
         - If the image is too noisy, consider adjusting the gain or use some lighting.
         - If the image turns pinky or has generally weird colors, it may be, that the IR mode is active. This mode automatically activates in low-light conditions.
-        - If the image is blocked by some weird looking green blocks, you may be trapped in a easter egg. Have fun escaping it...
+        - If you see some strange-looking green blocks blocking your image, you might be trapped in an Easter egg. Have fun escaping it...
 
         ## Notes
         - Note that the used camera has support for night vision via IR LEDs, so the Image can look very different in day and night conditions. Adjusting the exposure and gain can help to get a clear image in both cases.
