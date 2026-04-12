@@ -242,11 +242,11 @@ def _is_absolute_http_url(value: object | None) -> bool:
 
 @dataclass
 class Metadata:
-    version: str = "1.0"
+    version: str = "2.0"
     description: str = "CVD-Tracker"
     cvd_id: int = 0
     cvd_name: str = "Default_CVD"
-    released_at: str = "2023-01-01"
+    released_at: str = "2026-04-14"
 
 # ---------------------------------------------------------------------------
 # Logging Enums & Classes
@@ -326,7 +326,7 @@ class WebcamConfig:
     resolution: List[Dict[str, int]]
     preview_fps: int = 15
     preview_max_width: int = 1280
-    preview_jpeg_quality: int = 75
+    preview_jpeg_quality: int = 65
 
     def get_default_resolution(self) -> Resolution:
         return Resolution(**self.default_resolution)
@@ -396,8 +396,8 @@ class MotionDetectionConfig:
     sensitivity: float
     background_learning_rate: float
     min_contour_area: int
-    frame_skip: int = 2
-    processing_max_width: int = 640
+    frame_skip: int = 1
+    processing_max_width: int = 800
 
     def get_roi(self) -> ROI:
         return ROI(**self.region_of_interest)
@@ -509,7 +509,7 @@ class EmailConfig:
     smtp_port: int
     sender_email: str
     templates: Dict[str, Dict[str, str]]
-    send_as_html: bool = False
+    send_as_html: bool = True
     website_url_source: str = "runtime_persist"
     # Recipient groups and active group selection
     groups: Dict[str, List[str]] = field(default_factory=dict)
