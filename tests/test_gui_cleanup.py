@@ -10,6 +10,7 @@ def test_cleanup_application_runs_sync_cleanup_once_and_marks_completion(monkeyp
     monkeypatch.setattr(gui_cleanup, "_shutdown_requested", threading.Event())
     monkeypatch.setattr(gui_cleanup, "_cleanup_completed", threading.Event())
     monkeypatch.setattr(gui_cleanup, "_shutdown_lock", threading.Lock())
+    monkeypatch.setattr(gui_cleanup, "_cleanup_owner_thread_id", None)
     monkeypatch.setattr(
         gui_cleanup,
         "cleanup_application_sync",
@@ -62,10 +63,14 @@ def test_cleanup_application_sync_does_not_retry_when_camera_lacks_clean_state(m
 def test_signal_handler_runs_cleanup_before_shutdown(monkeypatch) -> None:
     call_order: list[object] = []
 
+    def cleanup_application(*, wait_if_already_running: bool = False) -> bool:
+        call_order.append(("cleanup", wait_if_already_running))
+        return True
+
     monkeypatch.setattr(
         gui_cleanup,
         "cleanup_application",
-        lambda *, wait_if_already_running=False: call_order.append(("cleanup", wait_if_already_running)),
+        cleanup_application,
     )
     monkeypatch.setattr(gui_cleanup, "app", SimpleNamespace(shutdown=lambda: call_order.append("shutdown")))
 
@@ -81,6 +86,7 @@ def test_signal_handler_uses_cleanup_idempotence_for_repeated_signals(monkeypatc
     monkeypatch.setattr(gui_cleanup, "_shutdown_requested", threading.Event())
     monkeypatch.setattr(gui_cleanup, "_cleanup_completed", threading.Event())
     monkeypatch.setattr(gui_cleanup, "_shutdown_lock", threading.Lock())
+    monkeypatch.setattr(gui_cleanup, "_cleanup_owner_thread_id", None)
     monkeypatch.setattr(
         gui_cleanup,
         "cleanup_application_sync",
@@ -95,6 +101,28 @@ def test_signal_handler_uses_cleanup_idempotence_for_repeated_signals(monkeypatc
     assert shutdown_calls == ["shutdown", "shutdown"]
 
 
+def test_signal_handler_reentrant_signal_does_not_deadlock_or_shutdown_early(monkeypatch) -> None:
+    call_order: list[str] = []
+
+    monkeypatch.setattr(gui_cleanup, "_shutdown_requested", threading.Event())
+    monkeypatch.setattr(gui_cleanup, "_cleanup_completed", threading.Event())
+    monkeypatch.setattr(gui_cleanup, "_shutdown_lock", threading.Lock())
+    monkeypatch.setattr(gui_cleanup, "_cleanup_owner_thread_id", None)
+
+    def cleanup_sync() -> None:
+        call_order.append("cleanup-start")
+        gui_cleanup.signal_handler(15, None)
+        call_order.append("cleanup-end")
+
+    monkeypatch.setattr(gui_cleanup, "cleanup_application_sync", cleanup_sync)
+    monkeypatch.setattr(gui_cleanup, "app", SimpleNamespace(shutdown=lambda: call_order.append("shutdown")))
+
+    gui_cleanup.signal_handler(15, None)
+
+    assert call_order == ["cleanup-start", "cleanup-end", "shutdown"]
+    assert gui_cleanup._cleanup_completed.is_set() is True
+
+
 def test_signal_handler_waits_for_cleanup_already_running(monkeypatch) -> None:
     cleanup_calls: list[str] = []
     shutdown_calls: list[str] = []
@@ -105,6 +133,7 @@ def test_signal_handler_waits_for_cleanup_already_running(monkeypatch) -> None:
     monkeypatch.setattr(gui_cleanup, "_shutdown_requested", threading.Event())
     monkeypatch.setattr(gui_cleanup, "_cleanup_completed", threading.Event())
     monkeypatch.setattr(gui_cleanup, "_shutdown_lock", threading.Lock())
+    monkeypatch.setattr(gui_cleanup, "_cleanup_owner_thread_id", None)
 
     def cleanup_sync() -> None:
         cleanup_started.set()

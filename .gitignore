@@ -10,6 +10,9 @@ alerts/
 .DS_Store
 .env
 .env.*
+.pytest_*
+.review_manual_*
+.review_tmp_*
 main.storage_secret
 .vscode/
 .idea/
