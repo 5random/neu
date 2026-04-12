@@ -70,6 +70,8 @@ def _initialize_camera_test_state(camera: Camera) -> Camera:
     camera._init_state_lock = threading.Lock()
     camera._cleanup_lock = threading.Lock()
     camera._cleanup_in_progress = False
+    camera._preview_consumers_lock = threading.Lock()
+    camera._preview_consumer_count = 0
     camera.cleaned = False
     return camera
 
@@ -1501,10 +1503,11 @@ def test_restore_video_runtime_accepts_non_camera_video_source_stub(monkeypatch)
 
 
 def test_build_video_frame_response_prefers_cached_jpeg_frame(monkeypatch) -> None:
+    live_frame = np.zeros((2, 2, 3), dtype=np.uint8)
     video_source = SimpleNamespace(
         placeholder=SimpleNamespace(body=b"stub-camera"),
         get_current_jpeg_frame=lambda: b"cached-jpeg",
-        get_current_frame=lambda copy_frame=False: (_ for _ in ()).throw(AssertionError("frame fallback not expected")),
+        get_current_frame=lambda copy_frame=False: live_frame,
         logger=logging.getLogger("test.camera.cached_jpeg"),
     )
 
@@ -2499,6 +2502,30 @@ def test_camera_cleanup_clears_published_frames_on_success() -> None:
     camera.cleanup()
 
     assert camera.cleaned is True
+    assert camera.current_frame is None
+    assert camera.get_current_jpeg_frame() is None
+
+
+def test_camera_cleanup_tolerates_missing_motion_result_callback_registry() -> None:
+    camera = _make_camera_runtime_stub("test.camera.cleanup_missing_result_callbacks")
+    camera._timer_lock = threading.Lock()
+    camera._config_save_timer = None
+    camera._frame_pool = collections.deque([1, 2, 3])
+    camera._stop_frame_capture_and_wait = lambda timeout=2.0: True
+    camera._try_release_video_capture = lambda timeout=0.05: True
+    camera.current_frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    camera._current_jpeg_frame = b"cached-jpeg"
+    camera._motion_callbacks = {"cb": object()}
+    camera.motion_enabled = True
+
+    assert not hasattr(camera, "_motion_result_callbacks")
+
+    camera.cleanup()
+
+    assert camera.cleaned is True
+    assert camera._motion_callbacks == {}
+    assert camera.motion_enabled is False
+    assert list(camera._frame_pool) == []
     assert camera.current_frame is None
     assert camera.get_current_jpeg_frame() is None
 

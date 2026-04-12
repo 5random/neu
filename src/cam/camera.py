@@ -172,14 +172,6 @@ def _build_video_frame_response(camera: "_ActiveVideoSource | None") -> Response
     if camera is None:
         return Response(content=_get_video_placeholder_body(), media_type="image/png")
 
-    cached_frame = _get_cached_video_frame_bytes(camera)
-    if cached_frame is not None:
-        return Response(content=cached_frame, media_type="image/jpeg")
-
-    preview_frame = _build_preview_frame_bytes(camera)
-    if preview_frame is not None:
-        return Response(content=preview_frame, media_type="image/jpeg")
-
     try:
         frame = camera.get_current_frame(copy_frame=False)
     except Exception as exc:
@@ -188,6 +180,14 @@ def _build_video_frame_response(camera: "_ActiveVideoSource | None") -> Response
 
     if frame is None:
         return Response(content=_get_video_placeholder_body(camera), media_type="image/png")
+
+    cached_frame = _get_cached_video_frame_bytes(camera)
+    if cached_frame is not None:
+        return Response(content=cached_frame, media_type="image/jpeg")
+
+    preview_frame = _build_preview_frame_bytes(camera)
+    if preview_frame is not None:
+        return Response(content=preview_frame, media_type="image/jpeg")
 
     try:
         ret, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
@@ -2003,8 +2003,12 @@ class Camera:
                         self.logger.debug(f"Error cleaning up motion detector: {e}")
                     self.motion_detector = None
                 with self._motion_callbacks_lock:
-                    self._motion_callbacks.clear()
-                    self._motion_result_callbacks.clear()
+                    motion_callbacks = getattr(self, "_motion_callbacks", None)
+                    if hasattr(motion_callbacks, "clear"):
+                        motion_callbacks.clear()
+                    motion_result_callbacks = getattr(self, "_motion_result_callbacks", None)
+                    if hasattr(motion_result_callbacks, "clear"):
+                        motion_result_callbacks.clear()
                     self.motion_enabled = False
                 
                 # Clear frame pool (Issue #5)
