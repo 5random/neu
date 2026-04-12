@@ -85,6 +85,10 @@ html { scroll-behavior: smooth; }
     border-left: 3px solid var(--q-primary);
     padding-left: 8px;
 }
+.cvd-help .q-card > .q-expansion-item,
+.cvd-help .q-card > .q-expansion-item > .q-expansion-item__container {
+    width: 100%;
+}
 .cvd-help .q-expansion-item .q-item__label { font-weight: 700; letter-spacing: .2px; }
 .cvd-sticky { z-index: 10000 !important; }
 body .q-tooltip, .q-tooltip { z-index: 11000 !important; }
@@ -143,7 +147,7 @@ body.body--dark #cvd-help-links a.cvd-quick-link.active-link {
                     _open_section(_anchor)
                 link = ui.link(section['title'], f"#{section['anchor_id']}") \
                     .classes('cvd-quick-link block px-2 py-1 rounded') \
-                    .props(f"data-anchor={section['anchor_id']}")
+                    .props(f'data-anchor={json.dumps(section["anchor_id"])}')
                 link.on(
                     'click',
                     _handle_click,
@@ -173,8 +177,8 @@ body.body--dark #cvd-help-links a.cvd-quick-link.active-link {
             ui.button('Back', on_click=lambda: ui.navigate.to('/', new_tab=False)).props('flat').tooltip('Back to Home')
 
         for section in sections:
-            with ui.card().classes('w-full').props(f"id={section['anchor_id']} flat bordered"):
-                with ui.expansion(section['title'], value=True, icon='article').props('expand-separator') as expansion:
+            with ui.card().classes('w-full').props(f'id={json.dumps(section["anchor_id"])} flat bordered'):
+                with ui.expansion(section['title'], value=True, icon='article').classes('w-full').props('expand-separator') as expansion:
                     section_openers[section['anchor_id']] = expansion.open
                     if section['route']:
                         ui.link('Open related section in app', section['route']).classes('text-primary text-caption q-mb-xs')

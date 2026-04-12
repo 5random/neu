@@ -9,9 +9,9 @@
 metadata:
   version: '2.0'
   description: CVD-Tracker
-  cvd_id: 1
+  cvd_id: 0
   cvd_name: Instanz
-  released_at: '2024-04-01'
+  released_at: '2026-04-14'
 
 # ---------------------------------------------------------------------------
 # Webcam
@@ -19,9 +19,12 @@ metadata:
 webcam:
   camera_index: 0
   default_resolution:
-    width: 1920
-    height: 1080
+    width: 1280
+    height: 720
   fps: 30
+  preview_fps: 15
+  preview_max_width: 1280
+  preview_jpeg_quality: 70
   resolution:
     - width: 320
       height: 240
@@ -69,11 +72,13 @@ motion_detection:
     enabled: true
     x: 100
     y: 100
-    width: 1720
-    height: 880
+    width: 300
+    height: 200
   sensitivity: 0.1
   background_learning_rate: 0.005
   min_contour_area: 252
+  frame_skip: 1
+  processing_max_width: 800
 
 # ---------------------------------------------------------------------------
 # Measurement
@@ -102,8 +107,7 @@ measurement:
 email:
   website_url: http://localhost:8080/
   website_url_source: runtime_persist
-  recipients:
-    - willem.dittloff@tuhh.de
+  recipients: []
   smtp_server: mail.tuhh.de
   smtp_port: 25
   sender_email: CHANGE_ME@tuhh.de
@@ -218,6 +222,7 @@ gui:
   session_cookie_https_only: false
   auto_open_browser: false
   update_interval_ms: 100
+  status_refresh_interval_ms: 1000
 
 # ---------------------------------------------------------------------------
 # Logging

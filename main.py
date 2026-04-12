@@ -24,9 +24,12 @@ from nicegui.elements.timer import Timer as NiceGUITimer
 from nicegui.timer import Timer as NiceGUIBaseTimer
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from src.config import load_config, get_logger
+from src import config as config_module
+from src.config import load_config, get_logger, set_global_config
+from src.gui import instances as gui_instances
 from src.gui.gui_ import create_gui
 from src.gui.layout import compute_gui_title
+from src.gui.util import is_deleted_parent_slot_error
 
 from typing import Any, Callable, Dict
 
@@ -86,11 +89,6 @@ def install_asyncio_exception_handler(logger: logging.Logger) -> None:
     app.on_startup(configure_loop_exception_handler)
 
 
-def _is_deleted_parent_slot_error(exc: BaseException) -> bool:
-    """Return True for the known NiceGUI timer error after parent deletion."""
-    return isinstance(exc, RuntimeError) and "parent slot of the element has been deleted" in str(exc).lower()
-
-
 def install_nicegui_timer_patch(logger: logging.Logger) -> None:
     """Patch NiceGUI timers to stop cleanly when their parent slot is already gone."""
     global _nicegui_timer_patch_installed
@@ -105,7 +103,7 @@ def install_nicegui_timer_patch(logger: logging.Logger) -> None:
         try:
             return original_get_context(self)
         except RuntimeError as exc:
-            if not _is_deleted_parent_slot_error(exc):
+            if not is_deleted_parent_slot_error(exc):
                 raise
             try:
                 self.cancel()
@@ -120,7 +118,7 @@ def install_nicegui_timer_patch(logger: logging.Logger) -> None:
         try:
             _ = self.parent_slot
         except RuntimeError as exc:
-            if not _is_deleted_parent_slot_error(exc):
+            if not is_deleted_parent_slot_error(exc):
                 raise
             try:
                 self.cancel()
@@ -136,7 +134,7 @@ def install_nicegui_timer_patch(logger: logging.Logger) -> None:
         try:
             parent_slot = self.parent_slot
         except RuntimeError as exc:
-            if _is_deleted_parent_slot_error(exc):
+            if is_deleted_parent_slot_error(exc):
                 return
             raise
         if parent_slot is None:
@@ -144,7 +142,7 @@ def install_nicegui_timer_patch(logger: logging.Logger) -> None:
         try:
             parent_slot.parent.remove(self)
         except RuntimeError as exc:
-            if not _is_deleted_parent_slot_error(exc):
+            if not is_deleted_parent_slot_error(exc):
                 raise
 
     NiceGUITimer._get_context = patched_get_context
@@ -492,13 +490,68 @@ def create_fallback_logger() -> logging.Logger:
     
     return logger
 
+
+def _logger_has_output_handlers(candidate: logging.Logger | None) -> bool:
+    current_logger = candidate
+    visited: set[int] = set()
+    while isinstance(current_logger, logging.Logger):
+        logger_id = id(current_logger)
+        if logger_id in visited:
+            return False
+        visited.add(logger_id)
+        if current_logger.handlers:
+            return True
+        if not current_logger.propagate:
+            return False
+        current_logger = current_logger.parent
+    return False
+
+
+def _get_active_startup_logger() -> logging.Logger | None:
+    main_logger = logging.getLogger("cvd_tracker")
+    if _logger_has_output_handlers(main_logger):
+        return main_logger.getChild("main")
+    return None
+
+
+def _select_startup_error_logger(current_logger: logging.Logger | None) -> logging.Logger:
+    if current_logger is not None and _logger_has_output_handlers(current_logger):
+        return current_logger
+    return create_fallback_logger()
+
+
+def _should_restore_startup_config_registry(
+    *,
+    published_startup_config: bool,
+    create_gui_attempted: bool,
+    gui_initialized: bool,
+    previous_startup_report: object | None,
+) -> bool:
+    if not published_startup_config or gui_initialized:
+        return False
+    if not create_gui_attempted:
+        return True
+
+    current_startup_report = gui_instances.get_startup_report()
+    if current_startup_report is previous_startup_report:
+        return True
+    return current_startup_report is None or bool(getattr(current_startup_report, "fatal", False))
+
 def main() -> int:
 
     """Haupteinstiegspunkt der Anwendung"""
     args = parse_args()
+    logger = _get_active_startup_logger()
+    config_registry_snapshot = config_module._snapshot_global_config_registry()
+    previous_startup_report = gui_instances.get_startup_report()
+    published_startup_config = False
+    create_gui_attempted = False
+    gui_initialized = False
     try:
         # Konfiguration laden und Logger einrichten
-        cfg = load_config(args.config)
+        cfg = load_config(args.config, startup_fallback=True)
+        set_global_config(cfg, args.config)
+        published_startup_config = True
         logger = get_logger("main")
 
         logger.info("Starting CVD-Tracker application...")
@@ -509,12 +562,15 @@ def main() -> int:
         install_asyncio_exception_handler(logger)
         install_nicegui_timer_patch(logger)
 
+        create_gui_attempted = True
         create_gui(config_path=args.config)
+        gui_initialized = True
         
         # NiceGUI starten
         # Keep app.storage.user stable across restarts when no env secret is configured.
         storage_secret = resolve_storage_secret(logger)
-        ui_run_settings = resolve_ui_run_settings(cfg, args, logger)
+        active_cfg = config_module.get_global_config() or cfg
+        ui_run_settings = resolve_ui_run_settings(active_cfg, args, logger)
         logger.info(
             "Starting web UI on %s:%s (platform=%s, headless_linux=%s, auto_open_browser=%s, reverse_proxy_enabled=%s, root_path=%s)",
             ui_run_settings["host"],
@@ -526,7 +582,7 @@ def main() -> int:
             ui_run_settings["root_path"] or "/",
         )
 
-        window_title = compute_gui_title(cfg)
+        window_title = compute_gui_title(active_cfg)
 
         # Remember default favicon for later restore across clients
         try:
@@ -550,14 +606,28 @@ def main() -> int:
         )
 
     except ImportError as e:
-        logger = create_fallback_logger()
-        logger.error(f"Import error: {e}")
-        logger.error("Please install required dependencies manually: pip install -r requirements.txt")
+        if _should_restore_startup_config_registry(
+            published_startup_config=published_startup_config,
+            create_gui_attempted=create_gui_attempted,
+            gui_initialized=gui_initialized,
+            previous_startup_report=previous_startup_report,
+        ):
+            config_module._restore_global_config_registry(config_registry_snapshot)
+        error_logger = _select_startup_error_logger(logger)
+        error_logger.error(f"Import error: {e}")
+        error_logger.error("Please install required dependencies manually: pip install -r requirements.txt")
         return 1
         
     except Exception as e:
-        logger = create_fallback_logger()
-        logger.error(f"Error occurred at startup: {e}", exc_info=True)
+        if _should_restore_startup_config_registry(
+            published_startup_config=published_startup_config,
+            create_gui_attempted=create_gui_attempted,
+            gui_initialized=gui_initialized,
+            previous_startup_report=previous_startup_report,
+        ):
+            config_module._restore_global_config_registry(config_registry_snapshot)
+        error_logger = _select_startup_error_logger(logger)
+        error_logger.error(f"Error occurred at startup: {e}", exc_info=True)
         return 1
     
     return 0

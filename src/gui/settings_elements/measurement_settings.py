@@ -7,6 +7,7 @@ from typing import Optional, Callable, Any
 from nicegui import ui
 
 from src.config import EmailConfig, get_global_config, save_global_config, get_logger
+from src.gui.easter_egg import sync_game_of_life_activation_from_config
 from src.gui.email_visibility import (
     get_visible_active_groups as get_gui_visible_active_groups,
     get_visible_groups as get_gui_visible_groups,
@@ -603,6 +604,7 @@ def create_measurement_settings_card(
         current_cfg = get_global_config()
         if current_cfg is None:
             return
+        sync_game_of_life_activation_from_config()
 
         current_email_cfg = current_cfg.email
         current_groups = _visible_groups(current_email_cfg)
@@ -692,6 +694,7 @@ def create_measurement_settings_card(
                 email_system = instances.get_email_system()
                 if email_system is not None:
                     email_system.refresh_config()
+                sync_game_of_life_activation_from_config()
                 notification_state['recipient_pool'] = current_email_cfg.get_known_recipients()
                 notification_saved_state = _normalize_notification_state()
                 _refresh_notification_preview()

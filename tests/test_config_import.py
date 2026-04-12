@@ -1,11 +1,18 @@
+import logging
+import logging.handlers
 from dataclasses import asdict
 from pathlib import Path
 
+import pytest
 import yaml
 
+from src import config as config_module
 from src.config import (
     AppConfig,
+    ConfigLoadError,
     ConfigImportEntry,
+    LoggingConfig,
+    _reset_configured_logger,
     _create_default_config,
     analyze_imported_config_text,
     apply_imported_config_preview,
@@ -20,6 +27,19 @@ def _entry(preview: object, path: str) -> ConfigImportEntry:
     entries = [item for item in getattr(preview, "entries", []) if item.path == path]
     assert entries, f"missing entry for {path}"
     return entries[0]
+
+
+def _cleanup_temp_config_dir(temp_path: Path, *paths: Path) -> None:
+    _reset_configured_logger("cvd_tracker")
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except FileNotFoundError:
+            pass
+    try:
+        temp_path.rmdir()
+    except OSError:
+        pass
 
 
 def test_analyze_imported_config_reports_ready_invalid_missing_and_unknown() -> None:
@@ -281,7 +301,7 @@ email:
     assert "unknown event key" in entry.reason
 
 
-def test_load_config_uses_default_fallback_for_unknown_email_event_key() -> None:
+def test_load_config_rejects_unknown_email_event_key() -> None:
     default_cfg = _create_default_config()
     temp_path = Path(".pytest_local_runtime")
     temp_path.mkdir(exist_ok=True)
@@ -375,18 +395,10 @@ def test_load_config_uses_default_fallback_for_unknown_email_event_key() -> None
     }
     try:
         config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-        loaded = load_config(str(config_path))
-        assert loaded.email.notifications == default_cfg.email.notifications
+        with pytest.raises(ConfigLoadError, match="unknown event key"):
+            load_config(str(config_path))
     finally:
-        for path in (config_path, log_path):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-        try:
-            temp_path.rmdir()
-        except OSError:
-            pass
+        _cleanup_temp_config_dir(temp_path, config_path, log_path)
 
 
 def test_load_config_applies_https_defaults_to_legacy_yaml() -> None:
@@ -413,18 +425,79 @@ def test_load_config_applies_https_defaults_to_legacy_yaml() -> None:
         assert loaded.gui.root_path == ""
         assert loaded.gui.session_cookie_https_only is False
     finally:
-        for path in (config_path, log_path):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-        try:
-            temp_path.rmdir()
-        except OSError:
-            pass
+        _cleanup_temp_config_dir(temp_path, config_path, log_path)
 
 
-def test_load_config_replaces_invalid_email_section_with_defaults() -> None:
+def test_apply_defaults_reports_missing_sections_and_keys() -> None:
+    raw = config_module._app_config_asdict(_create_default_config(log_creation=False))
+    raw.pop("email")
+    raw["gui"].pop("root_path", None)
+    raw["gui"].pop("session_cookie_https_only", None)
+    raw["logging"].pop("max_file_size_mb", None)
+    raw["logging"].pop("backup_count", None)
+    warnings: list[str] = []
+
+    updated = config_module._apply_defaults(raw, warnings=warnings)
+
+    assert "email" in updated
+    assert updated["gui"]["root_path"] == ""
+    assert updated["gui"]["session_cookie_https_only"] is False
+    assert updated["logging"]["max_file_size_mb"] == 10
+    assert updated["logging"]["backup_count"] == 5
+    assert warnings == [
+        "Config section 'email' missing; using defaults.",
+        "Config section 'gui' missing keys ['root_path', 'session_cookie_https_only']; using defaults.",
+        "Config section 'logging' missing keys ['max_file_size_mb', 'backup_count']; using defaults.",
+    ]
+
+
+def test_apply_defaults_does_not_report_warnings_for_complete_config() -> None:
+    raw = config_module._app_config_asdict(_create_default_config(log_creation=False))
+    warnings: list[str] = []
+
+    updated = config_module._apply_defaults(raw, warnings=warnings)
+
+    assert updated["email"]["website_url_source"] == raw["email"]["website_url_source"]
+    assert warnings == []
+
+
+def test_apply_defaults_rejects_invalid_logging_section_type() -> None:
+    raw = config_module._app_config_asdict(_create_default_config(log_creation=False))
+    raw["logging"] = []
+
+    with pytest.raises(ConfigLoadError, match="Config section 'logging' must be a mapping"):
+        config_module._apply_defaults(raw, warnings=[])
+
+
+def test_load_config_logs_defaulting_warnings_after_successful_load() -> None:
+    raw = config_module._app_config_asdict(_create_default_config(log_creation=False))
+    raw.pop("email", None)
+    raw["gui"].pop("root_path", None)
+    raw["gui"].pop("session_cookie_https_only", None)
+    raw["logging"].pop("level", None)
+    raw["logging"].pop("backup_count", None)
+    temp_path = Path(".pytest_local_runtime_defaulting_warnings")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "defaulting_warnings.yaml"
+    log_path = temp_path / "defaulting_warnings.log"
+    raw["logging"]["file"] = str(log_path)
+    raw["logging"]["console_output"] = False
+
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+        loaded = load_config(str(config_path))
+
+        log_text = log_path.read_text(encoding="utf-8")
+        assert loaded.email.website_url_source == "runtime_persist"
+        assert "Config section 'email' missing; using defaults." in log_text
+        assert "Config section 'gui' missing keys ['root_path', 'session_cookie_https_only']; using defaults." in log_text
+        assert "Config section 'logging' missing keys ['level', 'backup_count']; using defaults." in log_text
+    finally:
+        _cleanup_temp_config_dir(temp_path, config_path, log_path)
+
+
+def test_load_config_rejects_invalid_email_section_type() -> None:
     raw = asdict(_create_default_config())
     raw["email"] = []
     temp_path = Path(".pytest_local_runtime_https_invalid_email_section")
@@ -435,24 +508,13 @@ def test_load_config_replaces_invalid_email_section_with_defaults() -> None:
 
     try:
         config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-
-        loaded = load_config(str(config_path))
-
-        assert loaded.email.website_url == "http://localhost:8080/"
-        assert loaded.email.website_url_source == "runtime_persist"
+        with pytest.raises(ConfigLoadError, match="Config section 'email' must be a mapping"):
+            load_config(str(config_path))
     finally:
-        for path in (config_path, log_path):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-        try:
-            temp_path.rmdir()
-        except OSError:
-            pass
+        _cleanup_temp_config_dir(temp_path, config_path, log_path)
 
 
-def test_load_config_replaces_invalid_gui_section_with_defaults() -> None:
+def test_load_config_rejects_invalid_gui_section_type() -> None:
     raw = asdict(_create_default_config())
     raw["gui"] = []
     temp_path = Path(".pytest_local_runtime_https_invalid_gui_section")
@@ -463,25 +525,13 @@ def test_load_config_replaces_invalid_gui_section_with_defaults() -> None:
 
     try:
         config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-
-        loaded = load_config(str(config_path))
-
-        assert loaded.gui.host == "localhost"
-        assert loaded.gui.forwarded_allow_ips == "127.0.0.1"
-        assert loaded.gui.root_path == ""
+        with pytest.raises(ConfigLoadError, match="Config section 'gui' must be a mapping"):
+            load_config(str(config_path))
     finally:
-        for path in (config_path, log_path):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-        try:
-            temp_path.rmdir()
-        except OSError:
-            pass
+        _cleanup_temp_config_dir(temp_path, config_path, log_path)
 
 
-def test_load_config_normalizes_invalid_gui_proxy_values() -> None:
+def test_load_config_rejects_invalid_gui_proxy_values() -> None:
     raw = asdict(_create_default_config())
     raw["gui"]["reverse_proxy_enabled"] = "false"
     raw["gui"]["forwarded_allow_ips"] = ["127.0.0.1"]
@@ -497,28 +547,13 @@ def test_load_config_normalizes_invalid_gui_proxy_values() -> None:
 
     try:
         config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-
-        loaded = load_config(str(config_path))
-
-        assert loaded.gui.reverse_proxy_enabled is False
-        assert loaded.gui.forwarded_allow_ips == "127.0.0.1"
-        assert loaded.gui.root_path == ""
-        assert loaded.gui.session_cookie_https_only is False
-        assert loaded.gui.auto_open_browser is False
-        assert loaded.gui.validate() == []
+        with pytest.raises(ConfigLoadError, match="gui.forwarded_allow_ips"):
+            load_config(str(config_path))
     finally:
-        for path in (config_path, log_path):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-        try:
-            temp_path.rmdir()
-        except OSError:
-            pass
+        _cleanup_temp_config_dir(temp_path, config_path, log_path)
 
 
-def test_load_config_normalizes_numeric_gui_host() -> None:
+def test_load_config_rejects_numeric_gui_host() -> None:
     raw = asdict(_create_default_config())
     raw["gui"]["host"] = 123
     temp_path = Path(".pytest_local_runtime_https_invalid_gui_host")
@@ -529,24 +564,13 @@ def test_load_config_normalizes_numeric_gui_host() -> None:
 
     try:
         config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-
-        loaded = load_config(str(config_path))
-
-        assert loaded.gui.host == "localhost"
-        assert loaded.gui.validate() == []
+        with pytest.raises(ConfigLoadError, match="gui.host"):
+            load_config(str(config_path))
     finally:
-        for path in (config_path, log_path):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-        try:
-            temp_path.rmdir()
-        except OSError:
-            pass
+        _cleanup_temp_config_dir(temp_path, config_path, log_path)
 
 
-def test_load_config_normalizes_invalid_email_website_url_source() -> None:
+def test_load_config_rejects_invalid_email_website_url_source() -> None:
     raw = asdict(_create_default_config())
     raw["email"]["website_url_source"] = False
     temp_path = Path(".pytest_local_runtime_https_invalid_email")
@@ -557,24 +581,116 @@ def test_load_config_normalizes_invalid_email_website_url_source() -> None:
 
     try:
         config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        with pytest.raises(ConfigLoadError, match="email.website_url_source"):
+            load_config(str(config_path))
+    finally:
+        _cleanup_temp_config_dir(temp_path, config_path, log_path)
+
+
+def test_load_config_preserves_existing_runtime_logger_on_invalid_config() -> None:
+    temp_path = Path(".pytest_local_runtime_preserve_logger_invalid")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "invalid_email_proxy_config.yaml"
+    existing_log_path = temp_path / "existing.log"
+    invalid_target_log_path = temp_path / "invalid_target.log"
+    raw = asdict(_create_default_config())
+    raw["email"]["website_url_source"] = False
+    raw["logging"]["file"] = str(invalid_target_log_path)
+    base_logging = LoggingConfig(level="WARNING", file=str(existing_log_path), console_output=False)
+
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        base_logger = base_logging.setup_logger("cvd_tracker")
+        base_handler = next(
+            handler
+            for handler in base_logger.handlers
+            if isinstance(handler, logging.handlers.RotatingFileHandler)
+        )
+        base_signature = config_module._configured_loggers["cvd_tracker"]
+
+        with pytest.raises(ConfigLoadError, match="email.website_url_source"):
+            load_config(str(config_path))
+
+        current_logger = logging.getLogger("cvd_tracker")
+        current_handlers = [
+            handler
+            for handler in current_logger.handlers
+            if isinstance(handler, logging.handlers.RotatingFileHandler)
+        ]
+        assert current_logger is base_logger
+        assert len(current_handlers) == 1
+        assert current_handlers[0] is base_handler
+        assert Path(current_handlers[0].baseFilename).resolve() == existing_log_path.resolve()
+        assert current_logger.level == getattr(logging, base_logging.level.upper())
+        assert current_logger.propagate is False
+        assert len(current_logger.handlers) == 1
+        assert config_module._configured_loggers["cvd_tracker"] == base_signature
+    finally:
+        _cleanup_temp_config_dir(
+            temp_path,
+            config_path,
+            existing_log_path,
+            invalid_target_log_path,
+        )
+
+
+def test_load_config_reconfigures_runtime_logger_after_successful_validation() -> None:
+    temp_path = Path(".pytest_local_runtime_reconfigure_logger_success")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "valid_runtime_config.yaml"
+    existing_log_path = temp_path / "existing.log"
+    updated_log_path = temp_path / "updated.log"
+    raw = asdict(_create_default_config())
+    raw["logging"]["level"] = "DEBUG"
+    raw["logging"]["file"] = str(updated_log_path)
+    raw["logging"]["console_output"] = True
+    base_logging = LoggingConfig(level="WARNING", file=str(existing_log_path), console_output=False)
+
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        base_logger = base_logging.setup_logger("cvd_tracker")
+        base_handler = next(
+            handler
+            for handler in base_logger.handlers
+            if isinstance(handler, logging.handlers.RotatingFileHandler)
+        )
 
         loaded = load_config(str(config_path))
 
-        assert loaded.email.website_url_source == "runtime_persist"
-        assert loaded.validate_all().get("email", []) == []
+        current_logger = logging.getLogger("cvd_tracker")
+        current_file_handlers = [
+            handler
+            for handler in current_logger.handlers
+            if isinstance(handler, logging.handlers.RotatingFileHandler)
+        ]
+        current_console_handlers = [
+            handler
+            for handler in current_logger.handlers
+            if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler)
+        ]
+        assert len(current_file_handlers) == 1
+        assert current_file_handlers[0] is not base_handler
+        assert Path(current_file_handlers[0].baseFilename).resolve() == updated_log_path.resolve()
+        assert len(current_console_handlers) == 1
+        assert current_logger.level == logging.DEBUG
+        assert current_logger.propagate is False
+        assert config_module._configured_loggers["cvd_tracker"] == (
+            "DEBUG",
+            str(config_module._resolve_config_path(str(updated_log_path))),
+            int(loaded.logging.max_file_size_mb),
+            int(loaded.logging.backup_count),
+            True,
+        )
     finally:
-        for path in (config_path, log_path):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-        try:
-            temp_path.rmdir()
-        except OSError:
-            pass
+        _cleanup_temp_config_dir(
+            temp_path,
+            config_path,
+            existing_log_path,
+            updated_log_path,
+        )
 
 
-def test_load_config_normalizes_invalid_email_website_url() -> None:
+def test_load_config_rejects_invalid_email_website_url() -> None:
     raw = asdict(_create_default_config())
     raw["email"]["website_url"] = False
     raw["email"]["website_url_source"] = "config"
@@ -586,24 +702,13 @@ def test_load_config_normalizes_invalid_email_website_url() -> None:
 
     try:
         config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-
-        loaded = load_config(str(config_path))
-
-        assert loaded.email.website_url == "http://localhost:8080/"
-        assert loaded.validate_all().get("email", []) == []
+        with pytest.raises(ConfigLoadError, match="email.website_url"):
+            load_config(str(config_path))
     finally:
-        for path in (config_path, log_path):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-        try:
-            temp_path.rmdir()
-        except OSError:
-            pass
+        _cleanup_temp_config_dir(temp_path, config_path, log_path)
 
 
-def test_load_config_normalizes_numeric_forwarded_allow_ips() -> None:
+def test_load_config_rejects_numeric_forwarded_allow_ips() -> None:
     raw = asdict(_create_default_config())
     raw["gui"]["reverse_proxy_enabled"] = True
     raw["gui"]["forwarded_allow_ips"] = 123
@@ -615,21 +720,44 @@ def test_load_config_normalizes_numeric_forwarded_allow_ips() -> None:
 
     try:
         config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-
-        loaded = load_config(str(config_path))
-
-        assert loaded.gui.forwarded_allow_ips == "127.0.0.1"
-        assert loaded.gui.validate() == []
+        with pytest.raises(ConfigLoadError, match="gui.forwarded_allow_ips"):
+            load_config(str(config_path))
     finally:
-        for path in (config_path, log_path):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-        try:
-            temp_path.rmdir()
-        except OSError:
-            pass
+        _cleanup_temp_config_dir(temp_path, config_path, log_path)
+
+
+def test_load_config_rejects_invalid_gui_port() -> None:
+    raw = asdict(_create_default_config())
+    raw["gui"]["port"] = 70000
+    temp_path = Path(".pytest_local_runtime_https_invalid_gui_port")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "invalid_gui_port.yaml"
+    log_path = temp_path / "invalid_gui_port.log"
+    raw["logging"]["file"] = str(log_path)
+
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        with pytest.raises(ConfigLoadError, match="gui.port"):
+            load_config(str(config_path))
+    finally:
+        _cleanup_temp_config_dir(temp_path, config_path, log_path)
+
+
+def test_load_config_rejects_invalid_gui_root_path() -> None:
+    raw = asdict(_create_default_config())
+    raw["gui"]["root_path"] = "cvd"
+    temp_path = Path(".pytest_local_runtime_https_invalid_root_path")
+    temp_path.mkdir(exist_ok=True)
+    config_path = temp_path / "invalid_root_path.yaml"
+    log_path = temp_path / "invalid_root_path.log"
+    raw["logging"]["file"] = str(log_path)
+
+    try:
+        config_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        with pytest.raises(ConfigLoadError, match="gui.root_path"):
+            load_config(str(config_path))
+    finally:
+        _cleanup_temp_config_dir(temp_path, config_path, log_path)
 
 
 def test_gui_validate_rejects_non_string_forwarded_allow_ips() -> None:

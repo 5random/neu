@@ -1,7 +1,9 @@
 import json
+from types import SimpleNamespace
 
 import numpy as np
 
+from src import alert_history
 from src.alert_history import append_history_entry, build_history_image_url, parse_history_timestamp, resolve_history_image_path
 from src.config import _create_default_config
 from src.measurement import MeasurementController
@@ -42,6 +44,12 @@ def test_parse_history_timestamp_accepts_supported_formats():
     assert parse_history_timestamp('2026-03-15 12:00:00') is not None
     assert parse_history_timestamp('2026-03-15T12:00:00') is not None
     assert parse_history_timestamp('15.03.2026 12:00:00') is None
+
+
+def test_get_history_dir_ignores_global_config_without_measurement(monkeypatch):
+    monkeypatch.setattr(alert_history, 'get_global_config', lambda: SimpleNamespace(measurement=None))
+
+    assert alert_history.get_history_dir() == alert_history.DEFAULT_HISTORY_DIR
 
 
 def test_measurement_history_stores_relative_posix_image_path(tmp_path):

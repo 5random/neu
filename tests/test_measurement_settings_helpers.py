@@ -1,3 +1,5 @@
+import inspect
+
 from src.gui.duration_utils import DurationDisplayConfig
 from src.gui.settings_elements import measurement_settings
 
@@ -42,3 +44,9 @@ def test_apply_duration_control_display_uses_public_number_api_only() -> None:
         ('step=0.1 suffix="min"', None),
     ]
     assert number_ctrl.updated == 1
+
+
+def test_measurement_settings_persist_notifications_syncs_game_of_life_activation() -> None:
+    source = inspect.getsource(measurement_settings.create_measurement_settings_card)
+
+    assert source.count("sync_game_of_life_activation_from_config()") >= 2

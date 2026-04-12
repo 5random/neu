@@ -1,180 +1,25 @@
 from __future__ import annotations
 
 from datetime import datetime
-import os
 import threading
 from typing import TYPE_CHECKING, Optional, Any, Callable, Literal
 
-from fastapi import Request
-from fastapi.responses import JSONResponse
-from nicegui import app, ui
+from nicegui import ui
 
 from src.cam.camera import Camera
 from src.config import get_logger
 from src.gui.default_elements.motion_sensitivity_card import create_motion_sensitivity_controls
+from src.gui.motion_runtime import (
+    _ensure_motion_update_route_registered,
+    register_combined_motion_listener,
+    resolve_combined_motion_state,
+)
 from src.gui.ui_helpers import SECTION_ICONS, create_heading_row
 
 if TYPE_CHECKING:
     from src.measurement import MeasurementController
 
 logger = get_logger('gui.motion_status')
-
-_api_state_lock = threading.RLock()
-_api_motion_detected = False
-_api_last_changed: Optional[datetime] = None
-_api_motion_listeners: list[Callable[[bool, datetime], None]] = []
-_api_route_registered = False
-
-
-def _register_api_motion_listener(listener: Callable[[bool, datetime], None]) -> None:
-    with _api_state_lock:
-        if listener not in _api_motion_listeners:
-            _api_motion_listeners.append(listener)
-
-
-def _unregister_api_motion_listener(listener: Callable[[bool, datetime], None]) -> None:
-    with _api_state_lock:
-        try:
-            _api_motion_listeners.remove(listener)
-        except ValueError:
-            return
-
-
-def _get_api_motion_state() -> tuple[bool, Optional[datetime]]:
-    with _api_state_lock:
-        return _api_motion_detected, _api_last_changed
-
-
-def _apply_api_motion_update(new_motion: bool, changed_at: Optional[datetime] = None) -> tuple[bool, datetime]:
-    global _api_motion_detected, _api_last_changed
-
-    change_time = changed_at or datetime.now()
-    listeners_snapshot: list[Callable[[bool, datetime], None]] = []
-
-    with _api_state_lock:
-        updated = new_motion != _api_motion_detected
-        if updated or _api_last_changed is None:
-            _api_motion_detected = new_motion
-            _api_last_changed = change_time
-        listeners_snapshot = list(_api_motion_listeners)
-        current_motion = _api_motion_detected
-        current_last_changed = _api_last_changed or change_time
-
-    for listener in listeners_snapshot:
-        try:
-            listener(current_motion, current_last_changed)
-        except Exception:
-            logger.exception('Failed to notify API motion listener')
-
-    return updated, current_last_changed
-
-
-def _is_motion_update_authorized(request: Request) -> tuple[bool, str]:
-    expected_bearer = os.getenv('CVD_API_TOKEN') or os.getenv('API_TOKEN')
-    expected_api_key = os.getenv('CVD_API_KEY') or os.getenv('API_KEY')
-
-    authz = request.headers.get('authorization') or request.headers.get('Authorization')
-    api_key = request.headers.get('x-api-key') or request.headers.get('X-API-Key')
-
-    if not expected_bearer and not expected_api_key:
-        return False, 'server_not_configured'
-
-    if expected_bearer and authz:
-        parts = authz.split()
-        if len(parts) == 2 and parts[0].lower() == 'bearer' and parts[1] == expected_bearer:
-            return True, 'ok'
-
-    if expected_api_key and api_key and api_key == expected_api_key:
-        return True, 'ok'
-
-    return False, 'invalid_credentials'
-
-
-def _parse_motion_query(request: Request) -> tuple[bool, bool]:
-    raw = request.query_params.get('motion')
-    if raw is None:
-        return False, False
-
-    val = raw.strip().lower()
-    truthy = {'1', 'true', 't', 'yes', 'y', 'on'}
-    falsy = {'0', 'false', 'f', 'no', 'n', 'off'}
-    if val in truthy:
-        return True, True
-    if val in falsy:
-        return False, True
-    raise ValueError(f'invalid motion value: {raw}')
-
-
-def _ensure_motion_update_route_registered() -> None:
-    global _api_route_registered
-
-    if _api_route_registered:
-        return
-
-    @app.get('/api/motion/update')
-    async def update_motion_status(request: Request) -> JSONResponse:
-        try:
-            ok, reason = _is_motion_update_authorized(request)
-            client_ip = getattr(request.client, 'host', 'unknown')
-            if not ok:
-                if reason == 'server_not_configured':
-                    logger.error(
-                        'Unauthorized attempt but server has no API secret configured; client=%s',
-                        client_ip,
-                    )
-                    return JSONResponse(
-                        status_code=401,
-                        content={
-                            'status': 'error',
-                            'error': 'unauthorized',
-                            'message': 'API secret not configured on server. Set CVD_API_TOKEN or CVD_API_KEY.',
-                        },
-                    )
-                logger.warning('Unauthorized request to motion update; client=%s', client_ip)
-                return JSONResponse(
-                    status_code=401,
-                    content={
-                        'status': 'error',
-                        'error': 'unauthorized',
-                        'message': 'Invalid or missing credentials',
-                    },
-                )
-
-            new_motion, present = _parse_motion_query(request)
-            if not present:
-                return JSONResponse(
-                    status_code=400,
-                    content={
-                        'status': 'error',
-                        'error': 'bad_request',
-                        'message': "Missing required query parameter 'motion'",
-                    },
-                )
-
-            updated, last_changed = _apply_api_motion_update(new_motion)
-            return JSONResponse(
-                status_code=200,
-                content={
-                    'status': 'success',
-                    'updated': updated,
-                    'motion': new_motion if updated else _get_api_motion_state()[0],
-                    'last_changed': last_changed.isoformat(),
-                },
-            )
-        except ValueError as exc:
-            logger.warning('Bad request in motion update: %s', exc)
-            return JSONResponse(
-                status_code=400,
-                content={'status': 'error', 'error': 'bad_request', 'message': str(exc)},
-            )
-        except Exception:
-            logger.exception('Unexpected error in motion update handler')
-            return JSONResponse(
-                status_code=500,
-                content={'status': 'error', 'error': 'server_error', 'message': 'Internal server error'},
-            )
-
-    _api_route_registered = True
 
 
 def create_motion_status_element(
@@ -263,50 +108,22 @@ def create_motion_status_element(
             refresh_view()
         return should_refresh
 
-    def _apply_motion_result(result: Any) -> bool:
-        timestamp = getattr(result, 'timestamp', None)
-        changed_at = (
-            datetime.fromtimestamp(float(timestamp))
-            if isinstance(timestamp, (int, float))
-            else datetime.now()
-        )
-        return _apply_motion_state(bool(getattr(result, 'motion_detected', False)), changed_at)
-
     def _sync_current_motion_state() -> None:
-        camera_result = camera.get_last_motion_result()
-        api_motion, api_last_changed = _get_api_motion_state()
-        camera_changed_at: Optional[datetime] = None
-        updated = False
-
-        if camera_result is not None:
-            timestamp = getattr(camera_result, 'timestamp', None)
-            if isinstance(timestamp, (int, float)):
-                camera_changed_at = datetime.fromtimestamp(float(timestamp))
-
-        if camera_result is not None and camera_changed_at is not None and (
-            api_last_changed is None or camera_changed_at >= api_last_changed
-        ):
-            updated = _apply_motion_result(camera_result)
-        elif api_last_changed is not None:
-            updated = _apply_motion_state(api_motion, api_last_changed, allow_change_time_backfill=True)
+        combined_motion, combined_changed_at = resolve_combined_motion_state(camera)
+        updated = _apply_motion_state(
+            combined_motion,
+            combined_changed_at,
+            allow_change_time_backfill=combined_changed_at is not None,
+        )
         if not updated:
             refresh_view()
 
-    def _camera_motion_callback(_: Any, result: Any) -> None:
-        _apply_motion_result(result)
-
-    def _api_motion_listener(new_motion: bool, changed_at: datetime) -> None:
-        _apply_motion_state(new_motion, changed_at, allow_change_time_backfill=True)
-
-    def _unregister_motion_listeners() -> None:
-        try:
-            camera.disable_motion_detection(_camera_motion_callback)
-        except Exception:
-            logger.exception('Failed to unregister motion status camera listener')
-        try:
-            _unregister_api_motion_listener(_api_motion_listener)
-        except Exception:
-            logger.exception('Failed to unregister motion status API listener')
+    def _handle_motion_state_change(new_motion: bool, changed_at: Optional[datetime]) -> None:
+        _apply_motion_state(
+            new_motion,
+            changed_at,
+            allow_change_time_backfill=changed_at is not None,
+        )
 
     with ui.card().classes('w-full shadow-2 q-pa-sm'):
         with ui.row().classes('items-center justify-between w-full'):
@@ -340,26 +157,12 @@ def create_motion_status_element(
     except Exception:
         client = None
 
-    if client is not None:
-        previous_cleanup = getattr(client, 'cvd_motion_status_listener_cleanup', None)
-        if callable(previous_cleanup):
-            previous_cleanup()
-
-    camera.enable_motion_detection(_camera_motion_callback)
-    _register_api_motion_listener(_api_motion_listener)
-    logger.info('Motion status listeners registered')
-
-    if client is not None:
-        setattr(client, 'cvd_motion_status_listener_cleanup', _unregister_motion_listeners)
-
-        def _cleanup_on_disconnect() -> None:
-            _unregister_motion_listeners()
-            try:
-                if getattr(client, 'cvd_motion_status_listener_cleanup', None) is _unregister_motion_listeners:
-                    delattr(client, 'cvd_motion_status_listener_cleanup')
-            except Exception:
-                pass
-
-        client.on_disconnect(_cleanup_on_disconnect)
-
+    register_combined_motion_listener(
+        camera,
+        client=client,
+        callback=_handle_motion_state_change,
+        cleanup_attr_name='cvd_motion_status_listener_cleanup',
+        disconnect_attr_name='cvd_motion_status_disconnect_handler',
+        logger=logger,
+    )
     _sync_current_motion_state()

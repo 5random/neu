@@ -4,7 +4,7 @@ help:
     - title: "Getting Started"
       link: "/"
       content: |
-        Welcome to the CVD-Tracker application. This page explains where the main workflows live in the current UI.
+        Welcome to the CVD-Tracker application. This page explains where the main workflows are working.
 
         ## Main Areas
         - **Dashboard**: Start and stop measurements, monitor live status, adjust the session alert counter, review alert history, and quickly change the active email groups for the current run.
@@ -12,7 +12,7 @@ help:
 
         ## What to do first:
         1. Open **Settings > Camera** and verify the live feed and set ROI, change the camera settings so you can see the monitored area clearly.
-        2. Open **Settings > E-Mail Notifications** and configure SMTP settings (e.g., server, port, credentials; defaults should be fine), add Recipients to the Address Book, configure static recipients and groups.
+        2. Open **Settings > E-Mail Notifications** and configure SMTP settings (e.g., server, port, credentials; defaults should be fine as long as you are in the TUHH network and use an existing email address), add Recipients to the Address Book, configure static recipients and groups.
         3. Open **Settings > Measurement** and choose which groups are active for the current run and which notification events should send notification emails.
         4. Return to the **Dashboard**, set a duration if needed, and start the measurement.
 
@@ -64,10 +64,11 @@ help:
         - If the image is too dark or too bright, adjust the exposure and gain settings.
         - If the image is too noisy, consider adjusting the gain or use some lighting.
         - If the image turns pinky or has generally weird colors, it may be, that the IR mode is active. This mode automatically activates in low-light conditions.
-        
+        - If you see some strange-looking green blocks blocking your image, you might be trapped in an Easter egg. Have fun escaping it...
+
         ## Notes
         - Note that the used camera has support for night vision via IR LEDs, so the Image can look very different in day and night conditions. Adjusting the exposure and gain can help to get a clear image in both cases.
-
+        - Note that there is a group with a suspicious interest in the circle of life. Sometimes they start experiments in the basement that cause weird interference patterns in the camera feed. If you see green blocks, you may want to check if they are up to something again.
 
     - title: "Motion Detection"
       link: "/settings#camera"
@@ -115,8 +116,7 @@ help:
         ## Recipient Structure and Event Permissions
         - **Groups** are collections of recipients that can be activated for the current run. They are managed in the E-Mail section and can be selected both in the Measurement settings and on the Dashboard.
         - **Static recipients** behave like an always-active hidden system group and are managed in the E-Mail section. They will receive all notification emails regardless of the active groups for the current run.
-        - Per-group and per-static-recipient event permissions define which notifications each source may receive. Alerts are allways sent to all active groups and static recipients.
-        - Group notification permissions can be edited both here and in the E-Mail group stepper.
+        - Per-group and per-static-recipient event permissions define which notifications each source may receive. Alerts are always sent to all active groups and static recipients.        - Group notification permissions can be edited both here and in the E-Mail group stepper.
 
         ## Alert History
         - The Alert History table on the Dashboard shows recent alerts with timestamps, associated images (if enabled).
@@ -156,9 +156,9 @@ help:
         The E-Mail section manages the delivery infrastructure and recipient structure used by measurement and alert emails.
 
         ## SMTP
-        - Enter the sender address, SMTP server, and SMTP port.
+        - Enter the sender address, SMTP server, and SMTP port. For TUHH's SMTP server, you can use `mail.tuhh.de` with port `25` and any valid TUHH email address as the sender. No username or password is required when sending from the TUHH intranet.
         - If you want your E-Mails to be pretty, use HTML-Mode.
-        - Use **Send test email** to verify that the current setup can reach the effective recipient set.
+        - Use **Send test email** to verify that the current setup can reach the effective recipient set. You should receive a test email if everything is set up correctly. If you don't receive the test email, check your SMTP settings and ensure that the intended recipients are included in the address book.
 
         ## Address Book
         - Add every known email address to the shared address book.
@@ -175,14 +175,15 @@ help:
         - Selecting an existing group loads it immediately into the stepper so you can continue editing without an extra load button.
         - Groups are used to organize non-static recipients and to select the audience for the current run.
         - Lifecycle permissions for each group can be edited here and in **Settings > Measurement**.
+        - A certain KV group appears to know more about life, death, and chaos than it should. Conway talked about this secret of life but lost interest and now it belongs to the institute's 'kv-gol' group.
 
         ## How to Configure E-Mail Notifications
         - **SMTP Server**: Enter the address of your SMTP server (for TUHH it's SMTP Server: mail.tuhh.de).
         - **Port**: Specify the port number used by your SMTP server (for TUHH it's Port 25).
-        - **Username and Password**: Username and Password are not required for sending emails via TUHH's SMTP server as long as the sender is using the TUHHs intranet.
+        - **Username and Password**: Username and Password are not required for sending emails via TUHH's SMTP server as long as the sender is using the TUHH intranet.
         - **Recipient Email**: Enter the email address in the address book by entering it in the 'Email' field and clicking 'Add'.
         - **Static Recipients**: Mark recipients as static to ensure they receive all notifications regardless of group selection.
-        - **Recipient Groups**: create a new recipient group in the according section with the 'Add Group' button to send notifications to a subset of recipients. You can create custom groups as needed or edit them.
+        - **Recipient Groups**: create a new recipient group in the corresponding section with the 'Add Group' button to send notifications to a subset of recipients. You can create custom groups as needed or edit them.
         - **Test Configuration**: Use the 'Send test email' button to verify that your settings are correct and that you (and your recipients) can receive emails. In HTML mode the image is embedded directly in the message; otherwise it is sent as an attachment. This will send a test email to all addresses in the address book, so make sure to only include addresses you have access to when testing.
 
         ## How to create a recipient group:
@@ -199,13 +200,13 @@ help:
         3. Switch to the **Edit** section.
         4. Select the group you want to edit.
         5. Delete the group by clicking the **Delete** button.
-        4. Make the desired changes to the recipient selection.
-        5. Set the lifecycle event permissions for the group (start, end, stop).
-        6. Click **Save Group** to persist the changes.
+        6. Make the desired changes to the recipient selection.
+        7. Set the lifecycle event permissions for the group (start, end, stop).
+        8. Click **Save Group** to persist the changes.
 
         ## Troubleshooting
         - If you don't receive test emails, verify that your SMTP settings are correct and that the intended recipients are included in the address book.
-        - If you receive test emails but not measurement notifications, check that the recipients are either static or part of an active group for the current run and that the relevant lifecycle events are enabled for those recipients. Aditionally, check the Alert-History or logs for any errors related to email sending.
+        - If you receive test emails but not measurement notifications, check that the recipients are either static or part of an active group for the current run and that the relevant lifecycle events are enabled for those recipients. Additionally, check the Alert-History or logs for any errors related to email sending.
 
     - title: "Appearance"
       link: "/settings#appearance"
@@ -246,7 +247,7 @@ help:
         3. Apply either all transferable settings or only selected ready entries.
 
         ## Import Notes
-        - This Feature is designed to help you transfer settings from one instance to another or restore a previous configuration from a backup file. Use with caution!
+        - This feature is designed to help you transfer settings from one instance to another or restore a previous configuration from a backup file. Use with caution!
         - Invalid values are blocked and shown explicitly.
         - Unknown settings are not imported.
         - The guided import updates only the settings you choose to apply.
@@ -297,7 +298,7 @@ help:
         To apply certain changes or recover from specific issues, you may want/need to restart the application.
 
         ## How to Access the Power Menu and Restart
-        - Click the KV-Logo button in the Header section. This will open the application-Power menu
+        - Click the KV-Logo button in the Header section. This will open the application Power Menu.
         - You will find the following options in the power menu:
           - **Restart Application**: This option restarts the application.
           - **Shutdown Application**: This option completely shuts down the application.

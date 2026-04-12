@@ -1,5 +1,6 @@
 from typing import Optional, TYPE_CHECKING, Callable, Any
 import json
+import re
 
 from fastapi import Request
 from nicegui import ui
@@ -8,7 +9,7 @@ from src.cam.camera import Camera
 if TYPE_CHECKING:
     from src.measurement import MeasurementController
 from src.notify import EMailSystem
-from .instances import get_instances
+from .instances import get_instances, get_startup_warnings
 from src.config import get_global_config, get_logger
 from src.gui.help.navigation import build_help_route_for_settings_anchor
 
@@ -37,6 +38,10 @@ def _get_core_instances() -> tuple[Optional[Camera], Optional['MeasurementContro
         return None, None, None
 
 
+def _collect_startup_warnings() -> list[str]:
+    return get_startup_warnings()
+
+
 @ui.page('/settings')
 def settings_page(request: Request) -> None:
     """Settings page with left quick links and stacked sections.
@@ -47,6 +52,7 @@ def settings_page(request: Request) -> None:
     logger.info('Opening settings page')
 
     camera, measurement_controller, email_system = _get_core_instances()
+    startup_warnings = _collect_startup_warnings()
     cfg = get_global_config()
     if cfg is None:
         ui.notify('Configuration not loaded', type='warning', position='bottom-right')
@@ -190,6 +196,7 @@ def settings_page(request: Request) -> None:
                                 # Reload to apply fresh state
                                 ui.run_javascript('window.location.reload()')
                             except Exception:
+                                logger.exception('Failed to reset UI preferences')
                                 reset_dialog.close()
                                 ui.notify('Failed to reset preferences', type='negative', position='bottom-right')
                         create_action_button('reset', on_click=_confirm_reset)
@@ -202,6 +209,36 @@ def settings_page(request: Request) -> None:
     collapse_state = get_runtime_ui_pref(StorageKeys.COLLAPSE_STATE, {}) or {}
     if not isinstance(collapse_state, dict):
         collapse_state = {}
+
+    def _render_lazy_section_error(section_id: str, title: str, content: Any) -> None:
+        try:
+            content.clear()
+        except Exception:
+            logger.debug("Failed to clear section '%s' after render error", section_id, exc_info=True)
+
+        with content:
+            with ui.card().classes('w-full border border-red-300 bg-red-50 text-red-900'):
+                ui.label(f"Section '{title}' could not be loaded.").classes('text-subtitle1 font-semibold')
+                ui.label('Please check the application logs for details.').classes('text-body2')
+
+    def _render_lazy_section_content(
+        section_id: str,
+        title: str,
+        content: Any,
+        render_fn: Callable[[Any], None],
+        render_state: dict[str, bool],
+    ) -> None:
+        if render_state['rendered'] or render_state['failed']:
+            return
+
+        try:
+            with content:
+                render_fn(content)
+            render_state['rendered'] = True
+        except Exception:
+            render_state['failed'] = True
+            logger.exception("Failed to render section '%s'", section_id)
+            _render_lazy_section_error(section_id, title, content)
 
     def _make_route_navigator(target: str) -> Callable[[Any], None]:
         def _navigate(_event: Any = None) -> None:
@@ -222,8 +259,6 @@ def settings_page(request: Request) -> None:
         """
         collapsed = bool(collapse_state.get(section_id, default_collapsed))
         
-        # Issue #7 fix: Validate section_id
-        import re
         if not re.match(r'^[a-zA-Z0-9_-]+$', section_id):
             logger.warning(f"Invalid section_id '{section_id}', using 'section'")
             section_id = 'section'
@@ -283,8 +318,7 @@ def settings_page(request: Request) -> None:
         render_fn receives a NiceGUI container to populate when needed.
         """
         collapsed = bool(collapse_state.get(section_id, default_collapsed))
-        rendered = False
-        import re
+        render_state = {'rendered': False, 'failed': False}
         if not re.match(r'^[a-zA-Z0-9_-]+$', section_id):
             logger.warning(f"Invalid section_id '{section_id}', using 'section'")
             section_id = 'section'
@@ -300,20 +334,14 @@ def settings_page(request: Request) -> None:
                 )
 
                 def _toggle() -> None:
-                    nonlocal collapsed, rendered
+                    nonlocal collapsed
                     collapsed = not collapsed
                     collapse_state[section_id] = collapsed
                     set_runtime_ui_pref(StorageKeys.COLLAPSE_STATE, collapse_state)
                     content.visible = not collapsed
                     chevron.props('icon=' + ('chevron_right' if collapsed else 'expand_more'))
-                    if not collapsed and not rendered:
-                        # Lazy build on first expand
-                        try:
-                            with content:
-                                render_fn(content)
-                            rendered = True
-                        except Exception:
-                            pass
+                    if not collapsed:
+                        _render_lazy_section_content(section_id, title, content, render_fn, render_state)
 
                 def _ensure_open() -> None:
                     if collapsed:
@@ -333,18 +361,19 @@ def settings_page(request: Request) -> None:
             content.props(f'id=cvd-content-{section_id}')
             content.visible = not collapsed
             section_openers[section_id] = _ensure_open
-            if not collapsed and not rendered:
-                try:
-                    with content:
-                        render_fn(content)
-                    rendered = True
-                except Exception:
-                    pass
+            if not collapsed:
+                _render_lazy_section_content(section_id, title, content, render_fn, render_state)
             return content
 
     # Main content: stacked sections similar to VS Code settings
     # Center the content and constrain to a comfortable reading width
     with ui.column().classes('w-full max-w-[1400px] mx-auto gap-4 p-4 pb-24'):
+        if startup_warnings:
+            with ui.card().classes('w-full border border-amber-300 bg-amber-50 text-amber-950'):
+                ui.label('Startup Warnings').classes('text-h6 font-semibold')
+                for message in startup_warnings:
+                    ui.label(message).classes('text-body2')
+
         # Camera section: 2-column layout (lazy render)
         def _render_camera(_container: Any) -> None:
             with ui.grid(columns=2).classes('w-full gap-4 items-start').style('grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));'):

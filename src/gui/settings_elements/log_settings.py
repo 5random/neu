@@ -14,6 +14,7 @@ from nicegui import ui, app
 
 from src.config import get_logger
 from src.gui.settings_elements.ui_helpers import create_action_button, create_heading_row, create_section_heading
+from src.gui.util import register_client_disconnect_handler
 
 logger = get_logger('gui.logs')
 LOG_LEVELS = {
@@ -316,4 +317,4 @@ def create_log_settings() -> None:
             except Exception:
                 pass
 
-        client.on_disconnect(_cleanup_on_disconnect)
+        register_client_disconnect_handler(client, _cleanup_on_disconnect, logger=logger)

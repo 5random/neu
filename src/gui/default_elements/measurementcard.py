@@ -6,7 +6,9 @@ from nicegui import ui
 from src.notify import EMailSystem
 from src.config import get_global_config, save_global_config, get_logger
 from src.cam.camera import Camera
+from src.gui.easter_egg import sync_game_of_life_activation_from_config
 from src.gui.email_visibility import get_visible_group_names
+from src.gui.util import is_deleted_parent_slot_error
 from src.gui.duration_utils import (
     DEFAULT_DURATION_SECONDS,
     MIN_DURATION_SECONDS,
@@ -30,6 +32,13 @@ if TYPE_CHECKING:
 
 logger = get_logger('gui.measurement')
 
+
+class _UnsetEmailSystem:
+    pass
+
+
+_UNSET_EMAIL_SYSTEM = _UnsetEmailSystem()
+
 MEASUREMENT_CARD_TOOLTIPS = {
     'active_groups': 'Quick selection of the recipient groups for the current measurement run. Static recipients are added automatically.',
     'active_groups_apply': 'Save the selected active groups for the current measurement run.',
@@ -39,12 +48,6 @@ MEASUREMENT_CARD_TOOLTIPS = {
     'alert_counter_reset': 'Reset the current session alert counter to zero without changing cooldown.',
     'alert_cooldown': 'Remaining time until another alert may be sent.',
 }
-
-
-def _is_deleted_parent_slot_error(exc: BaseException) -> bool:
-    return isinstance(exc, RuntimeError) and 'parent element this slot belongs to has been deleted' in str(exc).lower()
-
-
 def _derive_elapsed_duration(start_time: datetime) -> timedelta:
     """Return elapsed time using a current timestamp that matches start_time awareness."""
     if start_time.tzinfo is not None and start_time.utcoffset() is not None:
@@ -153,18 +156,61 @@ def _derive_alert_counter_view_state(status: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _sync_measurement_controller_email_system(
+    measurement_controller: Optional['MeasurementController'],
+    email_system: EMailSystem | None,
+    *,
+    provided: bool,
+) -> None:
+    if measurement_controller is None or not provided:
+        return
+    if measurement_controller.email_system != email_system:
+        measurement_controller.email_system = email_system
+
+
+def _resolve_email_system_input(
+    email_system: EMailSystem | None | _UnsetEmailSystem,
+) -> tuple[bool, EMailSystem | None]:
+    if isinstance(email_system, _UnsetEmailSystem):
+        return False, None
+    return True, email_system
+
+
+def _persist_active_groups_selection(
+    selected_groups: list[str],
+    email_system: EMailSystem | None,
+) -> None:
+    conf = get_global_config()
+    if not conf or not getattr(conf, 'email', None):
+        raise RuntimeError('Configuration not available')
+
+    conf.email.active_groups = list(selected_groups)
+    conf.email.enable_explicit_targeting(materialize_legacy_targets=False)
+    if not save_global_config():
+        raise RuntimeError('Failed to update active groups')
+
+    if email_system is not None:
+        email_system.refresh_config()
+    sync_game_of_life_activation_from_config()
+
+
+def _measurement_controller_notice_text() -> str:
+    return 'Measurement controller unavailable. Runtime actions are disabled until initialization succeeds.'
+
+
 def create_measurement_card(
     measurement_controller: Optional['MeasurementController'] = None,
     camera: Camera | None = None,
-    email_system: EMailSystem | None = None,
+    email_system: EMailSystem | None | _UnsetEmailSystem = _UNSET_EMAIL_SYSTEM,
     show_recipients: bool = True,
     confirm_stop: bool = False,
     **kwargs: Any,
 ) -> None:
     # Back-compat
-    if email_system is None and 'alert_system' in kwargs:
+    if email_system is _UNSET_EMAIL_SYSTEM and 'alert_system' in kwargs:
         email_system = kwargs.pop('alert_system')
- 
+
+    email_system_provided, effective_email_system = _resolve_email_system_input(email_system)
     config = get_global_config()
 
     if not config:
@@ -173,21 +219,12 @@ def create_measurement_card(
         return
     
     logger.info("Creating measurement card")
-    
-    if measurement_controller is None:
-        logger.warning('Measurement card received no shared controller; creating a local controller instance')
-        if email_system is None:
-            email_system = EMailSystem(config.email, config.measurement, config)
-        from src.measurement import MeasurementController as RuntimeMeasurementController
 
-        measurement_controller = RuntimeMeasurementController(
-            config.measurement,
-            email_system,
-            camera,
-        )
-    else:
-        if email_system is not None and measurement_controller.email_system != email_system:
-            measurement_controller.email_system = email_system
+    _sync_measurement_controller_email_system(
+        measurement_controller,
+        effective_email_system,
+        provided=email_system_provided,
+    )
     runtime_camera = camera or getattr(measurement_controller, 'camera', None)
     logger.debug(
         'Measurement card wiring: controller_available=%s controller_id=%s camera_available=%s',
@@ -195,6 +232,8 @@ def create_measurement_card(
         id(measurement_controller) if measurement_controller is not None else 'none',
         runtime_camera is not None,
     )
+    if measurement_controller is None:
+        logger.warning('Measurement card rendered without measurement controller; runtime actions remain disabled')
 
     # ------------------------- Zustände -------------------------
 
@@ -426,7 +465,10 @@ def create_measurement_card(
             motion_label.classes(remove='text-grey text-primary', add='text-warning')
 
         if not session_active:
-            if not camera_status:
+            if measurement_controller is None:
+                alert_label.text = 'Controller unavailable'
+                alert_label.classes(remove='text-negative text-positive text-grey', add='text-warning')
+            elif not camera_status:
                 alert_label.text = 'Check Camera'
                 alert_label.classes(remove='text-negative text-positive text-grey', add='text-warning')
             else:
@@ -502,6 +544,7 @@ def create_measurement_card(
     initial_duration_unit = _pick_duration_unit(configured_timeout_seconds or DEFAULT_DURATION_SECONDS)
     start_stop_tooltip: Any | None = None
     measurement_refresh_timer: Any | None = None
+    duration_save_timer: Any | None = None
 
     def sync_duration_controls(session_active: bool) -> None:
         if session_active:
@@ -523,14 +566,21 @@ def create_measurement_card(
             if getattr(start_stop_btn, '_deleted', False):
                 return
             current_status = _safe_get_status() if status is None else status
-            if current_status['is_active']:
+            if measurement_controller is None:
+                start_stop_btn.icon = 'play_arrow'
+                start_stop_btn.props('color=grey-6')
+                tooltip_text = 'Measurement controller unavailable'
+                start_stop_btn.disable()
+            elif current_status['is_active']:
                 start_stop_btn.icon = 'stop'
                 start_stop_btn.props('color=negative')
                 tooltip_text = 'Stop Session'
+                start_stop_btn.enable()
             else:
                 start_stop_btn.icon = 'play_arrow'
                 start_stop_btn.props('color=positive')
                 tooltip_text = 'Start Session'
+                start_stop_btn.enable()
 
             if start_stop_tooltip is not None:
                 start_stop_tooltip.text = tooltip_text
@@ -538,7 +588,7 @@ def create_measurement_card(
             sync_duration_controls(bool(current_status.get('is_active', False)))
             start_stop_btn.update()
         except RuntimeError as exc:
-            if _is_deleted_parent_slot_error(exc):
+            if is_deleted_parent_slot_error(exc):
                 return
             raise
 
@@ -632,6 +682,28 @@ def create_measurement_card(
             measurement_controller.update_config(cfg)
         _request_view_refresh()
 
+    def _cancel_duration_save_timer() -> None:
+        nonlocal duration_save_timer
+        if duration_save_timer is None:
+            return
+        try:
+            duration_save_timer.cancel()
+        except Exception:
+            pass
+        duration_save_timer = None
+
+    def _flush_duration_save() -> None:
+        nonlocal duration_save_timer
+        duration_save_timer = None
+        if is_updating or not enable_limit.value:
+            return
+        persist_settings()
+
+    def _schedule_duration_save() -> None:
+        nonlocal duration_save_timer
+        _cancel_duration_save_timer()
+        duration_save_timer = ui.timer(0.4, _flush_duration_save, once=True)
+
 
     # -------------------------- UI ------------------------------
     # Make the measurement card expand to use available vertical space in its column
@@ -648,6 +720,11 @@ def create_measurement_card(
             ui.button(icon='settings', on_click=lambda: ui.navigate.to('/settings#measurement')) \
                 .props('flat round dense').tooltip('Open measurement settings')
 
+        if measurement_controller is None:
+            with ui.row().classes('w-full items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 mb-4'):
+                ui.icon('warning').classes('text-amber-700 text-sm shrink-0')
+                ui.label(_measurement_controller_notice_text()).classes('text-body2 text-amber-900')
+
         # Main Controls (Start/Stop + Duration)
         with ui.row().classes('items-center w-full gap-4 mb-4 no-wrap'):
             # Big Start Button
@@ -660,7 +737,7 @@ def create_measurement_card(
             with ui.column().classes('gap-1 flex-1'):
                 with ui.row().classes('items-center gap-2'):
                     enable_limit = ui.checkbox(
-                        'Max Duration', value=configured_timeout_seconds > 0
+                        'Set maximum Duration', value=configured_timeout_seconds > 0
                     ).props('dense').tooltip('Enable automatic session timeout')
                 
                 with ui.row().classes('items-center gap-2 no-wrap'):
@@ -815,25 +892,15 @@ def create_measurement_card(
                                             return
 
                                         button.disable()
-                                        conf = get_global_config()
-                                        if not conf or not getattr(conf, 'email', None):
-                                            notify_user('Configuration not available', kind='negative')
-                                            return
-
                                         selected = _normalize_active_groups_value(
                                             getattr(select, 'value', []),
                                             valid_options=_last_groups_opts,
                                         )
 
-                                        conf.email.active_groups = selected
-                                        conf.email.enable_explicit_targeting(materialize_legacy_targets=False)
-                                        if not save_global_config():
-                                            logger.error('Failed to save active group selection')
-                                            notify_user('Failed to update active groups', kind='negative')
-                                            return
-                                        if email_system:
-                                            email_system.refresh_config()
-
+                                        _persist_active_groups_selection(
+                                            selected,
+                                            effective_email_system,
+                                        )
                                         _last_synced_active_groups = list(selected)
                                         notify_user('Active groups updated', kind='positive')
                                         _update_apply_groups_state()
@@ -883,6 +950,7 @@ def create_measurement_card(
                     conf = get_global_config()
                     if not conf or not getattr(conf, 'email', None):
                         return
+                    sync_game_of_life_activation_from_config()
 
                     new_opts = get_visible_group_names(conf.email)
                     configured_active = list(getattr(conf.email, 'active_groups', []) or [])
@@ -916,7 +984,7 @@ def create_measurement_card(
                     _update_apply_groups_state()
                 except Exception:
                     logger.debug('Groups refresh check failed', exc_info=True)
-                    return True
+
             ui.timer(5.0, _refresh_groups_ui)
 
 
@@ -929,7 +997,7 @@ def create_measurement_card(
         if is_updating:
             return
         if enable_limit.value:
-            persist_settings()
+            _schedule_duration_save()
 
     def on_duration_unit_change(e: Any) -> None:
         nonlocal is_updating, prev_unit
@@ -957,11 +1025,19 @@ def create_measurement_card(
         is_updating = False
 
         if enable_limit.value:
+            _cancel_duration_save_timer()
             persist_settings()
 
     def toggle_duration(_: Any) -> None:
+        _cancel_duration_save_timer()
         sync_duration_controls(bool(_safe_get_status().get('is_active', False)))
         update_duration_ui()
+        persist_settings()
+
+    def _persist_duration_immediately(_: Any = None) -> None:
+        if not enable_limit.value:
+            return
+        _cancel_duration_save_timer()
         persist_settings()
 
     def _stop_session() -> None:
@@ -1035,7 +1111,7 @@ def create_measurement_card(
     def tick() -> None:
         """Per-client UI refresh. Session timeout is checked centrally by the controller."""
         try:
-            if measurement_controller is None or getattr(start_stop_btn, '_deleted', False):
+            if getattr(start_stop_btn, '_deleted', False):
                 if measurement_refresh_timer is not None:
                     measurement_refresh_timer.cancel()
                 return
@@ -1043,7 +1119,7 @@ def create_measurement_card(
             _request_view_refresh(current_status)
             style_start_button(current_status)
         except RuntimeError as exc:
-            if _is_deleted_parent_slot_error(exc):
+            if is_deleted_parent_slot_error(exc):
                 if measurement_refresh_timer is not None:
                     measurement_refresh_timer.cancel()
                 return
@@ -1057,18 +1133,25 @@ def create_measurement_card(
             ui.label('Stop measurement?').classes('text-h6')
             ui.label('The current measurement session will be ended immediately.').classes('text-body2')
             with ui.row().classes('gap-2'):
-                ui.button('Stop', on_click=_confirm_stop_session).props('color=primary')
-                ui.button('Cancel', on_click=stop_confirm_dialog.close).props('color=negative')
+                ui.button('Cancel', on_click=stop_confirm_dialog.close).props('color=primary')
+                ui.button('Stop', on_click=_confirm_stop_session).props('color=negative')
 
     start_stop_btn.on('click', start_stop)
     enable_limit.on('update:model-value', toggle_duration)
      
-    duration_input.on('blur', lambda e: persist_settings() if enable_limit.value else None)
-    duration_input.on('keydown.enter', lambda e: persist_settings() if enable_limit.value else None)
+    duration_input.on('blur', _persist_duration_immediately)
+    duration_input.on('keydown.enter', _persist_duration_immediately)
     duration_unit.on('update:model-value', on_duration_unit_change)
     duration_input.on('update:model-value', on_duration_input_change)
 
-    measurement_refresh_timer = ui.timer(1.0, tick)
+    gui_config = getattr(config, 'gui', None)
+    refresh_interval_ms_getter = getattr(gui_config, 'get_status_refresh_interval_ms', None)
+    if callable(refresh_interval_ms_getter):
+        raw_refresh_interval_ms = refresh_interval_ms_getter()
+    else:
+        raw_refresh_interval_ms = getattr(gui_config, 'status_refresh_interval_ms', 1000)
+    refresh_interval_seconds = max(0.2, float(raw_refresh_interval_ms or 1000) / 1000.0)
+    measurement_refresh_timer = ui.timer(refresh_interval_seconds, tick)
 
     sync_duration_controls(bool(initial_status.get('is_active', False)))
     update_duration_ui()

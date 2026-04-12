@@ -212,7 +212,7 @@ class MotionDetector:
         
         self.sensitivity = new_sensitivity
         # Sensitivität beeinflusst minimale Konturgröße
-        scale = 20.0                      # 10-fach Spielraum
+        scale = 20.0                      # 20-fach Spielraum
         self.min_contour_area = int(
             self.config.min_contour_area * (1 + (scale - 1) * (1 - new_sensitivity))
         )
@@ -231,12 +231,18 @@ class MotionDetector:
         """Gibt Zeitstempel der letzten Bewegung zurück (für Alert-System)."""
         return self.last_motion_time
     
-    def _get_working_array(self, shape: Tuple[int, int], dtype: Any = np.uint8) -> np.ndarray:
+    def _get_working_array(
+        self,
+        shape: Tuple[int, int],
+        dtype: Any = np.uint8,
+        *,
+        zero_fill: bool = False,
+    ) -> np.ndarray:
         """
         Wiederverwendbare Arrays aus Pool.
         
-        Returns a zeroed array from the pool to prevent stale data usage.
-        Pool size is limited to prevent memory leaks.
+        Returns a reusable array from the pool. Callers may request zero-filled
+        storage when stale data would affect the result.
         """
         key = (shape, dtype)
         if key not in self._frame_pool:
@@ -250,9 +256,9 @@ class MotionDetector:
                     pass
             self._frame_pool[key] = np.empty(shape, dtype=dtype)
         
-        # Zero out the array to prevent stale data usage
         array = self._frame_pool[key]
-        array.fill(0)
+        if zero_fill:
+            array.fill(0)
         return array
     
     def detect_motion(self, frame: np.ndarray) -> MotionResult:
@@ -277,48 +283,46 @@ class MotionDetector:
             return MotionResult(False, 0.0, timestamp, False)
         
         try:
-            # Frame zu Graustufen konvertieren
-            h, w = frame.shape[:2]
-            if len(frame.shape) == 3:
-                gray_frame = self._get_working_array((h, w), np.uint8)
-                cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY, dst=gray_frame)
-            else:
-                gray_frame = frame.copy()
-            
-            # ROI direkt nach Graustufen anwenden
+            # Apply ROI on the original frame before expensive grayscale conversion.
             roi_used = False
-            roi_frame = self._apply_roi(gray_frame)
-            if roi_frame is not gray_frame:
+            roi_frame = self._apply_roi(frame)
+            if roi_frame is not frame:
                 roi_used = True
 
             # Validate final ROI frame size
             if roi_frame.shape[0] < 10 or roi_frame.shape[1] < 10:
                 self.logger.warning("ROI too small for processing, using full frame")
-                roi_frame = gray_frame
+                roi_frame = frame
                 roi_used = False
+
+            if len(roi_frame.shape) == 3:
+                gray_frame = self._get_working_array(roi_frame.shape[:2], np.uint8, zero_fill=False)
+                cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY, dst=gray_frame)
+            else:
+                gray_frame = roi_frame.copy()
 
             # --- Downscaling Optimization ---
             # Process on a smaller frame if the ROI is large (e.g. > 640px width)
             # This significantly reduces CPU usage on Raspberry Pi
-            target_width = 640
+            target_width = max(1, int(getattr(self.config, 'processing_max_width', 640) or 640))
             scale_factor = 1.0
-            processing_frame = roi_frame
+            processing_frame = gray_frame
             
             # Guard against division by zero
-            roi_width = roi_frame.shape[1]
+            roi_width = gray_frame.shape[1]
             if roi_width > target_width and roi_width > 0:
                 scale_factor = target_width / roi_width
                 # Keep aspect ratio
                 new_width = target_width
-                new_height = max(1, int(roi_frame.shape[0] * scale_factor))  # Ensure >= 1
+                new_height = max(1, int(gray_frame.shape[0] * scale_factor))  # Ensure >= 1
                 
                 # Zusätzliche Sicherheitsprüfung
                 if new_width < 1 or new_height < 1:
                     self.logger.warning(f"Invalid scaled dimensions: {new_width}x{new_height}, using original")
-                    processing_frame = roi_frame
+                    processing_frame = gray_frame
                     scale_factor = 1.0
                 else:
-                    processing_frame = cv2.resize(roi_frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+                    processing_frame = cv2.resize(gray_frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
             
             # Adjust min_contour_area for the scaled frame
             # Area scales with square of linear scale
